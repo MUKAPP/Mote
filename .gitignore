@@ -1,0 +1,12 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+/.trae/
+/.Mote_compose/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
