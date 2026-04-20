@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Widget.Mote" parent="">
+    </style>
+
+    <style name="Widget.Mote.MessageCard" parent="Widget.MaterialComponents.CardView">
+        <item name="strokeColor">@color/mote_outline_variant</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <style name="Widget.Mote.MessageCard.Assistant" parent="Widget.Mote.MessageCard">
+        <item name="cardBackgroundColor">?attr/colorSurfaceVariant</item>
+        <item name="cardCornerRadius">24dp</item>
+    </style>
+
+    <style name="Widget.Mote.MessageCard.User" parent="Widget.Mote.MessageCard">
+        <item name="cardBackgroundColor">?attr/colorPrimaryContainer</item>
+        <item name="cardCornerRadius">24dp</item>
+    </style>
+
+    <style name="Widget.Mote.ActionIconButton" parent="Widget.AppCompat.ImageButton">
+        <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:padding">8dp</item>
+        <item name="android:tint">?attr/colorOnSurfaceVariant</item>
+    </style>
+</resources>

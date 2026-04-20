@@ -1,9 +1,26 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+<resources>
     <style name="Base.Theme.Mote" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <item name="colorPrimary">@color/mote_primary</item>
+        <item name="colorOnPrimary">@color/mote_on_primary</item>
+        <item name="colorPrimaryContainer">@color/mote_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/mote_on_primary_container</item>
+        <item name="colorSecondary">@color/mote_secondary</item>
+        <item name="colorOnSecondary">@color/mote_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/mote_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/mote_on_secondary_container</item>
+        <item name="colorSurface">@color/mote_surface_light</item>
+        <item name="colorOnSurface">@color/mote_on_surface_light</item>
+        <item name="colorSurfaceVariant">@color/mote_surface_variant_light</item>
+        <item name="colorOnSurfaceVariant">@color/mote_on_surface_variant_light</item>
+        <item name="colorOutline">@color/mote_outline_light</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.Mote.MaterialAlertDialog</item>
     </style>
 
     <style name="Theme.Mote" parent="Base.Theme.Mote" />
+
+    <style name="ThemeOverlay.Mote.MaterialAlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog" />
 </resources>
