@@ -11,11 +11,10 @@
     android:paddingBottom="24dp">
 
     <com.google.android.material.card.MaterialCardView
+        style="@style/Widget.Material3.CardView.Filled"
         android:layout_width="72dp"
         android:layout_height="72dp"
-        app:cardBackgroundColor="?attr/colorPrimaryContainer"
-        app:cardCornerRadius="20dp"
-        app:cardElevation="0dp">
+        app:cardCornerRadius="20dp">
 
         <ImageView
             android:layout_width="match_parent"
@@ -47,9 +46,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
-        app:cardBackgroundColor="?attr/colorSurfaceVariant"
-        app:cardCornerRadius="20dp"
-        app:cardElevation="0dp">
+        style="@style/Widget.Material3.CardView.Outlined"
+        app:cardCornerRadius="16dp">
 
         <LinearLayout
             android:layout_width="match_parent"

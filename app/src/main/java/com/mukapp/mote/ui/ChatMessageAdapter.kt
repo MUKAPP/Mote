@@ -334,7 +334,6 @@ class ChatMessageAdapter(
             )
         }
         binding.layoutHeader.setOnClickListener(toggle)
-        binding.btnToggleSteps.setOnClickListener(toggle)
         binding.containerSteps.removeAllViews()
 
         val inflater = LayoutInflater.from(binding.root.context)
@@ -454,7 +453,6 @@ class ChatMessageAdapter(
             }
         }
         binding.layoutHeader.setOnClickListener(toggle)
-        binding.btnToggleDetail.setOnClickListener(toggle)
         return binding.root
     }
 

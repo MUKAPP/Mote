@@ -3,18 +3,28 @@ package com.mukapp.mote.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
+import android.graphics.Outline
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.Toast
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ApiSettings
@@ -23,6 +33,8 @@ import com.mukapp.mote.databinding.FragmentChatBinding
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
 import com.mukapp.mote.util.px
+import kotlin.math.max
+import androidx.core.graphics.drawable.toDrawable
 
 class ChatFragment : Fragment() {
     private var _binding: FragmentChatBinding? = null
@@ -52,14 +64,121 @@ class ChatFragment : Fragment() {
         setupInputArea()
         observeViewModel()
 
+        binding.recyclerMessages.clipToPadding = false
+        var systemBottomInset = 0
+        var imeBottomInset = 0
+        var imeAnimationRunning = false
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            binding.recyclerMessages.updatePadding(
-                top = systemBars.top + (56 + 16).dpInt,
-                bottom = systemBars.bottom
-            )
-            binding.recyclerMessages.clipToPadding = false
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+
+            systemBottomInset = systemBars.bottom
+            imeBottomInset = ime.bottom
+
+            if (!imeAnimationRunning) {
+                binding.recyclerMessages.updatePadding(
+                    top = systemBars.top + (56 + 16).dpInt,
+                    bottom = systemBottomInset + binding.cardInput.height + (16 + 8).dpInt
+                )
+
+                binding.cardInput.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                    bottomMargin = systemBottomInset + 16.dpInt
+                }
+            }
             insets
+        }
+
+        binding.cardInput.addOnLayoutChangeListener { view, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val newHeight = bottom - top
+            val oldHeight = oldBottom - oldTop
+
+            if (newHeight != oldHeight) {
+                binding.recyclerMessages.updatePadding(
+                    bottom = max(systemBottomInset, imeBottomInset) + newHeight + (16 + 8).dpInt
+                )
+            }
+        }
+
+        val animationCallback = object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+            private var previousBottom = 0
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+                super.onPrepare(animation)
+                imeAnimationRunning = true
+                previousBottom = max(systemBottomInset, imeBottomInset)
+            }
+
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                super.onEnd(animation)
+                imeAnimationRunning = false
+            }
+
+            override fun onProgress(
+                insets: WindowInsetsCompat,
+                runningAnimations: MutableList<WindowInsetsAnimationCompat>
+            ): WindowInsetsCompat {
+                val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+                val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+
+                val currentBottom = max(systemBottom, imeBottom)
+                // 核心1：计算输入法这一帧移动了多少像素
+                val delta = currentBottom - previousBottom
+                previousBottom = currentBottom
+
+                binding.cardInput.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                    bottomMargin = currentBottom + 16.dpInt
+                }
+
+                binding.recyclerMessages.updatePadding(
+                    bottom = currentBottom + binding.cardInput.height + (16 + 8).dpInt
+                )
+
+                // 核心2：让列表内容严格跟随输入法的位移量进行像素级滚动
+                // delta 为正（输入法弹出），列表向下滚动（内容视觉上移）
+                // delta 为负（输入法收起），列表向上滚动（内容视觉下移）
+                binding.recyclerMessages.scrollBy(0, delta)
+                return insets
+            }
+        }
+
+        ViewCompat.setWindowInsetsAnimationCallback(binding.root, animationCallback)
+
+        val realWindowBackground = requireActivity().window.decorView.background
+        val baseColor = MaterialColors.getColor(
+            binding.root,
+            com.google.android.material.R.attr.colorSurfaceContainerLow
+        )
+        val overlayColor = ColorUtils.setAlphaComponent(baseColor, (255 * 0.6).toInt())
+        binding.cardInput.setupWith(binding.blurTarget)
+            .setFrameClearDrawable(realWindowBackground)
+            .setBlurRadius(20f)
+            .setOverlayColor(overlayColor)
+
+        // 1. 动态创建一个透明的圆角 Drawable
+        val radius = 36f * resources.displayMetrics.density
+        val roundedBackground = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radius
+            setColor(Color.TRANSPARENT)
+        }
+
+        // 2. 应用背景、自定义轮廓裁剪与阴影
+        binding.cardInput.apply {
+            background = roundedBackground
+
+            // 自定义 OutlineProvider
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    // 根据 View 的宽高和圆角设置轮廓形状
+                    outline.setRoundRect(0, 0, view.width, view.height, radius)
+                    // 无视背景的透明度，强制设定轮廓的 Alpha 为 1.0f (不透明)，以投射阴影
+                    outline.alpha = 1.0f
+                }
+            }
+
+            clipToOutline = true
+
+            // 3. 设置阴影的高度 (数值越大，阴影越明显)
+            elevation = 8f
         }
     }
 
