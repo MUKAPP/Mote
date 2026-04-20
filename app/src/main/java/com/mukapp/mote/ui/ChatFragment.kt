@@ -8,6 +8,9 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
@@ -17,6 +20,9 @@ import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.databinding.FragmentChatBinding
+import com.mukapp.mote.util.dp
+import com.mukapp.mote.util.dpInt
+import com.mukapp.mote.util.px
 
 class ChatFragment : Fragment() {
     private var _binding: FragmentChatBinding? = null
@@ -45,6 +51,16 @@ class ChatFragment : Fragment() {
         setupRecyclerView()
         setupInputArea()
         observeViewModel()
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            binding.recyclerMessages.updatePadding(
+                top = systemBars.top + (56 + 16).dpInt,
+                bottom = systemBars.bottom
+            )
+            binding.recyclerMessages.clipToPadding = false
+            insets
+        }
     }
 
     override fun onDestroyView() {
@@ -56,9 +72,24 @@ class ChatFragment : Fragment() {
     private fun setupRecyclerView() {
         adapter = ChatMessageAdapter(
             onCopyMessage = { message -> copyMessage(message) },
-            onEditMessage = { index -> showConfirmationDialog(R.string.dialog_edit_title, R.string.dialog_edit_message) { viewModel.editMessage(index) } },
-            onDeleteMessage = { index -> showConfirmationDialog(R.string.dialog_delete_title, R.string.dialog_delete_message) { viewModel.deleteMessage(index) } },
-            onRetryMessage = { index -> showConfirmationDialog(R.string.dialog_retry_title, R.string.dialog_retry_message) { viewModel.retryMessage(index) } }
+            onEditMessage = { index ->
+                showConfirmationDialog(
+                    R.string.dialog_edit_title,
+                    R.string.dialog_edit_message
+                ) { viewModel.editMessage(index) }
+            },
+            onDeleteMessage = { index ->
+                showConfirmationDialog(
+                    R.string.dialog_delete_title,
+                    R.string.dialog_delete_message
+                ) { viewModel.deleteMessage(index) }
+            },
+            onRetryMessage = { index ->
+                showConfirmationDialog(
+                    R.string.dialog_retry_title,
+                    R.string.dialog_retry_message
+                ) { viewModel.retryMessage(index) }
+            }
         )
 
         binding.recyclerMessages.layoutManager = object : LinearLayoutManager(requireContext()) {
@@ -67,7 +98,8 @@ class ChatFragment : Fragment() {
                 state: androidx.recyclerview.widget.RecyclerView.State,
                 position: Int
             ) {
-                val smoothScroller = object : androidx.recyclerview.widget.LinearSmoothScroller(recyclerView.context) {
+                val smoothScroller = object :
+                    androidx.recyclerview.widget.LinearSmoothScroller(recyclerView.context) {
                     override fun getVerticalSnapPreference(): Int {
                         return SNAP_TO_END
                     }
@@ -78,8 +110,13 @@ class ChatFragment : Fragment() {
         }
         binding.recyclerMessages.adapter = adapter
         binding.recyclerMessages.itemAnimator = null
-        binding.recyclerMessages.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
-            override fun onScrolled(recyclerView: androidx.recyclerview.widget.RecyclerView, dx: Int, dy: Int) {
+        binding.recyclerMessages.addOnScrollListener(object :
+            androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+            override fun onScrolled(
+                recyclerView: androidx.recyclerview.widget.RecyclerView,
+                dx: Int,
+                dy: Int
+            ) {
                 followOutput = !recyclerView.canScrollVertically(1)
             }
         })
@@ -147,9 +184,9 @@ class ChatFragment : Fragment() {
         if (viewHolder != null && viewHolder.itemView.height > 0) {
             val itemHeight = viewHolder.itemView.height
             val offset = binding.recyclerMessages.height -
-                binding.recyclerMessages.paddingTop -
-                binding.recyclerMessages.paddingBottom -
-                itemHeight
+                    binding.recyclerMessages.paddingTop -
+                    binding.recyclerMessages.paddingBottom -
+                    itemHeight
             layoutManager.scrollToPositionWithOffset(lastPosition, offset)
         } else {
             layoutManager.scrollToPosition(lastPosition)
@@ -177,8 +214,14 @@ class ChatFragment : Fragment() {
     }
 
     private fun copyMessage(message: ChatMessage) {
-        val clipboard = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.app_name), message.content))
+        val clipboard =
+            requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText(
+                getString(R.string.app_name),
+                message.content
+            )
+        )
         Toast.makeText(requireContext(), getString(R.string.action_copy), Toast.LENGTH_SHORT).show()
     }
 

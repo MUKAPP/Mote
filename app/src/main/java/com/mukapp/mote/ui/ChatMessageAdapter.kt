@@ -6,6 +6,7 @@ import android.text.method.LinkMovementMethod
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.collection.LruCache
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.data.model.ChatMessage
@@ -16,8 +17,8 @@ import com.mukapp.mote.databinding.IntermediateStepsBlockBinding
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
 import com.mukapp.mote.databinding.ItemToolResultBinding
+import com.mukapp.mote.ui.markdown.StreamingMarkdownRenderer
 import com.mukapp.mote.R
-import io.noties.markwon.Markwon
 import org.json.JSONObject
 
 class ChatMessageAdapter(
@@ -32,7 +33,7 @@ class ChatMessageAdapter(
 
     private var isSending: Boolean = false
     private var streamingMessageId: String? = null
-    private var markwon: Markwon? = null
+    private val rendererCache = LruCache<String, StreamingMarkdownRenderer>(16)
     private var maxStepsHeightPx: Int = 0
 
     init {
@@ -52,9 +53,6 @@ class ChatMessageAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-        if (markwon == null) {
-            markwon = Markwon.create(parent.context.applicationContext)
-        }
         if (maxStepsHeightPx == 0) {
             maxStepsHeightPx = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP,
@@ -72,6 +70,22 @@ class ChatMessageAdapter(
     }
 
     override fun getItemCount(): Int = messages.size
+
+    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+        super.onViewRecycled(holder)
+        if (holder is AssistantViewHolder) {
+            holder.clear()
+        }
+    }
+
+    private fun getOrCreateRenderer(messageId: String, context: android.content.Context): StreamingMarkdownRenderer {
+        var renderer = rendererCache[messageId]
+        if (renderer == null) {
+            renderer = StreamingMarkdownRenderer(context.applicationContext)
+            rendererCache.put(messageId, renderer)
+        }
+        return renderer
+    }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
         if (payloads.isEmpty()) {
@@ -169,6 +183,10 @@ class ChatMessageAdapter(
         private var lastStepCount: Int = 0
         private var streamingThinkingTextView: TextView? = null
 
+        fun clear() {
+            streamingThinkingTextView = null
+        }
+
         fun bind(message: ChatMessage, position: Int) {
             streamingThinkingTextView = null
             val displaySteps = IntermediateStepsHelper.displayStepsFor(message)
@@ -182,12 +200,13 @@ class ChatMessageAdapter(
             binding.textStatus.text = itemView.context.getString(R.string.status_generating)
             binding.markdownContent.isVisible = hasContent
             if (hasContent) {
+                val renderer = getOrCreateRenderer(message.id, itemView.context)
                 if (isStreamingMessage) {
+                    binding.markdownContent.text = renderer.setMarkdown(message.content)
                     binding.markdownContent.movementMethod = null
-                    binding.markdownContent.text = message.content
                 } else {
+                    binding.markdownContent.text = renderer.renderStatic(message.content)
                     binding.markdownContent.movementMethod = LinkMovementMethod.getInstance()
-                    markwon?.setMarkdown(binding.markdownContent, message.content)
                 }
             } else {
                 binding.markdownContent.text = ""
@@ -225,7 +244,8 @@ class ChatMessageAdapter(
             binding.markdownContent.isVisible = hasContent
             if (hasContent) {
                 binding.markdownContent.movementMethod = null
-                binding.markdownContent.text = message.content
+                val renderer = getOrCreateRenderer(message.id, itemView.context)
+                binding.markdownContent.text = renderer.setMarkdown(message.content)
             } else {
                 binding.markdownContent.text = ""
             }

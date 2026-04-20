@@ -10,4 +10,3 @@
 }
 
 -dontwarn org.json.**
--dontwarn io.noties.markwon.**
