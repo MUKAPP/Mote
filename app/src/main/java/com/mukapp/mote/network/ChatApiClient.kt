@@ -8,6 +8,9 @@ import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ToolCallAccumulator
 import com.mukapp.mote.tools.LocalAiTools
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,7 +28,12 @@ object ChatApiClient {
     ): ChatCompletionResult {
         return withContext(Dispatchers.IO) {
             val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
+            val coroutineContext = currentCoroutineContext()
+            val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
+                runCatching { connection.disconnect() }
+            }
             try {
+                coroutineContext.ensureActive()
                 connection.requestMethod = "POST"
                 connection.connectTimeout = 15_000
                 connection.readTimeout = 120_000
@@ -57,6 +65,7 @@ object ChatApiClient {
                     writer.write(requestBody)
                 }
 
+                coroutineContext.ensureActive()
                 val statusCode = connection.responseCode
                 if (statusCode !in 200..299) {
                     val responseText = readResponseText(connection, statusCode)
@@ -69,6 +78,7 @@ object ChatApiClient {
                     readStreamedReply(connection, onDelta, onThinkingDelta)
                 } else {
                     val responseText = readResponseText(connection, statusCode)
+                    coroutineContext.ensureActive()
                     val response = parseAssistantReply(responseText)
                     withContext(mainDispatcher) {
                         if (response.content.isNotBlank()) {
@@ -77,8 +87,12 @@ object ChatApiClient {
                     }
                     response
                 }
+            } catch (error: Throwable) {
+                coroutineContext.ensureActive()
+                throw error
             } finally {
-                connection.disconnect()
+                cancellationHandle?.dispose()
+                runCatching { connection.disconnect() }
             }
         }
     }
@@ -152,6 +166,7 @@ object ChatApiClient {
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit
     ): ChatCompletionResult {
+        val coroutineContext = currentCoroutineContext()
         val replyBuilder = StringBuilder()
         val thinkingBuilder = StringBuilder()
         var streamFinished = false
@@ -160,9 +175,11 @@ object ChatApiClient {
         connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
             val eventPayload = StringBuilder()
             while (true) {
+                coroutineContext.ensureActive()
                 val line = reader.readLine() ?: break
                 if (line.isBlank()) {
                     if (eventPayload.isNotEmpty()) {
+                        coroutineContext.ensureActive()
                         streamFinished = processStreamEvent(
                             payload = eventPayload.toString(),
                             replyBuilder = replyBuilder,
@@ -188,6 +205,7 @@ object ChatApiClient {
             }
 
             if (!streamFinished && eventPayload.isNotEmpty()) {
+                coroutineContext.ensureActive()
                 processStreamEvent(
                     payload = eventPayload.toString(),
                     replyBuilder = replyBuilder,
@@ -233,6 +251,7 @@ object ChatApiClient {
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit
     ): Boolean {
+        currentCoroutineContext().ensureActive()
         val normalizedPayload = payload.trim()
         if (normalizedPayload.isEmpty()) {
             return false
@@ -253,6 +272,7 @@ object ChatApiClient {
         val thinkingDelta = deltaObject?.let { extractMessageContent(it.opt("reasoning_content")) }.orEmpty()
         if (thinkingDelta.isNotEmpty()) {
             thinkingBuilder.append(thinkingDelta)
+            currentCoroutineContext().ensureActive()
             onThinkingDelta(thinkingDelta)
         }
 
@@ -264,6 +284,7 @@ object ChatApiClient {
 
         if (deltaText.isNotEmpty()) {
             replyBuilder.append(deltaText)
+            currentCoroutineContext().ensureActive()
             onDelta(deltaText)
         }
         return false

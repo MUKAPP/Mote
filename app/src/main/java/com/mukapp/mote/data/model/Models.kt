@@ -17,7 +17,8 @@ data class ChatMessage(
     val toolName: String? = null,
     val toolArguments: String? = null,
     val toolCalls: List<AiToolCall> = emptyList(),
-    val assistantParts: List<AssistantPart> = emptyList()
+    val assistantParts: List<AssistantPart> = emptyList(),
+    val excludeFromConversation: Boolean = false
 )
 
 sealed interface AssistantPart {

@@ -169,6 +169,7 @@ class ChatMessageAdapter(
             val hasContent = message.content.isNotBlank()
             val hasParts = message.assistantParts.isNotEmpty()
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
+            val showGeneratingStatus = isStreamingMessage && !hasContent && !hasParts
             syncThinkingPartExpansion(message, isStreamingMessage)
 
             binding.markdownContent.updateLayoutParams<ViewGroup.MarginLayoutParams> {
@@ -176,7 +177,7 @@ class ChatMessageAdapter(
             }
 
             binding.textAiLabel.text = itemView.context.getString(R.string.label_ai)
-            binding.textStatus.isVisible = !hasContent && !hasParts
+            binding.textStatus.isVisible = showGeneratingStatus
             binding.textStatus.text = itemView.context.getString(R.string.status_generating)
             binding.markdownContent.isVisible = hasParts || hasContent
             if (hasParts) {
@@ -192,7 +193,7 @@ class ChatMessageAdapter(
                 binding.markdownContent.clearMarkdown()
             }
 
-            binding.layoutActions.isVisible = !isStreamingMessage
+            binding.layoutActions.isVisible = !isStreamingMessage && (hasContent || hasParts)
             binding.btnCopy.isEnabled = hasContent
             binding.btnRetry.isVisible = isLastAiMessage && !isStreamingMessage
             binding.btnCopy.setOnClickListener { onCopyMessage(message) }

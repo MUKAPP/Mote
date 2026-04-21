@@ -115,6 +115,7 @@ object ChatHistoryStore {
                         message.toolCallId?.let { put("toolCallId", it) }
                         message.toolName?.let { put("toolName", it) }
                         message.toolArguments?.let { put("toolArguments", it) }
+                        put("excludeFromConversation", message.excludeFromConversation)
                         if (message.toolCalls.isNotEmpty()) {
                             put(
                                 "toolCalls",
@@ -188,7 +189,8 @@ object ChatHistoryStore {
                         toolName = item.optString("toolName").takeIf { it.isNotBlank() },
                         toolArguments = item.optString("toolArguments").takeIf { it.isNotBlank() },
                         toolCalls = deserializeToolCalls(item.optJSONArray("toolCalls")),
-                        assistantParts = deserializeAssistantParts(item.optJSONArray("assistantParts"))
+                        assistantParts = deserializeAssistantParts(item.optJSONArray("assistantParts")),
+                        excludeFromConversation = item.optBoolean("excludeFromConversation", false)
                     )
                 )
             }

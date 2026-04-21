@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
+import com.mukapp.mote.R
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.ChatHistoryStore
 import com.mukapp.mote.data.model.AssistantMarkdownPart
@@ -18,6 +19,7 @@ import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -45,6 +47,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val isSending: LiveData<Boolean> = _isSending
 
     private var pendingStreamingPublishJob: Job? = null
+    private var activeSendJob: Job? = null
+    private var stopGenerationRequested: Boolean = false
 
     init {
         loadHistory()
@@ -103,14 +107,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _draftMessage.value = ""
 
         val assistantId = UUID.randomUUID().toString()
-        uiMessagesInternal += ChatMessage(id = assistantId, role = ChatRole.Assistant, content = "")
+        uiMessagesInternal += ChatMessage(
+            id = assistantId,
+            role = ChatRole.Assistant,
+            content = "",
+            excludeFromConversation = true
+        )
         val assistantIndex = uiMessagesInternal.lastIndex
+        stopGenerationRequested = false
         _isSending.value = true
         publishMessagesImmediately()
 
-        viewModelScope.launch {
+        activeSendJob = viewModelScope.launch {
             val result = runCatching {
-                val workingConversation = conversationMessagesInternal.toMutableList().apply {
+                val workingConversation = conversationMessagesInternal
+                    .filter { message ->
+                        message.role != ChatRole.System && !message.excludeFromConversation
+                    }
+                    .toMutableList()
+                    .apply {
                     add(0, ChatMessage(role = ChatRole.System, content = SystemPrompt))
                 }
                 val assistantParts = mutableListOf<AssistantPart>()
@@ -166,7 +181,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
 
                         conversationMessagesInternal.clear()
-                        conversationMessagesInternal.addAll(workingConversation)
+                        conversationMessagesInternal.addAll(
+                            workingConversation.filter { it.role != ChatRole.System }
+                        )
                         publishMessagesImmediately()
                         persistConversationAsync()
                         return@runCatching finalReply
@@ -205,7 +222,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             buildAssistantContent(assistantParts)
                         },
-                        assistantParts = assistantParts.toList()
+                        assistantParts = assistantParts.toList(),
+                        excludeFromConversation = true
                     )
                     publishMessagesImmediately()
 
@@ -218,6 +236,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             result.onFailure { error ->
+                if (error is CancellationException) {
+                    if (stopGenerationRequested) {
+                        handleStoppedGeneration(assistantIndex, assistantId)
+                    }
+                    return@onFailure
+                }
+
                 val message = error.message?.takeIf { it.isNotBlank() }
                     ?: "请检查 API 设置、网络连接，或确认接口是否兼容 OpenAI Chat Completions。"
                 val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
@@ -231,14 +256,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         "$currentContent\n\n[处理失败：$message]"
                     },
-                    assistantParts = currentParts
+                    assistantParts = currentParts,
+                    excludeFromConversation = true
                 )
+                rebuildConversationFromUiMessages()
                 publishMessagesImmediately()
+                persistConversationAsync()
             }
 
             cancelPendingStreamingPublish()
+            activeSendJob = null
+            stopGenerationRequested = false
             _isSending.value = false
         }
+    }
+
+    fun stopGenerating() {
+        if (_isSending.value != true) {
+            return
+        }
+
+        stopGenerationRequested = true
+        activeSendJob?.cancel(CancellationException("用户已手动停止生成。"))
     }
 
     fun editMessage(index: Int) {
@@ -321,7 +360,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 uiMessagesInternal.clear()
                 uiMessagesInternal.addAll(historyState.uiMessages)
                 conversationMessagesInternal.clear()
-                conversationMessagesInternal.addAll(historyState.conversationMessages)
+                conversationMessagesInternal.addAll(
+                    historyState.conversationMessages.filter { message ->
+                        message.role != ChatRole.System && !message.excludeFromConversation
+                    }
+                )
                 publishMessagesImmediately()
             }
         }
@@ -341,9 +384,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             id = assistantId,
             role = ChatRole.Assistant,
             content = content,
-            assistantParts = assistantParts.toList()
+            assistantParts = assistantParts.toList(),
+            excludeFromConversation = true
         )
         scheduleStreamingPublish()
+    }
+
+    private fun handleStoppedGeneration(assistantIndex: Int, assistantId: String) {
+        val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
+        val currentContent = currentMessage?.content.orEmpty()
+        val currentParts = currentMessage?.assistantParts ?: emptyList()
+        if (assistantIndex !in uiMessagesInternal.indices) {
+            rebuildConversationFromUiMessages()
+            persistConversationAsync()
+            return
+        }
+
+        uiMessagesInternal[assistantIndex] = ChatMessage(
+            id = assistantId,
+            role = ChatRole.Assistant,
+            content = if (currentContent.isBlank() && currentParts.isEmpty()) {
+                appContext.getString(R.string.status_generation_stopped)
+            } else {
+                currentContent
+            },
+            assistantParts = currentParts,
+            excludeFromConversation = true
+        )
+        rebuildConversationFromUiMessages()
+        publishMessagesImmediately()
+        persistConversationAsync()
     }
 
     private fun appendAssistantThinking(parts: MutableList<AssistantPart>, delta: String) {
@@ -394,7 +464,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun rebuildConversationFromUiMessages() {
         conversationMessagesInternal.clear()
-        conversationMessagesInternal.addAll(uiMessagesInternal.filter { it.role != ChatRole.Tool })
+        conversationMessagesInternal.addAll(
+            uiMessagesInternal.filter { message ->
+                message.role != ChatRole.Tool &&
+                    message.role != ChatRole.System &&
+                    !message.excludeFromConversation
+            }
+        )
     }
 
     private fun persistConversationAsync() {

@@ -66,9 +66,20 @@ class ChatFragment : Fragment() {
         observeViewModel()
 
         binding.recyclerMessages.clipToPadding = false
+
+        val topOffset = (56 + 16).dpInt
+        val cardMarginBottom = 16.dpInt
+        val bottomOffset = cardMarginBottom + (8).dpInt
+
         var systemBottomInset = 0
         var imeBottomInset = 0
         var imeAnimationRunning = false
+
+        fun updateContentPadding(top: Int = binding.recyclerMessages.paddingTop, bottom: Int) {
+            binding.recyclerMessages.updatePadding(top = top, bottom = bottom)
+            binding.emptyPlaceholder.root.updatePadding(top = top, bottom = bottom)
+        }
+
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -77,31 +88,32 @@ class ChatFragment : Fragment() {
             imeBottomInset = ime.bottom
 
             if (!imeAnimationRunning) {
-                binding.recyclerMessages.updatePadding(
-                    top = systemBars.top + (56 + 16).dpInt,
-                    bottom = systemBottomInset + binding.cardInput.height + (16 + 8).dpInt
+                val currentBottom = max(systemBottomInset, imeBottomInset)
+
+                updateContentPadding(
+                    top = systemBars.top + topOffset,
+                    bottom = currentBottom + binding.cardInput.height + bottomOffset
                 )
 
                 binding.cardInput.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                    bottomMargin = systemBottomInset + 16.dpInt
+                    bottomMargin = currentBottom + cardMarginBottom
                 }
             }
             insets
         }
 
-        binding.cardInput.addOnLayoutChangeListener { view, _, top, _, bottom, _, oldTop, _, oldBottom ->
+        binding.cardInput.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
             val newHeight = bottom - top
-            val oldHeight = oldBottom - oldTop
-
-            if (newHeight != oldHeight) {
-                binding.recyclerMessages.updatePadding(
-                    bottom = max(systemBottomInset, imeBottomInset) + newHeight + (16 + 8).dpInt
+            if (newHeight != (oldBottom - oldTop)) {
+                updateContentPadding(
+                    bottom = max(systemBottomInset, imeBottomInset) + newHeight + bottomOffset
                 )
             }
         }
 
         val animationCallback = object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
             private var previousBottom = 0
+
             override fun onPrepare(animation: WindowInsetsAnimationCompat) {
                 super.onPrepare(animation)
                 imeAnimationRunning = true
@@ -119,24 +131,23 @@ class ChatFragment : Fragment() {
             ): WindowInsetsCompat {
                 val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
                 val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-
                 val currentBottom = max(systemBottom, imeBottom)
+
                 // 核心1：计算输入法这一帧移动了多少像素
                 val delta = currentBottom - previousBottom
                 previousBottom = currentBottom
 
                 binding.cardInput.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                    bottomMargin = currentBottom + 16.dpInt
+                    bottomMargin = currentBottom + cardMarginBottom
                 }
 
-                binding.recyclerMessages.updatePadding(
-                    bottom = currentBottom + binding.cardInput.height + (16 + 8).dpInt
+                updateContentPadding(
+                    bottom = currentBottom + binding.cardInput.height + bottomOffset
                 )
 
                 // 核心2：让列表内容严格跟随输入法的位移量进行像素级滚动
-                // delta 为正（输入法弹出），列表向下滚动（内容视觉上移）
-                // delta 为负（输入法收起），列表向上滚动（内容视觉下移）
                 binding.recyclerMessages.scrollBy(0, delta)
+
                 return insets
             }
         }
@@ -249,8 +260,14 @@ class ChatFragment : Fragment() {
             }
         }
         binding.btnSend.setOnClickListener {
-            viewModel.sendMessage()
+            if (latestIsSending) {
+                viewModel.stopGenerating()
+            } else {
+                followOutput = true
+                viewModel.sendMessage()
+            }
         }
+        renderSendButton()
     }
 
     private fun observeViewModel() {
@@ -268,8 +285,7 @@ class ChatFragment : Fragment() {
         viewModel.isSending.observe(viewLifecycleOwner) { sending ->
             latestIsSending = sending
             renderMessages()
-            binding.btnSend.isEnabled = !sending && binding.editMessage.text?.isNotBlank() == true
-            binding.editMessage.isEnabled = !sending
+            renderSendButton()
         }
 
         viewModel.draftMessage.observe(viewLifecycleOwner) { draft ->
@@ -280,8 +296,27 @@ class ChatFragment : Fragment() {
                 binding.editMessage.setSelection(draft.length)
                 updatingDraft = false
             }
-            binding.btnSend.isEnabled = !latestIsSending && draft.isNotBlank()
+            renderSendButton()
         }
+    }
+
+    private fun renderSendButton() {
+        val sending = latestIsSending
+        binding.btnSend.isEnabled = sending || binding.editMessage.text?.isNotBlank() == true
+        binding.btnSend.contentDescription = getString(
+            if (sending) {
+                R.string.action_stop
+            } else {
+                R.string.action_send
+            }
+        )
+        binding.btnSend.setIconResource(
+            if (sending) {
+                R.drawable.ic_stop
+            } else {
+                R.drawable.ic_send
+            }
+        )
     }
 
     private fun renderMessages() {
