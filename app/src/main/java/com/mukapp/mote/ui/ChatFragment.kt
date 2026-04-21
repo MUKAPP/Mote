@@ -27,6 +27,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
+import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.databinding.FragmentChatBinding
@@ -333,12 +334,21 @@ class ChatFragment : Fragment() {
     }
 
     private fun copyMessage(message: ChatMessage) {
+        val copyText = message.assistantParts.asSequence()
+            .mapNotNull { part ->
+                when (part) {
+                    is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
+                    else -> null
+                }
+            }
+            .joinToString(separator = "\n\n")
+            .ifBlank { message.content }
         val clipboard =
             requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(
             ClipData.newPlainText(
                 getString(R.string.app_name),
-                message.content
+                copyText
             )
         )
         Toast.makeText(requireContext(), getString(R.string.action_copy), Toast.LENGTH_SHORT).show()

@@ -1,13 +1,15 @@
 package com.mukapp.mote.data
 
 import android.content.Context
+import com.mukapp.mote.data.model.AssistantMarkdownPart
+import com.mukapp.mote.data.model.AssistantPart
+import com.mukapp.mote.data.model.AssistantThinkingPart
+import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
-import com.mukapp.mote.data.model.IntermediateStep
 import com.mukapp.mote.data.model.SavedConversationState
-import com.mukapp.mote.data.model.ToolResultInfo
 import com.mukapp.mote.util.toChatRoleOrNull
 import org.json.JSONArray
 import org.json.JSONObject
@@ -110,9 +112,6 @@ object ChatHistoryStore {
                         put("id", message.id)
                         put("role", message.role.apiValue)
                         put("content", message.content)
-                        if (message.thinkingContent.isNotBlank()) {
-                            put("thinkingContent", message.thinkingContent)
-                        }
                         message.toolCallId?.let { put("toolCallId", it) }
                         message.toolName?.let { put("toolName", it) }
                         message.toolArguments?.let { put("toolArguments", it) }
@@ -132,8 +131,8 @@ object ChatHistoryStore {
                                 }
                             )
                         }
-                        if (message.intermediateSteps.isNotEmpty()) {
-                            put("intermediateSteps", serializeIntermediateSteps(message.intermediateSteps))
+                        if (message.assistantParts.isNotEmpty()) {
+                            put("assistantParts", serializeAssistantParts(message.assistantParts))
                         }
                     }
                 )
@@ -141,33 +140,29 @@ object ChatHistoryStore {
         }
     }
 
-    private fun serializeIntermediateSteps(steps: List<IntermediateStep>): JSONArray {
+    private fun serializeAssistantParts(parts: List<AssistantPart>): JSONArray {
         return JSONArray().apply {
-            steps.forEach { step ->
+            parts.forEach { part ->
                 put(
                     JSONObject().apply {
-                        if (step.thinkingContent.isNotBlank()) {
-                            put("thinkingContent", step.thinkingContent)
-                        }
-                        if (step.content.isNotBlank()) {
-                            put("content", step.content)
-                        }
-                        if (step.toolResults.isNotEmpty()) {
-                            put(
-                                "toolResults",
-                                JSONArray().apply {
-                                    step.toolResults.forEach { result ->
-                                        put(
-                                            JSONObject().apply {
-                                                put("toolCallId", result.toolCallId)
-                                                put("toolName", result.toolName)
-                                                put("toolArguments", result.toolArguments)
-                                                put("result", result.result)
-                                            }
-                                        )
-                                    }
-                                }
-                            )
+                        put("id", part.id)
+                        when (part) {
+                            is AssistantMarkdownPart -> {
+                                put("type", "markdown")
+                                put("text", part.text)
+                            }
+
+                            is AssistantThinkingPart -> {
+                                put("type", "thinking")
+                                put("text", part.text)
+                            }
+
+                            is AssistantToolPart -> {
+                                put("type", "tool")
+                                put("toolName", part.toolName)
+                                put("toolArguments", part.toolArguments)
+                                put("result", part.result)
+                            }
                         }
                     }
                 )
@@ -189,53 +184,50 @@ object ChatHistoryStore {
                         id = item.optString("id", UUID.randomUUID().toString()),
                         role = role,
                         content = item.optString("content"),
-                        thinkingContent = item.optString("thinkingContent"),
                         toolCallId = item.optString("toolCallId").takeIf { it.isNotBlank() },
                         toolName = item.optString("toolName").takeIf { it.isNotBlank() },
                         toolArguments = item.optString("toolArguments").takeIf { it.isNotBlank() },
                         toolCalls = deserializeToolCalls(item.optJSONArray("toolCalls")),
-                        intermediateSteps = deserializeIntermediateSteps(item.optJSONArray("intermediateSteps"))
+                        assistantParts = deserializeAssistantParts(item.optJSONArray("assistantParts"))
                     )
                 )
             }
         }
     }
 
-    private fun deserializeIntermediateSteps(stepsArray: JSONArray?): List<IntermediateStep> {
-        if (stepsArray == null) {
+    private fun deserializeAssistantParts(partsArray: JSONArray?): List<AssistantPart> {
+        if (partsArray == null) {
             return emptyList()
         }
 
         return buildList {
-            for (index in 0 until stepsArray.length()) {
-                val item = stepsArray.optJSONObject(index) ?: continue
-                add(
-                    IntermediateStep(
-                        thinkingContent = item.optString("thinkingContent"),
-                        content = item.optString("content"),
-                        toolResults = deserializeToolResultInfos(item.optJSONArray("toolResults"))
+            for (index in 0 until partsArray.length()) {
+                val item = partsArray.optJSONObject(index) ?: continue
+                val id = item.optString("id", UUID.randomUUID().toString())
+                when (item.optString("type")) {
+                    "markdown" -> add(
+                        AssistantMarkdownPart(
+                            id = id,
+                            text = item.optString("text")
+                        )
                     )
-                )
-            }
-        }
-    }
 
-    private fun deserializeToolResultInfos(resultsArray: JSONArray?): List<ToolResultInfo> {
-        if (resultsArray == null) {
-            return emptyList()
-        }
-
-        return buildList {
-            for (index in 0 until resultsArray.length()) {
-                val item = resultsArray.optJSONObject(index) ?: continue
-                add(
-                    ToolResultInfo(
-                        toolCallId = item.optString("toolCallId"),
-                        toolName = item.optString("toolName"),
-                        toolArguments = item.optString("toolArguments"),
-                        result = item.optString("result")
+                    "thinking" -> add(
+                        AssistantThinkingPart(
+                            id = id,
+                            text = item.optString("text")
+                        )
                     )
-                )
+
+                    "tool" -> add(
+                        AssistantToolPart(
+                            id = id,
+                            toolName = item.optString("toolName"),
+                            toolArguments = item.optString("toolArguments"),
+                            result = item.optString("result")
+                        )
+                    )
+                }
             }
         }
     }

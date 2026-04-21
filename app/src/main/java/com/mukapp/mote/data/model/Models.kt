@@ -13,26 +13,33 @@ data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: ChatRole,
     val content: String,
-    val thinkingContent: String = "",
     val toolCallId: String? = null,
     val toolName: String? = null,
     val toolArguments: String? = null,
     val toolCalls: List<AiToolCall> = emptyList(),
-    val intermediateSteps: List<IntermediateStep> = emptyList()
+    val assistantParts: List<AssistantPart> = emptyList()
 )
 
-data class IntermediateStep(
-    val thinkingContent: String = "",
-    val content: String = "",
-    val toolResults: List<ToolResultInfo> = emptyList()
-)
+sealed interface AssistantPart {
+    val id: String
+}
 
-data class ToolResultInfo(
-    val toolCallId: String = "",
+data class AssistantMarkdownPart(
+    override val id: String = UUID.randomUUID().toString(),
+    val text: String = ""
+) : AssistantPart
+
+data class AssistantThinkingPart(
+    override val id: String = UUID.randomUUID().toString(),
+    val text: String = ""
+) : AssistantPart
+
+data class AssistantToolPart(
+    override val id: String = UUID.randomUUID().toString(),
     val toolName: String = "",
     val toolArguments: String = "",
     val result: String = ""
-)
+) : AssistantPart
 
 data class ApiSettings(
     val baseUrl: String = "",

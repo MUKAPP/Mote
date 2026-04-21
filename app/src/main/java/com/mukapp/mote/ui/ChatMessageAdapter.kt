@@ -1,22 +1,17 @@
 package com.mukapp.mote.ui
 
-import android.widget.TextView
-import android.util.TypedValue
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import com.mukapp.mote.R
+import com.mukapp.mote.data.model.AssistantPart
+import com.mukapp.mote.data.model.AssistantThinkingPart
+import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
-import com.mukapp.mote.data.model.IntermediateStep
-import com.mukapp.mote.data.model.ToolResultInfo
-import com.mukapp.mote.databinding.IntermediateStepsBlockBinding
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
-import com.mukapp.mote.databinding.ItemToolResultBinding
-import com.mukapp.mote.R
-import org.json.JSONObject
 
 class ChatMessageAdapter(
     private val onCopyMessage: (ChatMessage) -> Unit,
@@ -25,12 +20,12 @@ class ChatMessageAdapter(
     private val onRetryMessage: (Int) -> Unit
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     private val messages = mutableListOf<ChatMessage>()
-    private val expandedStepMessageIds = mutableSetOf<String>()
-    private val expandedToolCallIds = mutableSetOf<String>()
+    private val expandedThinkingPartIds = mutableSetOf<String>()
+    private val expandedToolPartIds = mutableSetOf<String>()
+    private val activeThinkingPartIdsByMessageId = mutableMapOf<String, String>()
 
     private var isSending: Boolean = false
     private var streamingMessageId: String? = null
-    private var maxStepsHeightPx: Int = 0
 
     init {
         setHasStableIds(true)
@@ -49,14 +44,6 @@ class ChatMessageAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-        if (maxStepsHeightPx == 0) {
-            maxStepsHeightPx = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP,
-                320f,
-                parent.resources.displayMetrics
-            ).toInt()
-        }
-
         val inflater = LayoutInflater.from(parent.context)
         return if (viewType == ViewTypeUser) {
             UserViewHolder(ItemChatMessageUserBinding.inflate(inflater, parent, false))
@@ -67,20 +54,13 @@ class ChatMessageAdapter(
 
     override fun getItemCount(): Int = messages.size
 
-    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
-        super.onViewRecycled(holder)
-        if (holder is AssistantViewHolder) {
-            holder.clear()
-        }
-    }
-
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
         if (payloads.isEmpty()) {
             super.onBindViewHolder(holder, position, payloads)
             return
         }
         when (holder) {
-            is AssistantViewHolder -> holder.bindStreamingUpdate(messages[position], position)
+            is AssistantViewHolder -> holder.bind(messages[position], position)
         }
     }
 
@@ -95,6 +75,18 @@ class ChatMessageAdapter(
         val oldMessages = messages.toList()
         val oldStreamingMessageId = streamingMessageId
         val filteredMessages = newMessages.filter { it.role != ChatRole.Tool }
+        val visibleMessageIds = filteredMessages.mapTo(mutableSetOf()) { it.id }
+        val visibleThinkingPartIds = filteredMessages.asSequence()
+            .flatMap { message -> message.assistantParts.asSequence() }
+            .mapNotNull { part -> (part as? AssistantThinkingPart)?.id }
+            .toMutableSet()
+        val visibleToolPartIds = filteredMessages.asSequence()
+            .flatMap { message -> message.assistantParts.asSequence() }
+            .mapNotNull { part -> (part as? AssistantToolPart)?.id }
+            .toMutableSet()
+        activeThinkingPartIdsByMessageId.keys.retainAll(visibleMessageIds)
+        expandedThinkingPartIds.retainAll(visibleThinkingPartIds)
+        expandedToolPartIds.retainAll(visibleToolPartIds)
 
         isSending = sending
         streamingMessageId = if (sending) {
@@ -166,28 +158,29 @@ class ChatMessageAdapter(
     private inner class AssistantViewHolder(
         private val binding: ItemChatMessageBinding
     ) : RecyclerView.ViewHolder(binding.root) {
-        private var lastStepSignature: Int = 0
-        private var lastStepCount: Int = 0
-        private var streamingThinkingTextView: TextView? = null
-
         fun clear() {
-            streamingThinkingTextView = null
             binding.markdownContent.clearMarkdown()
         }
 
         fun bind(message: ChatMessage, position: Int) {
-            streamingThinkingTextView = null
-            val displaySteps = IntermediateStepsHelper.displayStepsFor(message)
             val isStreamingMessage = isSending && message.id == streamingMessageId
-            val hasSteps = displaySteps.isNotEmpty()
             val hasContent = message.content.isNotBlank()
+            val hasParts = message.assistantParts.isNotEmpty()
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
+            syncThinkingPartExpansion(message, isStreamingMessage)
 
             binding.textAiLabel.text = itemView.context.getString(R.string.label_ai)
-            binding.textStatus.isVisible = !hasContent && !hasSteps
+            binding.textStatus.isVisible = !hasContent && !hasParts
             binding.textStatus.text = itemView.context.getString(R.string.status_generating)
-            binding.markdownContent.isVisible = hasContent
-            if (hasContent) {
+            binding.markdownContent.isVisible = hasParts || hasContent
+            if (hasParts) {
+                binding.markdownContent.setParts(
+                    parts = message.assistantParts,
+                    isStreaming = isStreamingMessage,
+                    expandedThinkingPartIds = expandedThinkingPartIds,
+                    expandedToolPartIds = expandedToolPartIds
+                )
+            } else if (hasContent) {
                 binding.markdownContent.setMarkdown(message.content, isStreamingMessage)
             } else {
                 binding.markdownContent.clearMarkdown()
@@ -200,68 +193,29 @@ class ChatMessageAdapter(
             binding.btnEdit.setOnClickListener { onEditMessage(position) }
             binding.btnDelete.setOnClickListener { onDeleteMessage(position) }
             binding.btnRetry.setOnClickListener { onRetryMessage(position) }
-
-            binding.stepsBlock.root.isVisible = hasSteps
-            if (hasSteps) {
-                bindIntermediateSteps(binding.stepsBlock, message, displaySteps, isStreamingMessage)
-            } else {
-                binding.stepsBlock.scrollSteps.scrollTo(0, 0)
-            }
-
-            lastStepSignature = computeStepSignature(displaySteps)
-            lastStepCount = displaySteps.size
         }
 
-        fun bindStreamingUpdate(message: ChatMessage, position: Int) {
-            val displaySteps = IntermediateStepsHelper.displayStepsFor(message)
-            val isStreamingMessage = isSending && message.id == streamingMessageId
-            val hasSteps = displaySteps.isNotEmpty()
-            val hasContent = message.content.isNotBlank()
-            val currentStepSignature = computeStepSignature(displaySteps)
-            val currentStepCount = displaySteps.size
-
-            binding.textStatus.isVisible = !hasContent && !hasSteps
-            binding.markdownContent.isVisible = hasContent
-            if (hasContent) {
-                binding.markdownContent.setMarkdown(message.content, true)
+        private fun syncThinkingPartExpansion(message: ChatMessage, isStreamingMessage: Boolean) {
+            val previousActiveThinkingId = activeThinkingPartIdsByMessageId[message.id]
+            val currentActiveThinkingId = findActiveThinkingPartId(message.assistantParts, isStreamingMessage)
+            if (previousActiveThinkingId != null && previousActiveThinkingId != currentActiveThinkingId) {
+                expandedThinkingPartIds.remove(previousActiveThinkingId)
+            }
+            if (currentActiveThinkingId != null) {
+                expandedThinkingPartIds.add(currentActiveThinkingId)
+                activeThinkingPartIdsByMessageId[message.id] = currentActiveThinkingId
             } else {
-                binding.markdownContent.clearMarkdown()
+                activeThinkingPartIdsByMessageId.remove(message.id)
             }
+        }
 
-            if (hasContent && binding.stepsBlock.scrollSteps.isVisible
-                && !expandedStepMessageIds.contains(message.id)
-            ) {
-                updateStepsScrollHeight(binding.stepsBlock, expanded = false, scrollToBottom = false)
-                binding.stepsBlock.btnToggleSteps.setImageResource(R.drawable.ic_expand_more)
-                binding.stepsBlock.textStepsTitle.text = itemView.context.getString(R.string.label_thinking)
+        private fun findActiveThinkingPartId(parts: List<AssistantPart>, isStreamingMessage: Boolean): String? {
+            if (!isStreamingMessage) {
+                return null
             }
-
-            if (currentStepSignature == lastStepSignature) {
-                return
-            }
-
-            if (currentStepCount == lastStepCount && currentStepCount > 0) {
-                val lastStep = displaySteps.lastOrNull()
-                if (lastStep != null && lastStep.thinkingContent.isNotBlank() && streamingThinkingTextView != null) {
-                    streamingThinkingTextView?.text = lastStep.thinkingContent
-                    lastStepSignature = currentStepSignature
-                    updateStepsScrollHeight(binding.stepsBlock, expanded = true, scrollToBottom = true)
-                    return
-                }
-            }
-
-            lastStepSignature = currentStepSignature
-            lastStepCount = currentStepCount
-            streamingThinkingTextView = null
-            binding.stepsBlock.root.isVisible = hasSteps
-            if (hasSteps) {
-                bindIntermediateSteps(
-                    binding.stepsBlock,
-                    message,
-                    displaySteps,
-                    isStreamingMessage
-                ) { textView -> streamingThinkingTextView = textView }
-            }
+            return (parts.lastOrNull() as? AssistantThinkingPart)
+                ?.takeIf { it.text.isNotBlank() }
+                ?.id
         }
     }
 
@@ -277,198 +231,9 @@ class ChatMessageAdapter(
         }
     }
 
-    private fun bindIntermediateSteps(
-        binding: IntermediateStepsBlockBinding,
-        message: ChatMessage,
-        steps: List<IntermediateStep>,
-        isStreaming: Boolean,
-        onLastThinkingViewCreated: ((TextView) -> Unit)? = null
-    ) {
-        val expanded = if (isStreaming) {
-            message.content.isBlank()
-        } else {
-            expandedStepMessageIds.contains(message.id)
-        }
-
-        binding.textStepsTitle.text = binding.root.context.getString(
-            if (isStreaming) R.string.label_processing else R.string.label_thinking
-        )
-        binding.btnToggleSteps.setImageResource(
-            if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
-        )
-        val toggle = View.OnClickListener {
-            val nextExpanded = !binding.scrollSteps.isVisible
-            binding.btnToggleSteps.setImageResource(
-                if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
-            )
-            if (nextExpanded) {
-                expandedStepMessageIds.add(message.id)
-            } else {
-                expandedStepMessageIds.remove(message.id)
-            }
-            updateStepsScrollHeight(
-                binding = binding,
-                expanded = nextExpanded,
-                scrollToBottom = nextExpanded && isStreaming
-            )
-        }
-        binding.layoutHeader.setOnClickListener(toggle)
-        binding.containerSteps.removeAllViews()
-
-        val inflater = LayoutInflater.from(binding.root.context)
-        steps.forEachIndexed { stepIndex, step ->
-            if (step.thinkingContent.isNotBlank()) {
-                val view = createStepText(inflater, binding.containerSteps, step.thinkingContent, true)
-                binding.containerSteps.addView(view)
-                if (isStreaming && stepIndex == steps.lastIndex) {
-                    onLastThinkingViewCreated?.invoke(view as TextView)
-                }
-            }
-            if (step.content.isNotBlank()) {
-                binding.containerSteps.addView(createStepText(inflater, binding.containerSteps, step.content, false))
-            }
-            step.toolResults.forEach { toolResult ->
-                binding.containerSteps.addView(createToolResultView(inflater, binding.containerSteps, toolResult))
-            }
-        }
-        updateStepsScrollHeight(
-            binding = binding,
-            expanded = expanded,
-            scrollToBottom = expanded && isStreaming
-        )
-    }
-
-    private fun updateStepsScrollHeight(
-        binding: IntermediateStepsBlockBinding,
-        expanded: Boolean,
-        scrollToBottom: Boolean
-    ) {
-        binding.scrollSteps.isVisible = expanded
-        val layoutParams = binding.scrollSteps.layoutParams
-        if (!expanded) {
-            layoutParams.height = ViewGroup.LayoutParams.WRAP_CONTENT
-            binding.scrollSteps.layoutParams = layoutParams
-            binding.scrollSteps.scrollTo(0, 0)
-            return
-        }
-
-        // 当从 GONE 切换到 VISIBLE 时，带有 textIsSelectable 的 TextView
-        // 内部的 Editor Layout 可能仍然保持着在 GONE 状态下初始化的 0 宽度，
-        // 导致文本不可见但占据空间。强制所有子视图重新请求布局来修复此问题。
-        for (i in 0 until binding.containerSteps.childCount) {
-            binding.containerSteps.getChildAt(i).requestLayout()
-        }
-
-        binding.scrollSteps.post {
-            val availableWidth = when {
-                binding.scrollSteps.width > 0 -> binding.scrollSteps.width
-                binding.root.width > 0 -> binding.root.width - binding.root.paddingLeft - binding.root.paddingRight
-                else -> binding.containerSteps.width
-            }
-            val widthSpec = View.MeasureSpec.makeMeasureSpec(
-                availableWidth.coerceAtLeast(1),
-                View.MeasureSpec.EXACTLY
-            )
-            val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-            binding.containerSteps.measure(widthSpec, heightSpec)
-
-            val desiredHeight = binding.containerSteps.measuredHeight
-                .coerceAtLeast(1)
-                .coerceAtMost(maxStepsHeightPx)
-            val currentLayoutParams = binding.scrollSteps.layoutParams
-            if (currentLayoutParams.height != desiredHeight) {
-                currentLayoutParams.height = desiredHeight
-                binding.scrollSteps.layoutParams = currentLayoutParams
-            }
-
-            if (scrollToBottom) {
-                binding.scrollSteps.post {
-                    binding.scrollSteps.fullScroll(View.FOCUS_DOWN)
-                }
-            }
-        }
-    }
-
-    private fun createStepText(
-        inflater: LayoutInflater,
-        parent: ViewGroup,
-        text: String,
-        useMonospace: Boolean
-    ): View {
-        val view = inflater.inflate(R.layout.item_intermediate_text, parent, false)
-        val binding = com.mukapp.mote.databinding.ItemIntermediateTextBinding.bind(view)
-        binding.textStep.text = text
-        binding.textStep.typeface = if (useMonospace) android.graphics.Typeface.MONOSPACE else android.graphics.Typeface.DEFAULT
-        return binding.root
-    }
-
-    private fun createToolResultView(
-        inflater: LayoutInflater,
-        parent: ViewGroup,
-        toolResult: ToolResultInfo
-    ): View {
-        val binding = ItemToolResultBinding.inflate(inflater, parent, false)
-        val toolStateKey = toolResult.toolCallId.ifBlank {
-            toolResult.toolName + toolResult.toolArguments.hashCode().toString()
-        }
-        val expanded = expandedToolCallIds.contains(toolStateKey)
-
-        binding.textSummary.text = IntermediateStepsHelper.parseToolSummary(toolResult.toolName, toolResult.toolArguments)
-
-        // 延迟填充详情内容：只在展开时才设置文本，避免创建时的性能开销
-        var detailPopulated = false
-        fun populateDetail() {
-            if (detailPopulated) return
-            detailPopulated = true
-            binding.textArguments.text = if (toolResult.toolArguments.isBlank()) {
-                ""
-            } else {
-                runCatching { JSONObject(toolResult.toolArguments).toString(2) }.getOrDefault(toolResult.toolArguments)
-            }
-            binding.textResult.text = toolResult.result
-            binding.groupArguments.isVisible = binding.textArguments.text.isNotBlank()
-        }
-
-        if (expanded) {
-            populateDetail()
-        }
-        binding.containerDetail.isVisible = expanded
-        binding.btnToggleDetail.setImageResource(
-            if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
-        )
-
-        val toggle = View.OnClickListener {
-            val nextExpanded = !binding.containerDetail.isVisible
-            if (nextExpanded) {
-                populateDetail()
-            }
-            binding.containerDetail.isVisible = nextExpanded
-            binding.btnToggleDetail.setImageResource(
-                if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
-            )
-            if (nextExpanded) {
-                expandedToolCallIds.add(toolStateKey)
-            } else {
-                expandedToolCallIds.remove(toolStateKey)
-            }
-        }
-        binding.layoutHeader.setOnClickListener(toggle)
-        return binding.root
-    }
-
     private companion object {
         const val ViewTypeAssistant = 0
         const val ViewTypeUser = 1
         const val STREAMING_PAYLOAD = "streaming"
-
-        fun computeStepSignature(steps: List<IntermediateStep>): Int {
-            var result = steps.size
-            steps.forEach { step ->
-                result = 31 * result + step.thinkingContent.length
-                result = 31 * result + step.content.length
-                result = 31 * result + step.toolResults.size
-            }
-            return result
-        }
     }
 }

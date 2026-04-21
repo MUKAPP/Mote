@@ -27,10 +27,6 @@
                 android:textAppearance="?attr/textAppearanceLabelMedium"
                 android:textColor="?attr/colorPrimary" />
 
-            <include
-                android:id="@+id/steps_block"
-                layout="@layout/intermediate_steps_block" />
-
             <com.mukapp.mote.ui.markdown.MarkdownView
                 android:id="@+id/markdown_content"
                 android:layout_width="match_parent"

@@ -1,20 +1,8 @@
 package com.mukapp.mote.ui
 
-import com.mukapp.mote.data.model.ChatMessage
-import com.mukapp.mote.data.model.IntermediateStep
 import org.json.JSONObject
 
 object IntermediateStepsHelper {
-    fun displayStepsFor(message: ChatMessage): List<IntermediateStep> {
-        return if (message.intermediateSteps.isEmpty() && message.thinkingContent.isNotBlank()) {
-            listOf(IntermediateStep(thinkingContent = message.thinkingContent))
-        } else {
-            message.intermediateSteps.filter { step ->
-                step.thinkingContent.isNotBlank() || step.content.isNotBlank() || step.toolResults.isNotEmpty()
-            }
-        }
-    }
-
     fun parseToolSummary(toolName: String, arguments: String): String {
         if (arguments.isBlank()) {
             return toolName

@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-Mote 是一个运行在 Android 设备上的 AI Agent 聊天客户端。它通过 OpenAI 兼容的 Chat Completions API 与大语言模型交互，支持流式响应、工具调用（文件读取、Shell 命令执行等）、思考过程展示和 Markdown 渲染。
+Mote 是一个运行在 Android 设备上的 AI Agent 聊天客户端。它通过 OpenAI 兼容的 Chat Completions API 与大语言模型交互，支持流式响应、工具调用（文件读取、Shell 命令执行等）、思考过程与工具结果穿插展示，以及 Markdown 渲染。
 
 ## 技术栈
 
@@ -41,8 +41,8 @@ app/src/main/java/com/mukapp/mote/
 ├── ui/
 │   ├── ChatFragment.kt          # 聊天界面 Fragment
 │   ├── ChatViewModel.kt         # 聊天业务逻辑（消息收发、工具调用循环、历史管理、编辑/删除/重试）
-│   ├── ChatMessageAdapter.kt    # 聊天消息列表适配器（流式更新、中间步骤渲染、工具结果折叠）
-│   ├── IntermediateStepsHelper.kt # 思考过程和工具调用的展示逻辑
+│   ├── ChatMessageAdapter.kt    # 聊天消息列表适配器（流式更新、assistant 片段渲染、工具结果折叠）
+│   ├── IntermediateStepsHelper.kt # 工具调用摘要文本生成
 │   ├── InnerNestedScrollView.kt # 自定义 NestedScrollView，解决嵌套滚动触摸冲突
 │   └── markdown/
 │       ├── MarkdownView.kt           # Markdown 顶层视图容器，将 AST 映射为原生 View 树
@@ -83,8 +83,8 @@ app/src/main/java/com/mukapp/mote/
 
 ### 双消息列表
 
-- `uiMessagesInternal`：展示给用户的消息（过滤掉 Tool 角色消息，含中间步骤）
-- `conversationMessagesInternal`：发送给 API 的消息（过滤掉 Tool 角色消息，不含中间步骤）
+- `uiMessagesInternal`：展示给用户的消息（过滤掉 Tool 角色消息，assistant 消息包含有序 `assistantParts`）
+- `conversationMessagesInternal`：发送给 API 的消息（过滤掉 Tool 角色消息，仅保留实际对话内容）
 
 ### ChatMessageAdapter 差异化更新策略
 
@@ -122,13 +122,15 @@ Mote 向模型注册了以下工具，定义在 `LocalAiTools.kt`：
 
 ### 渲染架构
 
-`MarkdownView`（继承 `LinearLayout`）作为顶层容器，将 Markdown 文本通过 `BlockParser` 解析为块级 AST 后，为每种块级元素创建对应的原生 `View`：
+`MarkdownView`（继承 `LinearLayout`）作为顶层容器，既可以渲染纯 Markdown 文本，也可以按顺序渲染 assistant 片段列表。Markdown 片段会通过 `BlockParser` 解析为块级 AST；思考片段和工具结果片段会直接生成对应的原生 `View`：
 
 | 块级元素 | 视图组件 | 说明 |
 |---------|---------|------|
 | 代码块 | `MarkdownCodeBlockView` | MaterialCardView 卡片样式，含语言标签、复制按钮、可横向滚动代码区 |
 | 表格 | `MarkdownTableView` | 自定义 View，Canvas 绘制带网格线表格，外层包裹 HorizontalScrollView |
 | 标题/段落/列表/引用/分割线 | `TextView` | 通过 `SpannedBuilder` 构建 Spanned 文本设置到 TextView |
+| 思考片段 | `MaterialCardView + TextView` | 以内联卡片形式插入消息流，保留先后顺序 |
+| 工具结果片段 | `item_tool_result.xml` | 可展开查看参数与结果，和正文共享同一消息流 |
 
 ### 代码语法高亮
 
@@ -211,6 +213,6 @@ Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规
 - `MANAGE_EXTERNAL_STORAGE` 权限需用户手动授予，相关逻辑在 `Utils.kt` 和 `SettingsActivity.kt`
 - `read_file` 工具额外接受 `read_local_file` 作为别名，用于兼容不同模型的工具调用
 - Markdown 渲染管线位于 `ui/markdown/` 目录，`MarkdownView` 是渲染入口，将 Markdown AST 映射为原生 View 树；`StreamingMarkdownRenderer` 和 `TableSpan` 为旧版实现，已弃用
-- `ChatMessageAdapter` 通过 `MarkdownView.setMarkdown()` 渲染 Markdown 内容，流式消息传入 `isStreaming=true`，静态消息传入 `isStreaming=false`
+- `ChatMessageAdapter` 优先通过 `MarkdownView.setParts()` 渲染 assistant 片段列表；仅在没有片段数据时才回退到 `setMarkdown()`
 - `MarkdownCodeSpanRenderer` 使用 prism4j 进行代码语法高亮，新增语言需在 `MarkdownGrammarLocator` 和 `prism/` 目录中添加对应语法定义
-- `ChatMessageAdapter` 支持工具结果的展开/折叠状态持久化，通过 `expandedToolCallIds` 维护
+- `ChatMessageAdapter` 维护工具结果片段的展开/折叠状态，通过 `expandedToolPartIds` 维护

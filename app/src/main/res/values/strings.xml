@@ -21,7 +21,6 @@
     <string name="hint_model">gpt-4o-mini</string>
     <string name="label_ai">AI</string>
     <string name="status_generating">正在生成...</string>
-    <string name="label_processing">处理中...</string>
     <string name="label_thinking">思考过程</string>
     <string name="label_parameters">参数：</string>
     <string name="label_result">结果：</string>

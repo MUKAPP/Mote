@@ -8,12 +8,14 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.ChatHistoryStore
+import com.mukapp.mote.data.model.AssistantMarkdownPart
+import com.mukapp.mote.data.model.AssistantPart
+import com.mukapp.mote.data.model.AssistantThinkingPart
+import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
-import com.mukapp.mote.data.model.IntermediateStep
 import com.mukapp.mote.data.model.SavedConversationState
-import com.mukapp.mote.data.model.ToolResultInfo
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
 import kotlinx.coroutines.Dispatchers
@@ -111,77 +113,52 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val workingConversation = conversationMessagesInternal.toMutableList().apply {
                     add(0, ChatMessage(role = ChatRole.System, content = SystemPrompt))
                 }
-                val accumulatedIntermediateSteps = mutableListOf<IntermediateStep>()
-                var currentThinkingStep = IntermediateStep()
-                val allRoundsContent = StringBuilder()
+                val assistantParts = mutableListOf<AssistantPart>()
 
                 repeat(50) { roundIndex ->
                     val accumulatedReply = StringBuilder()
+                    val accumulatedThinking = StringBuilder()
                     val response = ChatApiClient.streamChat(
                         settings = settings,
                         messages = workingConversation,
                         onDelta = { delta ->
                             accumulatedReply.append(delta)
-                            val displayContent = if (allRoundsContent.isNotBlank()) {
-                                "${allRoundsContent}\n\n${accumulatedReply}"
-                            } else {
-                                accumulatedReply.toString()
-                            }
+                            appendAssistantMarkdown(assistantParts, delta)
                             updateStreamingAssistantMessage(
                                 assistantIndex = assistantIndex,
                                 assistantId = assistantId,
-                                content = displayContent,
-                                intermediateSteps = if (currentThinkingStep.thinkingContent.isNotBlank()) {
-                                    accumulatedIntermediateSteps + currentThinkingStep
-                                } else {
-                                    accumulatedIntermediateSteps
-                                }
+                                content = buildAssistantContent(assistantParts),
+                                assistantParts = assistantParts
                             )
                         },
                         onThinkingDelta = { thinkingDelta ->
-                            currentThinkingStep = currentThinkingStep.copy(
-                                thinkingContent = currentThinkingStep.thinkingContent + thinkingDelta
-                            )
-                            val displayContent = if (allRoundsContent.isNotBlank()) {
-                                "${allRoundsContent}\n\n${accumulatedReply}"
-                            } else {
-                                accumulatedReply.toString()
-                            }
+                            accumulatedThinking.append(thinkingDelta)
+                            appendAssistantThinking(assistantParts, thinkingDelta)
                             updateStreamingAssistantMessage(
                                 assistantIndex = assistantIndex,
                                 assistantId = assistantId,
-                                content = displayContent,
-                                intermediateSteps = accumulatedIntermediateSteps + currentThinkingStep
+                                content = buildAssistantContent(assistantParts),
+                                assistantParts = assistantParts
                             )
                         }
                     )
 
-                    if (response.toolCalls.isEmpty()) {
-                        val lastRoundReply = response.content.takeIf { it.isNotBlank() }
-                            ?: accumulatedReply.toString().takeIf { it.isNotBlank() }
-                            ?: ""
-                        val combinedReply = if (allRoundsContent.isNotBlank() && lastRoundReply.isNotBlank()) {
-                            "${allRoundsContent}\n\n${lastRoundReply}"
-                        } else if (allRoundsContent.isNotBlank()) {
-                            allRoundsContent.toString()
-                        } else {
-                            lastRoundReply
-                        }
-                        val finalReply = combinedReply.takeIf { it.isNotBlank() }
-                            ?: throw IllegalStateException("接口返回内容为空。")
-                        val finalThinking = response.thinkingContent.takeIf { it.isNotBlank() }
-                            ?: currentThinkingStep.thinkingContent.takeIf { it.isNotBlank() }
+                    if (accumulatedThinking.isEmpty() && response.thinkingContent.isNotBlank()) {
+                        appendAssistantThinking(assistantParts, response.thinkingContent)
+                    }
+                    if (accumulatedReply.isEmpty() && response.content.isNotBlank()) {
+                        appendAssistantMarkdown(assistantParts, response.content)
+                    }
 
-                        val finalSteps = accumulatedIntermediateSteps.toMutableList()
-                        if (finalThinking != null) {
-                            finalSteps += IntermediateStep(thinkingContent = finalThinking)
-                        }
+                    if (response.toolCalls.isEmpty()) {
+                        val finalReply = buildAssistantContent(assistantParts).takeIf { it.isNotBlank() }
+                            ?: throw IllegalStateException("接口返回内容为空。")
 
                         uiMessagesInternal[assistantIndex] = ChatMessage(
                             id = assistantId,
                             role = ChatRole.Assistant,
                             content = finalReply,
-                            intermediateSteps = finalSteps
+                            assistantParts = assistantParts.toList()
                         )
                         workingConversation += ChatMessage(
                             role = ChatRole.Assistant,
@@ -208,30 +185,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     workingConversation.addAll(toolResults)
 
-                    val stepThinking = response.thinkingContent.takeIf { it.isNotBlank() }
-                        ?: currentThinkingStep.thinkingContent.takeIf { it.isNotBlank() }
-                        ?: ""
-                    currentThinkingStep = IntermediateStep()
-                    val stepContent = response.content.takeIf { it.isNotBlank() } ?: ""
-                    if (stepContent.isNotBlank()) {
-                        if (allRoundsContent.isNotBlank()) {
-                            allRoundsContent.append("\n\n")
-                        }
-                        allRoundsContent.append(stepContent)
-                    }
-                    val stepToolResults = toolResults.map { result ->
-                        ToolResultInfo(
-                            toolCallId = result.toolCallId ?: "",
-                            toolName = result.toolName ?: "",
-                            toolArguments = result.toolArguments ?: "",
-                            result = result.content
-                        )
-                    }
-                    accumulatedIntermediateSteps += IntermediateStep(
-                        thinkingContent = stepThinking,
-                        content = stepContent,
-                        toolResults = stepToolResults
-                    )
+                    appendAssistantToolResults(assistantParts, toolResults)
 
                     val waitSeconds = response.toolCalls.maxOfOrNull { toolCall ->
                         if (toolCall.name == LocalAiTools.WaitToolName) {
@@ -249,9 +203,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         content = if (waitSeconds == null && roundIndex == 49) {
                             "工具调用次数过多，已经停止。"
                         } else {
-                            ""
+                            buildAssistantContent(assistantParts)
                         },
-                        intermediateSteps = accumulatedIntermediateSteps.toList()
+                        assistantParts = assistantParts.toList()
                     )
                     publishMessagesImmediately()
 
@@ -268,7 +222,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ?: "请检查 API 设置、网络连接，或确认接口是否兼容 OpenAI Chat Completions。"
                 val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
                 val currentContent = currentMessage?.content.orEmpty()
-                val currentSteps = currentMessage?.intermediateSteps ?: emptyList()
+                val currentParts = currentMessage?.assistantParts ?: emptyList()
                 uiMessagesInternal[assistantIndex] = ChatMessage(
                     id = assistantId,
                     role = ChatRole.Assistant,
@@ -277,7 +231,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         "$currentContent\n\n[处理失败：$message]"
                     },
-                    intermediateSteps = currentSteps
+                    assistantParts = currentParts
                 )
                 publishMessagesImmediately()
             }
@@ -377,7 +331,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         assistantIndex: Int,
         assistantId: String,
         content: String,
-        intermediateSteps: List<IntermediateStep>
+        assistantParts: List<AssistantPart>
     ) = withContext(Dispatchers.Main) {
         if (assistantIndex !in uiMessagesInternal.indices) {
             return@withContext
@@ -387,9 +341,55 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             id = assistantId,
             role = ChatRole.Assistant,
             content = content,
-            intermediateSteps = intermediateSteps
+            assistantParts = assistantParts.toList()
         )
         scheduleStreamingPublish()
+    }
+
+    private fun appendAssistantThinking(parts: MutableList<AssistantPart>, delta: String) {
+        if (delta.isEmpty()) {
+            return
+        }
+        val lastPart = parts.lastOrNull()
+        if (lastPart is AssistantThinkingPart) {
+            parts[parts.lastIndex] = lastPart.copy(text = lastPart.text + delta)
+        } else {
+            parts += AssistantThinkingPart(text = delta)
+        }
+    }
+
+    private fun appendAssistantMarkdown(parts: MutableList<AssistantPart>, delta: String) {
+        if (delta.isEmpty()) {
+            return
+        }
+        val lastPart = parts.lastOrNull()
+        if (lastPart is AssistantMarkdownPart) {
+            parts[parts.lastIndex] = lastPart.copy(text = lastPart.text + delta)
+        } else {
+            parts += AssistantMarkdownPart(text = delta)
+        }
+    }
+
+    private fun appendAssistantToolResults(parts: MutableList<AssistantPart>, toolResults: List<ChatMessage>) {
+        toolResults.forEach { result ->
+            parts += AssistantToolPart(
+                id = result.toolCallId ?: UUID.randomUUID().toString(),
+                toolName = result.toolName.orEmpty(),
+                toolArguments = result.toolArguments.orEmpty(),
+                result = result.content
+            )
+        }
+    }
+
+    private fun buildAssistantContent(parts: List<AssistantPart>): String {
+        return parts.asSequence()
+            .mapNotNull { part ->
+                when (part) {
+                    is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
+                    else -> null
+                }
+            }
+            .joinToString(separator = "\n\n")
     }
 
     private fun rebuildConversationFromUiMessages() {

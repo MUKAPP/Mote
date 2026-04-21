@@ -65,6 +65,13 @@ class SpannedBuilder(private val context: Context) {
         return ssb
     }
 
+    fun buildInlineText(text: String, isStreaming: Boolean = false, linkDefs: Map<String, Pair<String, String>> = emptyMap()): SpannableStringBuilder {
+        val ssb = SpannableStringBuilder()
+        val inlineElements = inlineParser.parse(text, isStreaming, linkDefs)
+        appendInlineElements(ssb, inlineElements)
+        return ssb
+    }
+
     private fun appendBlocks(ssb: SpannableStringBuilder, blocks: List<MdBlock>, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         for ((index, block) in blocks.withIndex()) {
             appendSingleBlock(ssb, block, isStreaming, linkDefs)
