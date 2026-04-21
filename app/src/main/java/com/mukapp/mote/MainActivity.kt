@@ -39,40 +39,40 @@ class MainActivity : AppCompatActivity() {
         setupNavigation()
         setupBackPressHandler()
 
-        if (savedInstanceState == null) {
-            supportFragmentManager.registerFragmentLifecycleCallbacks(object :
-                FragmentManager.FragmentLifecycleCallbacks() {
-                override fun onFragmentViewCreated(
-                    fm: FragmentManager,
-                    f: Fragment,
-                    v: View,
-                    savedInstanceState: Bundle?
-                ) {
-                    if (f is ChatFragment) {
-                        // 此时 Fragment 的视图已经创建，可以安全获取内部的目标容器
-                        val blurTarget = v.findViewById<BlurTarget>(R.id.blur_target)
+        supportFragmentManager.registerFragmentLifecycleCallbacks(object :
+            FragmentManager.FragmentLifecycleCallbacks() {
+            override fun onFragmentViewCreated(
+                fm: FragmentManager,
+                f: Fragment,
+                v: View,
+                savedInstanceState: Bundle?
+            ) {
+                if (f is ChatFragment) {
+                    // 此时 Fragment 的视图已经创建，可以安全获取内部的目标容器
+                    val blurTarget = v.findViewById<BlurTarget>(R.id.blur_target)
 
-                        if (blurTarget != null) {
-                            val realWindowBackground = this@MainActivity.window.decorView.background
-                            val backgroundColorInt =
-                                (realWindowBackground as? android.graphics.drawable.ColorDrawable)?.color
-                                    ?: MaterialColors.getColor(
-                                        binding.root,
-                                        com.google.android.material.R.attr.colorSurface
-                                    )
-                            val overlayColor = ColorUtils.setAlphaComponent(
-                                backgroundColorInt,
-                                (255 * 0.6).toInt()
-                            )
-                            binding.blurViewToolbar.setupWith(blurTarget)
-                                .setFrameClearDrawable(realWindowBackground)
-                                .setBlurRadius(20f)
-                                .setOverlayColor(overlayColor)
-                        }
+                    if (blurTarget != null) {
+                        val realWindowBackground = this@MainActivity.window.decorView.background
+                        val backgroundColorInt =
+                            (realWindowBackground as? android.graphics.drawable.ColorDrawable)?.color
+                                ?: MaterialColors.getColor(
+                                    binding.root,
+                                    com.google.android.material.R.attr.colorSurface
+                                )
+                        val overlayColor = ColorUtils.setAlphaComponent(
+                            backgroundColorInt,
+                            (255 * 0.6).toInt()
+                        )
+                        binding.blurViewToolbar.setupWith(blurTarget)
+                            .setFrameClearDrawable(realWindowBackground)
+                            .setBlurRadius(20f)
+                            .setOverlayColor(overlayColor)
                     }
                 }
-            }, false)
+            }
+        }, false)
 
+        if (savedInstanceState == null) {
             supportFragmentManager.commit {
                 replace(R.id.fragment_container, ChatFragment(), ChatTag)
             }

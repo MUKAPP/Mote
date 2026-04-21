@@ -5,6 +5,35 @@ import android.util.TypedValue
 import androidx.annotation.AnyRes
 import androidx.annotation.ColorInt
 import androidx.core.content.ContextCompat
+import com.mukapp.mote.R
+
+internal data class MarkdownCodeColors(
+    @get:ColorInt val blockBackgroundColor: Int,
+    @get:ColorInt val headerTextColor: Int,
+    @get:ColorInt val codeTextColor: Int,
+    @get:ColorInt val dividerColor: Int,
+    @get:ColorInt val strokeColor: Int,
+    @get:ColorInt val keywordColor: Int,
+    @get:ColorInt val stringColor: Int,
+    @get:ColorInt val commentColor: Int,
+    @get:ColorInt val numberColor: Int,
+    @get:ColorInt val annotationColor: Int
+)
+
+internal fun resolveMarkdownCodeColors(context: Context): MarkdownCodeColors {
+    return MarkdownCodeColors(
+        blockBackgroundColor = ContextCompat.getColor(context, R.color.markdown_code_block_background),
+        headerTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_header_text),
+        codeTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_text),
+        dividerColor = ContextCompat.getColor(context, R.color.markdown_code_block_divider),
+        strokeColor = ContextCompat.getColor(context, R.color.markdown_code_block_stroke),
+        keywordColor = ContextCompat.getColor(context, R.color.markdown_code_keyword),
+        stringColor = ContextCompat.getColor(context, R.color.markdown_code_string),
+        commentColor = ContextCompat.getColor(context, R.color.markdown_code_comment),
+        numberColor = ContextCompat.getColor(context, R.color.markdown_code_number),
+        annotationColor = ContextCompat.getColor(context, R.color.markdown_code_annotation)
+    )
+}
 
 internal fun resolveThemeColor(context: Context, attr: Int, @ColorInt fallback: Int): Int {
     val typedValue = TypedValue()

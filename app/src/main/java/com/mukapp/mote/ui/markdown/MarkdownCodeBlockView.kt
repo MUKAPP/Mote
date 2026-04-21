@@ -25,33 +25,25 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : MaterialCardView(context, attrs, defStyleAttr) {
 
-    private val codeSpanRenderer = MarkdownCodeSpanRenderer(context)
+    private val codeColors = resolveMarkdownCodeColors(context)
+    private val codeSpanRenderer = MarkdownCodeSpanRenderer(context, codeColors)
     private val blockBackgroundColor by lazy {
-        blendWithAlpha(
-            resolveThemeColor(context, com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x55
-        )
+        codeColors.blockBackgroundColor
     }
     private val headerTextColor by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF49454F.toInt())
+        codeColors.headerTextColor
     }
     private val codeTextColor by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
+        codeColors.codeTextColor
     }
     private val dividerColor by lazy {
-        blendWithAlpha(
-            resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt()),
-            0x88
-        )
+        codeColors.dividerColor
     }
     private val strokeLineColor by lazy {
-        blendWithAlpha(
-            resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt()),
-            0x66
-        )
+        codeColors.strokeColor
     }
     private val copyIconTint by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF49454F.toInt())
+        codeColors.headerTextColor
     }
 
     private var codeContent: String = ""

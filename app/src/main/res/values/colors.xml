@@ -29,6 +29,17 @@
     <color name="mote_on_surface_variant_dark">#CAC4D0</color>
     <color name="mote_outline_dark">#938F99</color>
 
+    <color name="markdown_code_block_background">#F6F8FA</color>
+    <color name="markdown_code_block_header_text">#57606A</color>
+    <color name="markdown_code_block_text">#24292F</color>
+    <color name="markdown_code_block_divider">#D8DEE4</color>
+    <color name="markdown_code_block_stroke">#D0D7DE</color>
+    <color name="markdown_code_keyword">#CF222E</color>
+    <color name="markdown_code_string">#116329</color>
+    <color name="markdown_code_comment">#6E7781</color>
+    <color name="markdown_code_number">#0550AE</color>
+    <color name="markdown_code_annotation">#8250DF</color>
+
     <color name="white">#FFFFFFFF</color>
     <color name="black">#FF000000</color>
 </resources>

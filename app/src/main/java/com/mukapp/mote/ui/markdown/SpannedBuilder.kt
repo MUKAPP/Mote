@@ -21,17 +21,14 @@ import androidx.annotation.ColorInt
 class SpannedBuilder(private val context: Context) {
 
     private val inlineParser = InlineParser()
-    private val codeSpanRenderer = MarkdownCodeSpanRenderer(context)
+    private val codeColors = resolveMarkdownCodeColors(context)
+    private val codeSpanRenderer = MarkdownCodeSpanRenderer(context, codeColors)
 
     /** 表格可用绘制宽度（像素），由外部设置 */
     var tableAvailableWidth: Int = 0
 
     private val codeBlockBgColor: Int by lazy {
-        val surfaceVariant = resolveThemeColor(
-            com.google.android.material.R.attr.colorSurfaceVariant,
-            0xFFE7E0EC.toInt()
-        )
-        blendWithAlpha(surfaceVariant, 0x55)
+        codeColors.blockBackgroundColor
     }
 
     private val inlineCodeBgColor: Int by lazy {

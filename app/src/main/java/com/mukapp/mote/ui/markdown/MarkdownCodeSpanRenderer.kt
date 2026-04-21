@@ -9,32 +9,35 @@ import io.noties.prism4j.AbsVisitor
 import io.noties.prism4j.GrammarLocator
 import io.noties.prism4j.Prism4j
 
-internal class MarkdownCodeSpanRenderer(context: Context) {
+internal class MarkdownCodeSpanRenderer(
+    context: Context,
+    private val codeColors: MarkdownCodeColors = resolveMarkdownCodeColors(context)
+) {
 
     private val prism4j: Prism4j? = runCatching {
         Prism4j(createGrammarLocator())
     }.getOrNull()
 
     private val defaultTextColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
+        codeColors.codeTextColor
     }
     private val keywordColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+        codeColors.keywordColor
     }
     private val stringColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorSecondary, 0xFF386A20.toInt())
+        codeColors.stringColor
     }
     private val commentColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF707579.toInt())
+        codeColors.commentColor
     }
     private val numberColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorTertiary, 0xFF7D5260.toInt())
+        codeColors.numberColor
     }
     private val punctuationColor: Int by lazy {
         blendWithAlpha(defaultTextColor, 0xCC)
     }
     private val annotationColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorSecondary, 0xFF006C4C.toInt())
+        codeColors.annotationColor
     }
 
     fun buildCodeContent(code: String, language: String): SpannableStringBuilder {
