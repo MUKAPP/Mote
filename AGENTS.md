@@ -204,6 +204,7 @@ Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规
 6. **自研 Markdown 渲染**：采用原生视图树架构（MarkdownView 将 AST 映射为原生 View 树），代码语法高亮使用 prism4j 库（MarkdownCodeSpanRenderer + MarkdownGrammarLocator），支持流式渲染和 10 种语言语法高亮
 7. **IME 动画跟随**：ChatFragment 实现 WindowInsetsAnimationCompat.Callback，输入法弹出/收起时列表内容像素级跟随滚动
 8. **动态主题色**：MyApplication 应用 DynamicColors，支持 Material You 动态取色
+9. **Material Symbols Rounded 图标**：项目统一使用 Material Symbols Rounded 风格图标，从 Google 官方 `material-design-icons` 仓库下载（主题路径 `materialsymbolsrounded`），保存为 `ic_{icon_name}.xml` 格式到 `res/drawable/` 目录，不使用 `_24px` 后缀命名
 
 ## 注意事项
 
