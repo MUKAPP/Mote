@@ -18,6 +18,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import androidx.core.text.buildSpannedString
 import com.mukapp.mote.util.dp
+import com.mukapp.mote.util.sp
 import kotlin.math.ceil
 import kotlin.math.max
 
@@ -43,12 +44,12 @@ class MarkdownTableView @JvmOverloads constructor(
         val bottom: Float
     )
 
-    private val cellPaddingH = 10f.dp
-    private val cellPaddingV = 8f.dp
+    private val cellPaddingH = 12f.dp
+    private val cellPaddingV = 9f.dp
     private val gridLineWidth = 1f.dp
-    private val cornerRadius = 8f.dp
-    private val fontSize = 13f.dp
-    private val headerFontSize = 13f.dp
+    private val cornerRadius = 12f.dp
+    private val fontSize = 13f.sp
+    private val headerFontSize = 13f.sp
     private val outerStrokeInset = ceil(gridLineWidth / 2f).toInt()
 
     private val headerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -388,7 +389,7 @@ class MarkdownTableView @JvmOverloads constructor(
             .obtain(text, 0, text.length, paint, desiredWidth)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setIncludePad(false)
-            .setLineSpacing(0f, 1f)
+            .setLineSpacing(0f, 1.08f)
             .build()
     }
 

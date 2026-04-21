@@ -17,21 +17,36 @@ internal data class MarkdownCodeColors(
     @get:ColorInt val stringColor: Int,
     @get:ColorInt val commentColor: Int,
     @get:ColorInt val numberColor: Int,
-    @get:ColorInt val annotationColor: Int
+    @get:ColorInt val annotationColor: Int,
+    @get:ColorInt val inlineCodeBackgroundColor: Int,
+    @get:ColorInt val inlineCodeTextColor: Int
 )
 
 internal fun resolveMarkdownCodeColors(context: Context): MarkdownCodeColors {
+    val blockBackgroundColor = ContextCompat.getColor(context, R.color.markdown_code_block_background)
+    val headerTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_header_text)
+    val codeTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_text)
+    val dividerColor = ContextCompat.getColor(context, R.color.markdown_code_block_divider)
+    val strokeColor = ContextCompat.getColor(context, R.color.markdown_code_block_stroke)
+    val keywordColor = ContextCompat.getColor(context, R.color.markdown_code_keyword)
+    val stringColor = ContextCompat.getColor(context, R.color.markdown_code_string)
+    val commentColor = ContextCompat.getColor(context, R.color.markdown_code_comment)
+    val numberColor = ContextCompat.getColor(context, R.color.markdown_code_number)
+    val annotationColor = ContextCompat.getColor(context, R.color.markdown_code_annotation)
+
     return MarkdownCodeColors(
-        blockBackgroundColor = ContextCompat.getColor(context, R.color.markdown_code_block_background),
-        headerTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_header_text),
-        codeTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_text),
-        dividerColor = ContextCompat.getColor(context, R.color.markdown_code_block_divider),
-        strokeColor = ContextCompat.getColor(context, R.color.markdown_code_block_stroke),
-        keywordColor = ContextCompat.getColor(context, R.color.markdown_code_keyword),
-        stringColor = ContextCompat.getColor(context, R.color.markdown_code_string),
-        commentColor = ContextCompat.getColor(context, R.color.markdown_code_comment),
-        numberColor = ContextCompat.getColor(context, R.color.markdown_code_number),
-        annotationColor = ContextCompat.getColor(context, R.color.markdown_code_annotation)
+        blockBackgroundColor = blockBackgroundColor,
+        headerTextColor = headerTextColor,
+        codeTextColor = codeTextColor,
+        dividerColor = dividerColor,
+        strokeColor = strokeColor,
+        keywordColor = keywordColor,
+        stringColor = stringColor,
+        commentColor = commentColor,
+        numberColor = numberColor,
+        annotationColor = annotationColor,
+        inlineCodeBackgroundColor = blendWithAlpha(blockBackgroundColor, 0xCC),
+        inlineCodeTextColor = codeTextColor
     )
 }
 

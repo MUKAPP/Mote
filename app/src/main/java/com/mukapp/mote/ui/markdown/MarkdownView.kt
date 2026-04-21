@@ -66,23 +66,29 @@ class MarkdownView @JvmOverloads constructor(
     private val baseTextColor: ColorStateList?
     private val baseTextSizePx: Float
     private val bodyTextColor: Int
+    private val primaryColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+    }
     private val secondaryTextColor: Int by lazy {
         resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF49454F.toInt())
     }
+    private val outlineVariantColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt())
+    }
     private val quoteStripeColor: Int by lazy {
-        blendWithAlpha(
-            resolveThemeColor(context, com.google.android.material.R.attr.colorOutline, 0xFF79747E.toInt()),
-            0x88
-        )
+        blendWithAlpha(primaryColor, 0x7A)
+    }
+    private val quoteBackgroundColor: Int by lazy {
+        blendWithAlpha(primaryColor, 0x10)
+    }
+    private val quoteStrokeColor: Int by lazy {
+        blendWithAlpha(outlineVariantColor, 0xB8)
     }
     private val horizontalRuleColor: Int by lazy {
-        blendWithAlpha(
-            resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt()),
-            0x88
-        )
+        blendWithAlpha(outlineVariantColor, 0x88)
     }
     private val taskMarkerOutlineColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt())
+        outlineVariantColor
     }
     private val taskMarkerCheckedColor: Int by lazy {
         resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
@@ -96,6 +102,11 @@ class MarkdownView @JvmOverloads constructor(
     private val thinkingCardStrokeColor: Int by lazy {
         blendWithAlpha(secondaryTextColor, 0x24)
     }
+    private val quoteCornerRadius = 12.dp
+    private val quoteStripeWidth = 6.dpInt
+    private val quoteContentPaddingVertical = 8.dpInt
+    private val quoteContentPaddingStart = 12.dpInt
+    private val quoteContentPaddingEnd = 12.dpInt
     private var renderMode: RenderMode = RenderMode.None
     private var lastRenderedPartStates: List<RenderedAssistantPartState> = emptyList()
     private var lastRenderedLinkDefs: Map<String, Pair<String, String>> = emptyMap()
@@ -206,8 +217,16 @@ class MarkdownView @JvmOverloads constructor(
             return
         }
         val blocks = blockParser.parse(text, isStreaming = isStreaming)
-        blocks.forEach { block ->
-            container.addView(createBlockView(block, isStreaming, linkDefs))
+        blocks.forEachIndexed { index, block ->
+            container.addView(
+                createBlockView(
+                    block,
+                    isStreaming,
+                    linkDefs,
+                    nested = false,
+                    isLastInContainer = index == blocks.lastIndex
+                )
+            )
         }
     }
 
@@ -483,28 +502,33 @@ class MarkdownView @JvmOverloads constructor(
     private fun createBlockView(
         block: MdBlock,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): View {
         return when (block) {
-            is MdBlock.Table -> createTableView(block, isStreaming, linkDefs)
-            is MdBlock.CodeBlock -> createCodeBlockView(block)
-            is MdBlock.Blockquote -> createBlockquoteView(block, isStreaming, linkDefs)
-            is MdBlock.UnorderedList -> createListView(block.items, false, isStreaming, linkDefs)
-            is MdBlock.OrderedList -> createOrderedListView(block, isStreaming, linkDefs)
-            is MdBlock.TaskList -> createTaskListView(block, isStreaming, linkDefs)
-            is MdBlock.HorizontalRule -> createHorizontalRuleView()
-            else -> createTextBlockView(block, isStreaming, linkDefs)
+            is MdBlock.Table -> createTableView(block, isStreaming, linkDefs, nested, isLastInContainer)
+            is MdBlock.CodeBlock -> createCodeBlockView(block, nested, isLastInContainer)
+            is MdBlock.Blockquote -> createBlockquoteView(block, isStreaming, linkDefs, nested, isLastInContainer)
+            is MdBlock.UnorderedList -> createListView(block.items, false, isStreaming, linkDefs, nested, isLastInContainer)
+            is MdBlock.OrderedList -> createOrderedListView(block, isStreaming, linkDefs, nested, isLastInContainer)
+            is MdBlock.TaskList -> createTaskListView(block, isStreaming, linkDefs, nested, isLastInContainer)
+            is MdBlock.HorizontalRule -> createHorizontalRuleView(nested, isLastInContainer)
+            else -> createTextBlockView(block, isStreaming, linkDefs, nested, isLastInContainer)
         }
     }
 
     private fun createTextBlockView(
         block: MdBlock,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): TextView {
         val textView = createBaseTextView()
         val text = spannedBuilder.buildSingleBlock(block, isStreaming = isStreaming, linkDefs = linkDefs)
         textView.text = text
+        applyTextBlockStyle(textView, block, nested, isLastInContainer)
         if (isStreaming) {
             textView.movementMethod = null
         } else {
@@ -513,9 +537,13 @@ class MarkdownView @JvmOverloads constructor(
         return textView
     }
 
-    private fun createCodeBlockView(codeBlock: MdBlock.CodeBlock): View {
+    private fun createCodeBlockView(
+        codeBlock: MdBlock.CodeBlock,
+        nested: Boolean,
+        isLastInContainer: Boolean
+    ): View {
         return MarkdownCodeBlockView(context).apply {
-            layoutParams = createBlockLayoutParams()
+            layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
             setCodeBlock(codeBlock.language, codeBlock.code)
         }
     }
@@ -523,7 +551,9 @@ class MarkdownView @JvmOverloads constructor(
     private fun createTableView(
         table: MdBlock.Table,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): View {
         val scrollView = object : HorizontalScrollView(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -531,7 +561,7 @@ class MarkdownView @JvmOverloads constructor(
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
             }
         }
-        scrollView.layoutParams = createBlockLayoutParams()
+        scrollView.layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
         scrollView.isHorizontalScrollBarEnabled = false
         scrollView.overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
 
@@ -546,28 +576,56 @@ class MarkdownView @JvmOverloads constructor(
     private fun createBlockquoteView(
         blockquote: MdBlock.Blockquote,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): View {
-        val container = LinearLayout(context).apply {
-            orientation = HORIZONTAL
-            layoutParams = createBlockLayoutParams()
-            gravity = Gravity.TOP
+        val container = FrameLayout(context).apply {
+            layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
+            minimumHeight = 24.dpInt
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = quoteCornerRadius
+                setColor(quoteBackgroundColor)
+            }
+            foreground = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = quoteCornerRadius
+                setColor(Color.TRANSPARENT)
+                setStroke(1.dpInt.coerceAtLeast(1), quoteStrokeColor)
+            }
+            clipToOutline = true
         }
 
         val stripe = View(context).apply {
-            layoutParams = LayoutParams(3.dpInt, LayoutParams.MATCH_PARENT)
+            layoutParams = FrameLayout.LayoutParams(quoteStripeWidth, FrameLayout.LayoutParams.MATCH_PARENT)
             setBackgroundColor(quoteStripeColor)
         }
 
         val content = LinearLayout(context).apply {
             orientation = VERTICAL
-            layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = 12.dpInt
-            }
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+            setPadding(
+                quoteStripeWidth + quoteContentPaddingStart,
+                quoteContentPaddingVertical,
+                quoteContentPaddingEnd,
+                quoteContentPaddingVertical
+            )
         }
 
-        blockquote.children.forEach { child ->
-            content.addView(createBlockView(child, isStreaming, linkDefs))
+        blockquote.children.forEachIndexed { index, child ->
+            content.addView(
+                createBlockView(
+                    child,
+                    isStreaming,
+                    linkDefs,
+                    nested = true,
+                    isLastInContainer = index == blockquote.children.lastIndex
+                )
+            )
         }
 
         container.addView(stripe)
@@ -579,14 +637,25 @@ class MarkdownView @JvmOverloads constructor(
         items: List<List<MdBlock>>,
         numbered: Boolean,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): View {
         val container = LinearLayout(context).apply {
             orientation = VERTICAL
-            layoutParams = createBlockLayoutParams()
+            layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
         }
         items.forEachIndexed { index, childBlocks ->
-            container.addView(createListItemView(if (numbered) "${index + 1}." else "•", childBlocks, isStreaming, linkDefs))
+            container.addView(
+                createListItemView(
+                    if (numbered) "${index + 1}." else "•",
+                    childBlocks,
+                    isStreaming,
+                    linkDefs,
+                    nested,
+                    isLastItem = index == items.lastIndex
+                )
+            )
         }
         return container
     }
@@ -594,22 +663,42 @@ class MarkdownView @JvmOverloads constructor(
     private fun createOrderedListView(
         list: MdBlock.OrderedList,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): View {
-        return createListView(list.items, numbered = true, isStreaming = isStreaming, linkDefs = linkDefs)
+        return createListView(
+            list.items,
+            numbered = true,
+            isStreaming = isStreaming,
+            linkDefs = linkDefs,
+            nested = nested,
+            isLastInContainer = isLastInContainer
+        )
     }
 
     private fun createTaskListView(
         list: MdBlock.TaskList,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastInContainer: Boolean
     ): View {
         val container = LinearLayout(context).apply {
             orientation = VERTICAL
-            layoutParams = createBlockLayoutParams()
+            layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
         }
-        list.items.forEach { (taskItem, childBlocks) ->
-            container.addView(createTaskListItemView(taskItem.checked, childBlocks, isStreaming, linkDefs))
+        list.items.forEachIndexed { index, (taskItem, childBlocks) ->
+            container.addView(
+                createTaskListItemView(
+                    taskItem.checked,
+                    childBlocks,
+                    isStreaming,
+                    linkDefs,
+                    nested,
+                    isLastItem = index == list.items.lastIndex
+                )
+            )
         }
         return container
     }
@@ -618,29 +707,35 @@ class MarkdownView @JvmOverloads constructor(
         checked: Boolean,
         childBlocks: List<MdBlock>,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastItem: Boolean
     ): View {
-        return createListItemRow(createTaskMarkerView(checked), childBlocks, isStreaming, linkDefs)
+        return createListItemRow(createTaskMarkerView(checked), childBlocks, isStreaming, linkDefs, nested, isLastItem)
     }
 
     private fun createListItemView(
         marker: String,
         childBlocks: List<MdBlock>,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastItem: Boolean
     ): View {
-        return createListItemRow(createTextMarkerView(marker), childBlocks, isStreaming, linkDefs)
+        return createListItemRow(createTextMarkerView(marker), childBlocks, isStreaming, linkDefs, nested, isLastItem)
     }
 
     private fun createListItemRow(
         markerView: View,
         childBlocks: List<MdBlock>,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        nested: Boolean,
+        isLastItem: Boolean
     ): View {
         val row = LinearLayout(context).apply {
             orientation = HORIZONTAL
-            layoutParams = createBlockLayoutParams(bottomMargin = 4.dpInt)
+            layoutParams = createBlockLayoutParams(bottomMargin = listItemBottomMargin(nested, isLastItem))
             gravity = Gravity.TOP
         }
 
@@ -648,8 +743,16 @@ class MarkdownView @JvmOverloads constructor(
             orientation = VERTICAL
             layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
         }
-        childBlocks.forEach { child ->
-            content.addView(createBlockView(child, isStreaming, linkDefs))
+        childBlocks.forEachIndexed { index, child ->
+            content.addView(
+                createBlockView(
+                    child,
+                    isStreaming,
+                    linkDefs,
+                    nested = true,
+                    isLastInContainer = index == childBlocks.lastIndex
+                )
+            )
         }
 
         row.addView(markerView)
@@ -659,47 +762,95 @@ class MarkdownView @JvmOverloads constructor(
 
     private fun createTextMarkerView(marker: String): TextView {
         return createBaseTextView().apply {
-            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+            layoutParams = LayoutParams(24.dpInt, LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = 8.dpInt
+            }
             text = marker
             setTextColor(secondaryTextColor)
-            setPadding(0, 0, 10.dpInt, 0)
+            gravity = Gravity.END
+            textAlignment = TEXT_ALIGNMENT_VIEW_END
         }
     }
 
     private fun createTaskMarkerView(checked: Boolean): View {
+        val markerWidth = 24.dpInt
         val boxSize = 18.dpInt
         val innerSize = 8.dpInt
         val strokeWidth = 1.dpInt.coerceAtLeast(1)
         return FrameLayout(context).apply {
-            layoutParams = LayoutParams(boxSize, boxSize).apply {
+            layoutParams = LayoutParams(markerWidth, boxSize).apply {
                 topMargin = 2.dpInt
-                marginEnd = 10.dpInt
+                marginEnd = 8.dpInt
             }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 4.dp
-                setStroke(strokeWidth, if (checked) taskMarkerCheckedColor else taskMarkerOutlineColor)
-                setColor(if (checked) taskMarkerCheckedBgColor else Color.TRANSPARENT)
-            }
-            if (checked) {
-                addView(View(context).apply {
-                    layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = 2.dp
-                        setColor(taskMarkerCheckedColor)
-                    }
-                })
-            }
+            addView(FrameLayout(context).apply {
+                layoutParams = FrameLayout.LayoutParams(boxSize, boxSize, Gravity.TOP or Gravity.END)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 4.dp
+                    setStroke(strokeWidth, if (checked) taskMarkerCheckedColor else taskMarkerOutlineColor)
+                    setColor(if (checked) taskMarkerCheckedBgColor else Color.TRANSPARENT)
+                }
+                if (checked) {
+                    addView(View(context).apply {
+                        layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.RECTANGLE
+                            cornerRadius = 2.dp
+                            setColor(taskMarkerCheckedColor)
+                        }
+                    })
+                }
+            })
         }
     }
 
-    private fun createHorizontalRuleView(): View {
+    private fun createHorizontalRuleView(nested: Boolean, isLastInContainer: Boolean): View {
         return View(context).apply {
-            layoutParams = createBlockLayoutParams(topMargin = 6.dpInt, bottomMargin = 6.dpInt).apply {
+            layoutParams = createBlockLayoutParams(
+                topMargin = if (nested) 8.dpInt else 10.dpInt,
+                bottomMargin = if (nested && isLastInContainer) 0 else if (nested) 8.dpInt else 10.dpInt
+            ).apply {
                 height = 1.dpInt
             }
             setBackgroundColor(horizontalRuleColor)
+        }
+    }
+
+    private fun applyTextBlockStyle(
+        textView: TextView,
+        block: MdBlock,
+        nested: Boolean,
+        isLastInContainer: Boolean
+    ) {
+        when (block) {
+            is MdBlock.Heading -> {
+                textView.layoutParams = createBlockLayoutParams(
+                    topMargin = if (nested) 4.dpInt else if (block.level <= 2) 10.dpInt else 6.dpInt,
+                    bottomMargin = if (nested && isLastInContainer) 0 else if (nested) 6.dpInt else if (block.level <= 2) 10.dpInt else 8.dpInt
+                )
+                textView.setTextColor(
+                    when {
+                        block.level <= 2 -> bodyTextColor
+                        block.level <= 4 -> blendWithAlpha(bodyTextColor, 0xF0)
+                        else -> secondaryTextColor
+                    }
+                )
+                textView.setLineSpacing(0f, if (block.level <= 2) 1.08f else 1.12f)
+                textView.letterSpacing = when (block.level) {
+                    1 -> -0.01f
+                    2 -> -0.005f
+                    else -> 0f
+                }
+            }
+
+            is MdBlock.Paragraph -> {
+                textView.layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
+                textView.setLineSpacing(0f, 1.22f)
+            }
+
+            else -> {
+                textView.layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
+            }
         }
     }
 
@@ -719,6 +870,21 @@ class MarkdownView @JvmOverloads constructor(
             linksClickable = true
             setLineSpacing(0f, 1.15f)
         }
+    }
+
+    private fun defaultBlockBottomMargin(nested: Boolean): Int {
+        return if (nested) 6.dpInt else 10.dpInt
+    }
+
+    private fun blockBottomMargin(nested: Boolean, isLastInContainer: Boolean): Int {
+        return if (nested && isLastInContainer) 0 else defaultBlockBottomMargin(nested)
+    }
+
+    private fun listItemBottomMargin(nested: Boolean, isLastItem: Boolean): Int {
+        if (isLastItem) {
+            return 0
+        }
+        return if (nested) 2.dpInt else 4.dpInt
     }
 
     private fun createBlockLayoutParams(

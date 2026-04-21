@@ -32,11 +32,11 @@ class SpannedBuilder(private val context: Context) {
     }
 
     private val inlineCodeBgColor: Int by lazy {
-        val surfaceVariant = resolveThemeColor(
-            com.google.android.material.R.attr.colorSurfaceVariant,
-            0xFFE7E0EC.toInt()
-        )
-        blendWithAlpha(surfaceVariant, 0x44)
+        codeColors.inlineCodeBackgroundColor
+    }
+
+    private val inlineCodeTextColor: Int by lazy {
+        codeColors.inlineCodeTextColor
     }
 
     private val linkColor: Int by lazy {
@@ -274,6 +274,7 @@ class SpannedBuilder(private val context: Context) {
                     ssb.append(element.content)
                     val end = ssb.length
                     ssb.setSpan(BackgroundColorSpan(inlineCodeBgColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    ssb.setSpan(ForegroundColorSpan(inlineCodeTextColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     ssb.setSpan(TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
                 is InlineElement.Link -> {
@@ -295,7 +296,7 @@ class SpannedBuilder(private val context: Context) {
     }
 
     private fun headingSize(level: Int): Float = when (level) {
-        1 -> 1.6f; 2 -> 1.4f; 3 -> 1.25f; 4 -> 1.1f; 5 -> 1.0f; 6 -> 0.9f; else -> 1.0f
+        1 -> 1.48f; 2 -> 1.32f; 3 -> 1.18f; 4 -> 1.08f; 5 -> 1.0f; 6 -> 0.96f; else -> 1.0f
     }
 
     @ColorInt
