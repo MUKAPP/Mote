@@ -113,6 +113,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val accumulatedIntermediateSteps = mutableListOf<IntermediateStep>()
                 var currentThinkingStep = IntermediateStep()
+                val allRoundsContent = StringBuilder()
 
                 repeat(50) { roundIndex ->
                     val accumulatedReply = StringBuilder()
@@ -121,10 +122,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         messages = workingConversation,
                         onDelta = { delta ->
                             accumulatedReply.append(delta)
+                            val displayContent = if (allRoundsContent.isNotBlank()) {
+                                "${allRoundsContent}\n\n${accumulatedReply}"
+                            } else {
+                                accumulatedReply.toString()
+                            }
                             updateStreamingAssistantMessage(
                                 assistantIndex = assistantIndex,
                                 assistantId = assistantId,
-                                content = accumulatedReply.toString(),
+                                content = displayContent,
                                 intermediateSteps = if (currentThinkingStep.thinkingContent.isNotBlank()) {
                                     accumulatedIntermediateSteps + currentThinkingStep
                                 } else {
@@ -136,18 +142,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             currentThinkingStep = currentThinkingStep.copy(
                                 thinkingContent = currentThinkingStep.thinkingContent + thinkingDelta
                             )
+                            val displayContent = if (allRoundsContent.isNotBlank()) {
+                                "${allRoundsContent}\n\n${accumulatedReply}"
+                            } else {
+                                accumulatedReply.toString()
+                            }
                             updateStreamingAssistantMessage(
                                 assistantIndex = assistantIndex,
                                 assistantId = assistantId,
-                                content = accumulatedReply.toString(),
+                                content = displayContent,
                                 intermediateSteps = accumulatedIntermediateSteps + currentThinkingStep
                             )
                         }
                     )
 
                     if (response.toolCalls.isEmpty()) {
-                        val finalReply = response.content.takeIf { it.isNotBlank() }
+                        val lastRoundReply = response.content.takeIf { it.isNotBlank() }
                             ?: accumulatedReply.toString().takeIf { it.isNotBlank() }
+                            ?: ""
+                        val combinedReply = if (allRoundsContent.isNotBlank() && lastRoundReply.isNotBlank()) {
+                            "${allRoundsContent}\n\n${lastRoundReply}"
+                        } else if (allRoundsContent.isNotBlank()) {
+                            allRoundsContent.toString()
+                        } else {
+                            lastRoundReply
+                        }
+                        val finalReply = combinedReply.takeIf { it.isNotBlank() }
                             ?: throw IllegalStateException("接口返回内容为空。")
                         val finalThinking = response.thinkingContent.takeIf { it.isNotBlank() }
                             ?: currentThinkingStep.thinkingContent.takeIf { it.isNotBlank() }
@@ -193,6 +213,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         ?: ""
                     currentThinkingStep = IntermediateStep()
                     val stepContent = response.content.takeIf { it.isNotBlank() } ?: ""
+                    if (stepContent.isNotBlank()) {
+                        if (allRoundsContent.isNotBlank()) {
+                            allRoundsContent.append("\n\n")
+                        }
+                        allRoundsContent.append(stepContent)
+                    }
                     val stepToolResults = toolResults.map { result ->
                         ToolResultInfo(
                             toolCallId = result.toolCallId ?: "",

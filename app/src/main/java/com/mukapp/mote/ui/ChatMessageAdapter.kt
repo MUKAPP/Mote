@@ -255,6 +255,7 @@ class ChatMessageAdapter(
             ) {
                 updateStepsScrollHeight(binding.stepsBlock, expanded = false, scrollToBottom = false)
                 binding.stepsBlock.btnToggleSteps.setImageResource(R.drawable.ic_expand_more)
+                binding.stepsBlock.textStepsTitle.text = itemView.context.getString(R.string.label_thinking)
             }
 
             if (currentStepSignature == lastStepSignature) {
@@ -373,6 +374,13 @@ class ChatMessageAdapter(
             return
         }
 
+        // 当从 GONE 切换到 VISIBLE 时，带有 textIsSelectable 的 TextView
+        // 内部的 Editor Layout 可能仍然保持着在 GONE 状态下初始化的 0 宽度，
+        // 导致文本不可见但占据空间。强制所有子视图重新请求布局来修复此问题。
+        for (i in 0 until binding.containerSteps.childCount) {
+            binding.containerSteps.getChildAt(i).requestLayout()
+        }
+
         binding.scrollSteps.post {
             val availableWidth = when {
                 binding.scrollSteps.width > 0 -> binding.scrollSteps.width
@@ -428,13 +436,24 @@ class ChatMessageAdapter(
         val expanded = expandedToolCallIds.contains(toolStateKey)
 
         binding.textSummary.text = IntermediateStepsHelper.parseToolSummary(toolResult.toolName, toolResult.toolArguments)
-        binding.textArguments.text = if (toolResult.toolArguments.isBlank()) {
-            ""
-        } else {
-            runCatching { JSONObject(toolResult.toolArguments).toString(2) }.getOrDefault(toolResult.toolArguments)
+
+        // 延迟填充详情内容：只在展开时才设置文本，避免创建时的性能开销
+        var detailPopulated = false
+        fun populateDetail() {
+            if (detailPopulated) return
+            detailPopulated = true
+            binding.textArguments.text = if (toolResult.toolArguments.isBlank()) {
+                ""
+            } else {
+                runCatching { JSONObject(toolResult.toolArguments).toString(2) }.getOrDefault(toolResult.toolArguments)
+            }
+            binding.textResult.text = toolResult.result
+            binding.groupArguments.isVisible = binding.textArguments.text.isNotBlank()
         }
-        binding.textResult.text = toolResult.result
-        binding.groupArguments.isVisible = binding.textArguments.text.isNotBlank()
+
+        if (expanded) {
+            populateDetail()
+        }
         binding.containerDetail.isVisible = expanded
         binding.btnToggleDetail.setImageResource(
             if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
@@ -442,6 +461,9 @@ class ChatMessageAdapter(
 
         val toggle = View.OnClickListener {
             val nextExpanded = !binding.containerDetail.isVisible
+            if (nextExpanded) {
+                populateDetail()
+            }
             binding.containerDetail.isVisible = nextExpanded
             binding.btnToggleDetail.setImageResource(
                 if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
