@@ -144,7 +144,7 @@ class SpannedBuilder(private val context: Context) {
         for ((index, pair) in list.items.withIndex()) {
             val (taskItem, childBlocks) = pair
             val itemStart = ssb.length
-            val checkbox = if (taskItem.checked) "\u2611 " else "\u2610 "
+            val checkbox = if (taskItem.checked) "[x] " else "[ ] "
             ssb.append(checkbox)
             appendBlocks(ssb, childBlocks, isStreaming, linkDefs)
             val itemEnd = ssb.length

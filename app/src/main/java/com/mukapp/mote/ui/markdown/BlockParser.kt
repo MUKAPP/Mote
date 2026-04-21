@@ -217,13 +217,9 @@ class BlockParser {
     ): Triple<MdBlock.Heading, Int, Int>? {
         if (!allowTailTransformation) return null
         val trimmed = lines[i].trimStart()
-        if (trimmed.isEmpty()) return null
-        val level = when {
-            trimmed.all { it == '=' } && trimmed.isNotEmpty() -> 1
-            trimmed.all { it == '-' } && trimmed.isNotEmpty() -> 2
-            else -> return null
-        }
+        val level = isSetextUnderline(trimmed) ?: return null
         if (blocks.isEmpty()) return null
+        if (i == 0 || lines[i - 1].isBlank()) return null
         val lastBlock = blocks.last()
         if (lastBlock !is MdBlock.Paragraph) return null
         blocks.removeAt(blocks.lastIndex)
@@ -380,6 +376,7 @@ class BlockParser {
         val match = TASK_LIST_REGEX.matchEntire(firstLine) ?: return null
 
         val items = mutableListOf<Pair<TaskItem, List<MdBlock>>>()
+        val baseIndent = leadingIndentWidth(lines[startIndex])
         var offset = startOffset
         var i = startIndex
 
@@ -387,6 +384,7 @@ class BlockParser {
             val line = lines[i]
             val trimmed = line.trimStart()
             if (trimmed.isEmpty()) break
+            if (leadingIndentWidth(line) != baseIndent) break
             if (!isTaskListPrefix(trimmed)) break
             val itemMatch = TASK_LIST_REGEX.matchEntire(trimmed)
             if (itemMatch != null) {
@@ -394,24 +392,13 @@ class BlockParser {
                     checked = itemMatch.groupValues[1] == "x" || itemMatch.groupValues[1] == "X",
                     text = itemMatch.groupValues[2]
                 )
-                val childLines = mutableListOf(itemMatch.groupValues[2])
                 offset += line.length + 1
                 i++
-
-                while (i < lines.size) {
-                    val contLine = lines[i]
-                    val contTrimmed = contLine.trimStart()
-                    if (contTrimmed.isEmpty()) break
-                    if (isBlockStart(contTrimmed)) break
-                    if (contLine.startsWith("  ") || contLine.startsWith("\t")) {
-                        childLines.add(contTrimmed)
-                    } else {
-                        break
-                    }
-                    offset += contLine.length + 1
-                    i++
-                }
-
+                val continuation = collectListItemContinuation(lines, i, offset, baseIndent)
+                val childLines = mutableListOf(itemMatch.groupValues[2])
+                childLines.addAll(normalizeListContinuationLines(continuation.lines))
+                i = continuation.nextLineIndex
+                offset = continuation.nextOffset
                 val childText = childLines.joinToString("\n")
                 val childLineList = childText.lines()
                 val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
@@ -437,6 +424,7 @@ class BlockParser {
         val match = UNORDERED_LIST_REGEX.matchEntire(firstLine) ?: return null
 
         val items = mutableListOf<List<MdBlock>>()
+        val baseIndent = leadingIndentWidth(lines[startIndex])
         var offset = startOffset
         var i = startIndex
 
@@ -444,27 +432,17 @@ class BlockParser {
             val line = lines[i]
             val trimmed = line.trimStart()
             if (trimmed.isEmpty()) break
+            if (leadingIndentWidth(line) != baseIndent) break
             if (!isUnorderedListPrefix(trimmed)) break
             val itemMatch = UNORDERED_LIST_REGEX.matchEntire(trimmed)
             if (itemMatch != null) {
-                val childLines = mutableListOf(itemMatch.groupValues[2])
                 offset += line.length + 1
                 i++
-
-                while (i < lines.size) {
-                    val contLine = lines[i]
-                    val contTrimmed = contLine.trimStart()
-                    if (contTrimmed.isEmpty()) break
-                    if (isBlockStart(contTrimmed)) break
-                    if (contLine.startsWith("  ") || contLine.startsWith("\t")) {
-                        childLines.add(contTrimmed)
-                    } else {
-                        break
-                    }
-                    offset += contLine.length + 1
-                    i++
-                }
-
+                val continuation = collectListItemContinuation(lines, i, offset, baseIndent)
+                val childLines = mutableListOf(itemMatch.groupValues[2])
+                childLines.addAll(normalizeListContinuationLines(continuation.lines))
+                i = continuation.nextLineIndex
+                offset = continuation.nextOffset
                 val childText = childLines.joinToString("\n")
                 val childLineList = childText.lines()
                 val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
@@ -490,6 +468,7 @@ class BlockParser {
         val match = ORDERED_LIST_REGEX.matchEntire(firstLine) ?: return null
 
         val items = mutableListOf<List<MdBlock>>()
+        val baseIndent = leadingIndentWidth(lines[startIndex])
         var offset = startOffset
         var i = startIndex
 
@@ -497,27 +476,17 @@ class BlockParser {
             val line = lines[i]
             val trimmed = line.trimStart()
             if (trimmed.isEmpty()) break
+            if (leadingIndentWidth(line) != baseIndent) break
             if (!isOrderedListPrefix(trimmed)) break
             val itemMatch = ORDERED_LIST_REGEX.matchEntire(trimmed)
             if (itemMatch != null) {
-                val childLines = mutableListOf(itemMatch.groupValues[2])
                 offset += line.length + 1
                 i++
-
-                while (i < lines.size) {
-                    val contLine = lines[i]
-                    val contTrimmed = contLine.trimStart()
-                    if (contTrimmed.isEmpty()) break
-                    if (isBlockStart(contTrimmed)) break
-                    if (contLine.startsWith("  ") || contLine.startsWith("\t")) {
-                        childLines.add(contTrimmed)
-                    } else {
-                        break
-                    }
-                    offset += contLine.length + 1
-                    i++
-                }
-
+                val continuation = collectListItemContinuation(lines, i, offset, baseIndent)
+                val childLines = mutableListOf(itemMatch.groupValues[2])
+                childLines.addAll(normalizeListContinuationLines(continuation.lines))
+                i = continuation.nextLineIndex
+                offset = continuation.nextOffset
                 val childText = childLines.joinToString("\n")
                 val childLineList = childText.lines()
                 val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
@@ -548,7 +517,7 @@ class BlockParser {
             val trimmed = line.trimStart()
             if (trimmed.isEmpty()) break
             val unstableTailLine = isUnstableTailLine(i, lines.size, isStreaming, tailLineComplete)
-            if (i > startIndex && isBlockStart(trimmed)) {
+            if (i > startIndex && (isBlockStart(trimmed) || isSetextUnderline(trimmed) != null)) {
                 if (!(unstableTailLine && isTailSensitiveBlockStart(trimmed))) {
                     break
                 }
@@ -567,6 +536,7 @@ class BlockParser {
 
     private fun isBlockStart(trimmed: String): Boolean {
         if (trimmed.startsWith("#") && HEADING_PREFIX.containsMatchIn(trimmed)) return true
+        if (isSetextUnderline(trimmed) != null) return true
         if (isBacktickFenceStart(trimmed)) return true
         if (trimmed.startsWith(">")) return true
         if (isHorizontalRuleLike(trimmed)) return true
@@ -587,10 +557,20 @@ class BlockParser {
     }
 
     private fun isTailSensitiveBlockStart(trimmed: String): Boolean {
+        if (isSetextUnderline(trimmed) != null) return true
         if (isHorizontalRuleLike(trimmed)) return true
         if (trimmed.startsWith("|")) return true
         if (trimmed.startsWith("[") && trimmed.contains("]:") && LINK_DEF_PREFIX.containsMatchIn(trimmed)) return true
         return false
+    }
+
+    private fun isSetextUnderline(trimmed: String): Int? {
+        if (trimmed.isEmpty()) return null
+        return when {
+            trimmed.all { it == '=' } -> 1
+            trimmed.all { it == '-' } -> 2
+            else -> null
+        }
     }
 
     private fun isBacktickFenceStart(trimmed: String): Boolean {
@@ -611,6 +591,69 @@ class BlockParser {
             count++
         }
         return count
+    }
+
+    private fun collectListItemContinuation(
+        lines: List<String>,
+        startIndex: Int,
+        startOffset: Int,
+        baseIndent: Int
+    ): ListItemContinuationResult {
+        val continuationLines = mutableListOf<String>()
+        var i = startIndex
+        var offset = startOffset
+
+        while (i < lines.size) {
+            val line = lines[i]
+            val trimmed = line.trimStart()
+            if (trimmed.isEmpty()) break
+            if (leadingIndentWidth(line) <= baseIndent) break
+            continuationLines.add(line)
+            offset += line.length + 1
+            i++
+        }
+
+        return ListItemContinuationResult(continuationLines, i, offset)
+    }
+
+    private fun normalizeListContinuationLines(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return emptyList()
+        val indent = lines
+            .filter { it.isNotBlank() }
+            .minOfOrNull { leadingIndentWidth(it) }
+            ?: 0
+        return lines.map { removeLeadingIndent(it, indent) }
+    }
+
+    private fun leadingIndentWidth(line: String): Int {
+        var indent = 0
+        for (ch in line) {
+            when (ch) {
+                ' ' -> indent++
+                '\t' -> indent += 4
+                else -> return indent
+            }
+        }
+        return indent
+    }
+
+    private fun removeLeadingIndent(line: String, indentWidth: Int): String {
+        var remaining = indentWidth
+        var index = 0
+        while (index < line.length && remaining > 0) {
+            when (line[index]) {
+                ' ' -> {
+                    remaining--
+                    index++
+                }
+                '\t' -> {
+                    remaining -= 4
+                    index++
+                }
+                else -> break
+            }
+        }
+        return line.substring(index)
     }
 
     private fun isTableSeparatorRow(line: String, expectedColumnCount: Int): Boolean {
@@ -662,6 +705,7 @@ class BlockParser {
     private data class UnorderedListResult(val block: MdBlock.UnorderedList, val nextLineIndex: Int, val nextOffset: Int)
     private data class OrderedListResult(val block: MdBlock.OrderedList, val nextLineIndex: Int, val nextOffset: Int)
     private data class TaskListResult(val block: MdBlock.TaskList, val nextLineIndex: Int, val nextOffset: Int)
+    private data class ListItemContinuationResult(val lines: List<String>, val nextLineIndex: Int, val nextOffset: Int)
     private data class TableResult(val block: MdBlock.Table, val nextLineIndex: Int, val nextOffset: Int)
     private data class ParagraphResult(val block: MdBlock.Paragraph, val nextLineIndex: Int, val nextOffset: Int)
 

@@ -58,6 +58,79 @@ class MarkdownStreamingParserTest {
     }
 
     @Test
+    fun staticSetextHeadingSupportsLevelOneAndLevelTwo() {
+        val blocks = BlockParser().parse(
+            "一级标题\n===\n\n二级标题\n---",
+            isStreaming = false
+        )
+
+        assertEquals(2, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Heading)
+        val levelOne = blocks[0] as MdBlock.Heading
+        assertEquals(1, levelOne.level)
+        assertEquals("一级标题", levelOne.text)
+        assertTrue(blocks[1] is MdBlock.Heading)
+        val levelTwo = blocks[1] as MdBlock.Heading
+        assertEquals(2, levelTwo.level)
+        assertEquals("二级标题", levelTwo.text)
+    }
+
+    @Test
+    fun blankLineBeforeUnderlineDoesNotBecomeSetextHeading() {
+        val blocks = BlockParser().parse(
+            "普通段落\n\n---",
+            isStreaming = false
+        )
+
+        assertEquals(2, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Paragraph)
+        assertEquals("普通段落", (blocks[0] as MdBlock.Paragraph).text)
+        assertTrue(blocks[1] is MdBlock.HorizontalRule)
+    }
+
+    @Test
+    fun unorderedListSupportsNestedItems() {
+        val blocks = BlockParser().parse(
+            "- 第一项\n- 第二项\n  - 子项 1\n  - 子项 2\n* 第三项\n+ 第四项",
+            isStreaming = false
+        )
+
+        assertEquals(1, blocks.size)
+        val list = blocks[0] as MdBlock.UnorderedList
+        assertEquals(4, list.items.size)
+        assertEquals(1, list.items[0].size)
+        assertEquals("第一项", (list.items[0][0] as MdBlock.Paragraph).text)
+        assertEquals(2, list.items[1].size)
+        assertEquals("第二项", (list.items[1][0] as MdBlock.Paragraph).text)
+
+        val nested = list.items[1][1] as MdBlock.UnorderedList
+        assertEquals(2, nested.items.size)
+        assertEquals("子项 1", (nested.items[0][0] as MdBlock.Paragraph).text)
+        assertEquals("子项 2", (nested.items[1][0] as MdBlock.Paragraph).text)
+    }
+
+    @Test
+    fun orderedListSupportsNestedItems() {
+        val blocks = BlockParser().parse(
+            "1. 第一项\n2. 第二项\n   1. 子项 1\n   2. 子项 2",
+            isStreaming = false
+        )
+
+        assertEquals(1, blocks.size)
+        val list = blocks[0] as MdBlock.OrderedList
+        assertEquals(2, list.items.size)
+        assertEquals(1, list.items[0].size)
+        assertEquals("第一项", (list.items[0][0] as MdBlock.Paragraph).text)
+        assertEquals(2, list.items[1].size)
+        assertEquals("第二项", (list.items[1][0] as MdBlock.Paragraph).text)
+
+        val nested = list.items[1][1] as MdBlock.OrderedList
+        assertEquals(2, nested.items.size)
+        assertEquals("子项 1", (nested.items[0][0] as MdBlock.Paragraph).text)
+        assertEquals("子项 2", (nested.items[1][0] as MdBlock.Paragraph).text)
+    }
+
+    @Test
     fun streamingTableWaitsForCompleteSeparatorLine() {
         val streamingBlocks = BlockParser().parse("| A |\n| --- |", isStreaming = true)
 

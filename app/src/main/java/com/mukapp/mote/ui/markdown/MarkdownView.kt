@@ -2,16 +2,20 @@ package com.mukapp.mote.ui.markdown
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.text.method.LinkMovementMethod
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.isVisible
+import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
 import com.mukapp.mote.util.sp
 
@@ -46,6 +50,15 @@ class MarkdownView @JvmOverloads constructor(
             resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt()),
             0x88
         )
+    }
+    private val taskMarkerOutlineColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt())
+    }
+    private val taskMarkerCheckedColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+    }
+    private val taskMarkerCheckedBgColor: Int by lazy {
+        blendWithAlpha(taskMarkerCheckedColor, 0x18)
     }
 
     private var lastMarkdown: String = ""
@@ -230,10 +243,18 @@ class MarkdownView @JvmOverloads constructor(
             layoutParams = createBlockLayoutParams()
         }
         list.items.forEach { (taskItem, childBlocks) ->
-            val marker = if (taskItem.checked) "☑" else "☐"
-            container.addView(createListItemView(marker, childBlocks, isStreaming, linkDefs))
+            container.addView(createTaskListItemView(taskItem.checked, childBlocks, isStreaming, linkDefs))
         }
         return container
+    }
+
+    private fun createTaskListItemView(
+        checked: Boolean,
+        childBlocks: List<MdBlock>,
+        isStreaming: Boolean,
+        linkDefs: Map<String, Pair<String, String>>
+    ): View {
+        return createListItemRow(createTaskMarkerView(checked), childBlocks, isStreaming, linkDefs)
     }
 
     private fun createListItemView(
@@ -242,17 +263,19 @@ class MarkdownView @JvmOverloads constructor(
         isStreaming: Boolean,
         linkDefs: Map<String, Pair<String, String>>
     ): View {
+        return createListItemRow(createTextMarkerView(marker), childBlocks, isStreaming, linkDefs)
+    }
+
+    private fun createListItemRow(
+        markerView: View,
+        childBlocks: List<MdBlock>,
+        isStreaming: Boolean,
+        linkDefs: Map<String, Pair<String, String>>
+    ): View {
         val row = LinearLayout(context).apply {
             orientation = HORIZONTAL
             layoutParams = createBlockLayoutParams(bottomMargin = 4.dpInt)
             gravity = Gravity.TOP
-        }
-
-        val markerView = createBaseTextView().apply {
-            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
-            text = marker
-            setTextColor(secondaryTextColor)
-            setPadding(0, 0, 10.dpInt, 0)
         }
 
         val content = LinearLayout(context).apply {
@@ -266,6 +289,43 @@ class MarkdownView @JvmOverloads constructor(
         row.addView(markerView)
         row.addView(content)
         return row
+    }
+
+    private fun createTextMarkerView(marker: String): TextView {
+        return createBaseTextView().apply {
+            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+            text = marker
+            setTextColor(secondaryTextColor)
+            setPadding(0, 0, 10.dpInt, 0)
+        }
+    }
+
+    private fun createTaskMarkerView(checked: Boolean): View {
+        val boxSize = 18.dpInt
+        val innerSize = 8.dpInt
+        val strokeWidth = 1.dpInt.coerceAtLeast(1)
+        return FrameLayout(context).apply {
+            layoutParams = LayoutParams(boxSize, boxSize).apply {
+                topMargin = 2.dpInt
+                marginEnd = 10.dpInt
+            }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 4.dp
+                setStroke(strokeWidth, if (checked) taskMarkerCheckedColor else taskMarkerOutlineColor)
+                setColor(if (checked) taskMarkerCheckedBgColor else Color.TRANSPARENT)
+            }
+            if (checked) {
+                addView(View(context).apply {
+                    layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 2.dp
+                        setColor(taskMarkerCheckedColor)
+                    }
+                })
+            }
+        }
     }
 
     private fun createHorizontalRuleView(): View {
