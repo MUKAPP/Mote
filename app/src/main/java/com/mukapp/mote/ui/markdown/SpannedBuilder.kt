@@ -213,6 +213,10 @@ class SpannedBuilder(private val context: Context) {
     private fun appendTable(ssb: SpannableStringBuilder, table: MdBlock.Table, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         val colCount = table.headers.size
         if (colCount == 0) return
+        if (isStreaming) {
+            appendStreamingTable(ssb, table, linkDefs)
+            return
+        }
         val colWidths = calculateColumnWidths(table)
 
         appendTableRow(ssb, table.headers, colWidths, isStreaming, linkDefs, isHeader = true)
@@ -228,6 +232,29 @@ class SpannedBuilder(private val context: Context) {
         for (row in table.rows) {
             ssb.append('\n')
             appendTableRow(ssb, row, colWidths, isStreaming, linkDefs, isHeader = false)
+        }
+    }
+
+    private fun appendStreamingTable(
+        ssb: SpannableStringBuilder,
+        table: MdBlock.Table,
+        linkDefs: Map<String, Pair<String, String>>
+    ) {
+        appendStreamingTableRow(ssb, table.headers, linkDefs, isHeader = true)
+        ssb.append('\n')
+        val separatorStart = ssb.length
+        val separator = buildString {
+            append("|")
+            repeat(table.headers.size) {
+                append(" --- |")
+            }
+        }
+        ssb.append(separator)
+        ssb.setSpan(TypefaceSpan("monospace"), separatorStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+        for (row in table.rows) {
+            ssb.append('\n')
+            appendStreamingTableRow(ssb, row, linkDefs, isHeader = false)
         }
     }
 
@@ -253,6 +280,26 @@ class SpannedBuilder(private val context: Context) {
             rowBuilder.append(" ").append(cellText.padEnd(colWidths[j])).append(" |")
         }
         val inlineElements = inlineParser.parse(rowBuilder.toString(), isStreaming, linkDefs)
+        appendInlineElements(ssb, inlineElements)
+        if (isHeader) {
+            ssb.setSpan(StyleSpan(Typeface.BOLD), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        ssb.setSpan(TypefaceSpan("monospace"), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    private fun appendStreamingTableRow(
+        ssb: SpannableStringBuilder,
+        cells: List<String>,
+        linkDefs: Map<String, Pair<String, String>>,
+        isHeader: Boolean
+    ) {
+        val rowStart = ssb.length
+        val rowBuilder = StringBuilder()
+        rowBuilder.append("|")
+        for (cell in cells) {
+            rowBuilder.append(" ").append(cell).append(" |")
+        }
+        val inlineElements = inlineParser.parse(rowBuilder.toString(), isStreaming = true, linkDefs = linkDefs)
         appendInlineElements(ssb, inlineElements)
         if (isHeader) {
             ssb.setSpan(StyleSpan(Typeface.BOLD), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)

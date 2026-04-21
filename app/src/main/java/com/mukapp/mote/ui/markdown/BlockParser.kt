@@ -5,13 +5,22 @@ class BlockParser {
     fun parse(text: String, isStreaming: Boolean = false): List<MdBlock> {
         if (text.isBlank()) return emptyList()
         val lines = text.lines()
-        val linkDefs = collectLinkDefinitions(lines)
-        return parseBlocks(lines, 0, lines.size, isStreaming, linkDefs)
+        val tailLineComplete = isTailLineComplete(text)
+        val linkDefs = collectLinkDefinitions(lines, isStreaming, tailLineComplete)
+        return parseBlocks(lines, 0, lines.size, isStreaming, linkDefs, tailLineComplete)
     }
 
-    private fun collectLinkDefinitions(lines: List<String>): Map<String, Pair<String, String>> {
+    private fun collectLinkDefinitions(
+        lines: List<String>,
+        isStreaming: Boolean,
+        tailLineComplete: Boolean
+    ): Map<String, Pair<String, String>> {
         val defs = mutableMapOf<String, Pair<String, String>>()
-        for (line in lines) {
+        val lastIndex = lines.lastIndex
+        for ((index, line) in lines.withIndex()) {
+            if (isStreaming && !tailLineComplete && index == lastIndex) {
+                continue
+            }
             val trimmed = line.trim()
             if (!trimmed.startsWith("[") || !trimmed.contains("]:")) continue
             val match = LINK_DEF_REGEX.matchEntire(trimmed) ?: continue
@@ -30,7 +39,8 @@ class BlockParser {
         start: Int,
         end: Int,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        tailLineComplete: Boolean
     ): List<MdBlock> {
         val blocks = mutableListOf<MdBlock>()
         var i = start
@@ -39,6 +49,7 @@ class BlockParser {
         while (i < end) {
             val line = lines[i]
             val trimmed = line.trimStart()
+            val unstableTailLine = isUnstableTailLine(i, end, isStreaming, tailLineComplete)
 
             if (trimmed.isEmpty()) {
                 offset += line.length + 1
@@ -46,7 +57,7 @@ class BlockParser {
                 continue
             }
 
-            if (isLinkDefLine(trimmed)) {
+            if (!unstableTailLine && isLinkDefLine(trimmed)) {
                 offset += line.length + 1
                 i++
                 continue
@@ -62,8 +73,9 @@ class BlockParser {
                 }
             }
 
-            val setextHeading = parseSetextHeading(lines, i, blocks, offset)
+            val setextHeading = parseSetextHeading(lines, i, blocks, offset, allowTailTransformation = !unstableTailLine)
             if (setextHeading != null) {
+                blocks.add(setextHeading.first)
                 offset = setextHeading.second
                 i = setextHeading.third
                 continue
@@ -77,7 +89,11 @@ class BlockParser {
                 continue
             }
 
-            val hr = parseHorizontalRule(trimmed, offset, offset + line.length)
+            val hr = if (unstableTailLine) {
+                null
+            } else {
+                parseHorizontalRule(trimmed, offset, offset + line.length)
+            }
             if (hr != null) {
                 blocks.add(hr)
                 offset += line.length + 1
@@ -85,8 +101,8 @@ class BlockParser {
                 continue
             }
 
-            if (trimmed.startsWith("|")) {
-                val table = parseTable(lines, i, offset)
+            if (trimmed.startsWith("|") && !unstableTailLine) {
+                val table = parseTable(lines, i, offset, isStreaming, tailLineComplete)
                 if (table != null) {
                     blocks.add(table.block)
                     i = table.nextLineIndex
@@ -96,7 +112,7 @@ class BlockParser {
             }
 
             if (trimmed.startsWith(">")) {
-                val blockquote = parseBlockquote(lines, i, offset, isStreaming, linkDefs)
+                val blockquote = parseBlockquote(lines, i, offset, isStreaming, linkDefs, tailLineComplete)
                 if (blockquote != null) {
                     blocks.add(blockquote.block)
                     i = blockquote.nextLineIndex
@@ -106,7 +122,7 @@ class BlockParser {
             }
 
             if (isTaskListPrefix(trimmed)) {
-                val taskList = parseTaskList(lines, i, offset, isStreaming, linkDefs)
+                val taskList = parseTaskList(lines, i, offset, isStreaming, linkDefs, tailLineComplete)
                 if (taskList != null) {
                     blocks.add(taskList.block)
                     i = taskList.nextLineIndex
@@ -116,7 +132,7 @@ class BlockParser {
             }
 
             if (isUnorderedListPrefix(trimmed)) {
-                val unorderedList = parseUnorderedList(lines, i, offset, isStreaming, linkDefs)
+                val unorderedList = parseUnorderedList(lines, i, offset, isStreaming, linkDefs, tailLineComplete)
                 if (unorderedList != null) {
                     blocks.add(unorderedList.block)
                     i = unorderedList.nextLineIndex
@@ -126,7 +142,7 @@ class BlockParser {
             }
 
             if (isOrderedListPrefix(trimmed)) {
-                val orderedList = parseOrderedList(lines, i, offset, isStreaming, linkDefs)
+                val orderedList = parseOrderedList(lines, i, offset, isStreaming, linkDefs, tailLineComplete)
                 if (orderedList != null) {
                     blocks.add(orderedList.block)
                     i = orderedList.nextLineIndex
@@ -135,7 +151,7 @@ class BlockParser {
                 }
             }
 
-            val paragraph = parseParagraph(lines, i, offset, isStreaming, linkDefs)
+            val paragraph = parseParagraph(lines, i, offset, isStreaming, linkDefs, tailLineComplete)
             blocks.add(paragraph.block)
             i = paragraph.nextLineIndex
             offset = paragraph.nextOffset
@@ -196,8 +212,10 @@ class BlockParser {
         lines: List<String>,
         i: Int,
         blocks: MutableList<MdBlock>,
-        offset: Int
+        offset: Int,
+        allowTailTransformation: Boolean
     ): Triple<MdBlock.Heading, Int, Int>? {
+        if (!allowTailTransformation) return null
         val trimmed = lines[i].trimStart()
         if (trimmed.isEmpty()) return null
         val level = when {
@@ -266,14 +284,21 @@ class BlockParser {
         return MdBlock.HorizontalRule(startOffset, endOffset)
     }
 
-    private fun parseTable(lines: List<String>, startIndex: Int, startOffset: Int): TableResult? {
+    private fun parseTable(
+        lines: List<String>,
+        startIndex: Int,
+        startOffset: Int,
+        isStreaming: Boolean,
+        tailLineComplete: Boolean
+    ): TableResult? {
         val firstLine = lines[startIndex].trim()
         if (!firstLine.startsWith("|") || !firstLine.endsWith("|")) return null
         val headerCells = parseTableRow(firstLine)
         if (headerCells.isEmpty()) return null
         if (startIndex + 1 >= lines.size) return null
+        if (isUnstableTailLine(startIndex + 1, lines.size, isStreaming, tailLineComplete)) return null
         val separatorLine = lines[startIndex + 1].trim()
-        if (!TABLE_SEPARATOR_REGEX.matches(separatorLine)) return null
+        if (!isTableSeparatorRow(separatorLine, headerCells.size)) return null
 
         val headers = headerCells
         val rows = mutableListOf<List<String>>()
@@ -307,7 +332,8 @@ class BlockParser {
         startIndex: Int,
         startOffset: Int,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        tailLineComplete: Boolean
     ): BlockquoteResult? {
         val quoteLines = mutableListOf<String>()
         var offset = startOffset
@@ -333,7 +359,8 @@ class BlockParser {
         }
 
         val innerText = quoteLines.joinToString("\n")
-        val children = parseBlocks(innerText.lines(), 0, innerText.lines().size, isStreaming, linkDefs)
+        val childLines = innerText.lines()
+        val children = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
         val endOffset = offset - 1
 
         return BlockquoteResult(MdBlock.Blockquote(children, startOffset, endOffset), i, offset)
@@ -344,7 +371,8 @@ class BlockParser {
         startIndex: Int,
         startOffset: Int,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        tailLineComplete: Boolean
     ): TaskListResult? {
         val firstLine = lines[startIndex].trimStart()
         val match = TASK_LIST_REGEX.matchEntire(firstLine) ?: return null
@@ -383,7 +411,8 @@ class BlockParser {
                 }
 
                 val childText = childLines.joinToString("\n")
-                val childBlocks = parseBlocks(childText.lines(), 0, childText.lines().size, isStreaming, linkDefs)
+                val childLineList = childText.lines()
+                val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
                 items.add(Pair(taskItem, childBlocks))
             } else {
                 break
@@ -399,7 +428,8 @@ class BlockParser {
         startIndex: Int,
         startOffset: Int,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        tailLineComplete: Boolean
     ): UnorderedListResult? {
         val firstLine = lines[startIndex].trimStart()
         val match = UNORDERED_LIST_REGEX.matchEntire(firstLine) ?: return null
@@ -434,7 +464,8 @@ class BlockParser {
                 }
 
                 val childText = childLines.joinToString("\n")
-                val childBlocks = parseBlocks(childText.lines(), 0, childText.lines().size, isStreaming, linkDefs)
+                val childLineList = childText.lines()
+                val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
                 items.add(childBlocks)
             } else {
                 break
@@ -450,7 +481,8 @@ class BlockParser {
         startIndex: Int,
         startOffset: Int,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        tailLineComplete: Boolean
     ): OrderedListResult? {
         val firstLine = lines[startIndex].trimStart()
         val match = ORDERED_LIST_REGEX.matchEntire(firstLine) ?: return null
@@ -485,7 +517,8 @@ class BlockParser {
                 }
 
                 val childText = childLines.joinToString("\n")
-                val childBlocks = parseBlocks(childText.lines(), 0, childText.lines().size, isStreaming, linkDefs)
+                val childLineList = childText.lines()
+                val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
                 items.add(childBlocks)
             } else {
                 break
@@ -501,7 +534,8 @@ class BlockParser {
         startIndex: Int,
         startOffset: Int,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        tailLineComplete: Boolean
     ): ParagraphResult {
         val textLines = mutableListOf<String>()
         var offset = startOffset
@@ -511,7 +545,12 @@ class BlockParser {
             val line = lines[i]
             val trimmed = line.trimStart()
             if (trimmed.isEmpty()) break
-            if (i > startIndex && isBlockStart(trimmed)) break
+            val unstableTailLine = isUnstableTailLine(i, lines.size, isStreaming, tailLineComplete)
+            if (i > startIndex && isBlockStart(trimmed)) {
+                if (!(unstableTailLine && isTailSensitiveBlockStart(trimmed))) {
+                    break
+                }
+            }
 
             textLines.add(line)
             offset += line.length + 1
@@ -545,6 +584,38 @@ class BlockParser {
         return false
     }
 
+    private fun isTailSensitiveBlockStart(trimmed: String): Boolean {
+        if (isHorizontalRuleLike(trimmed)) return true
+        if (trimmed.startsWith("|")) return true
+        if (trimmed.startsWith("[") && trimmed.contains("]:") && LINK_DEF_PREFIX.containsMatchIn(trimmed)) return true
+        return false
+    }
+
+    private fun isTableSeparatorRow(line: String, expectedColumnCount: Int): Boolean {
+        if (expectedColumnCount <= 0) return false
+        val raw = line.trim()
+        if (!raw.contains('-')) return false
+        val cells = parseTableRow(raw)
+        if (cells.isEmpty() || cells.size != expectedColumnCount) return false
+        return cells.all { cell ->
+            val trimmed = cell.trim()
+            trimmed.isNotEmpty() && TABLE_SEPARATOR_CELL_REGEX.matches(trimmed)
+        }
+    }
+
+    private fun isTailLineComplete(text: String): Boolean {
+        return text.isEmpty() || text.endsWith("\n") || text.endsWith("\r")
+    }
+
+    private fun isUnstableTailLine(
+        lineIndex: Int,
+        end: Int,
+        isStreaming: Boolean,
+        tailLineComplete: Boolean
+    ): Boolean {
+        return isStreaming && !tailLineComplete && lineIndex == end - 1
+    }
+
     private data class CodeBlockResult(val block: MdBlock.CodeBlock, val nextLineIndex: Int, val nextOffset: Int)
     private data class BlockquoteResult(val block: MdBlock.Blockquote, val nextLineIndex: Int, val nextOffset: Int)
     private data class UnorderedListResult(val block: MdBlock.UnorderedList, val nextLineIndex: Int, val nextOffset: Int)
@@ -559,7 +630,7 @@ class BlockParser {
         private val UNORDERED_LIST_REGEX = Regex("^([-*+])\\s+(.+)$")
         private val ORDERED_LIST_REGEX = Regex("^(\\d+)[.)]\\s+(.+)$")
         private val TASK_LIST_REGEX = Regex("^[-*+]\\s+\\[([ xX])]\\s+(.+)$")
-        private val TABLE_SEPARATOR_REGEX = Regex("^\\|?([\\s:]*-+[\\s:]*\\|)+[\\s:]*-+[\\s:]*\\|?$")
+        private val TABLE_SEPARATOR_CELL_REGEX = Regex("^:?-+:?$")
         private val LINK_DEF_REGEX = Regex("^\\[([^\\]]+)]:\\s+(\\S+)(?:\\s+[\"'](.+?)[\"'])?\\s*$")
         private val LINK_DEF_PREFIX = Regex("^\\[[^\\]]+]:\\s")
     }

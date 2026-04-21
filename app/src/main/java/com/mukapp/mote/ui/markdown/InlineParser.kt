@@ -36,6 +36,11 @@ class InlineParser {
                     textStart = i
                     continue
                 }
+                if (isStreaming && canOpenDelimited(text, i, backtickCount)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
+                }
             }
 
             if (i + 2 < text.length && text[i] == '*' && text[i + 1] == '*' && text[i + 2] == '*') {
@@ -44,11 +49,16 @@ class InlineParser {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
                     }
-                    val inner = parse(text.substring(i + 3, closePos), isStreaming, linkDefs)
+                    val inner = parse(text.substring(i + 3, closePos), isStreaming = false, linkDefs = linkDefs)
                     elements.add(InlineElement.Bold(listOf(InlineElement.Italic(inner))))
                     i = closePos + 3
                     textStart = i
                     continue
+                }
+                if (isStreaming && canOpenDelimited(text, i, 3)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
                 }
             }
 
@@ -58,10 +68,15 @@ class InlineParser {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
                     }
-                    elements.add(InlineElement.Bold(parse(text.substring(i + 2, closePos), isStreaming, linkDefs)))
+                    elements.add(InlineElement.Bold(parse(text.substring(i + 2, closePos), isStreaming = false, linkDefs = linkDefs)))
                     i = closePos + 2
                     textStart = i
                     continue
+                }
+                if (isStreaming && canOpenDelimited(text, i, 2)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
                 }
             }
 
@@ -71,10 +86,15 @@ class InlineParser {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
                     }
-                    elements.add(InlineElement.Strikethrough(parse(text.substring(i + 2, closePos), isStreaming, linkDefs)))
+                    elements.add(InlineElement.Strikethrough(parse(text.substring(i + 2, closePos), isStreaming = false, linkDefs = linkDefs)))
                     i = closePos + 2
                     textStart = i
                     continue
+                }
+                if (isStreaming && canOpenDelimited(text, i, 2)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
                 }
             }
 
@@ -84,10 +104,15 @@ class InlineParser {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
                     }
-                    elements.add(InlineElement.Superscript(parse(text.substring(i + 1, closePos), isStreaming, linkDefs)))
+                    elements.add(InlineElement.Superscript(parse(text.substring(i + 1, closePos), isStreaming = false, linkDefs = linkDefs)))
                     i = closePos + 1
                     textStart = i
                     continue
+                }
+                if (isStreaming && canOpenDelimited(text, i, 1)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
                 }
             }
 
@@ -97,10 +122,15 @@ class InlineParser {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
                     }
-                    elements.add(InlineElement.Subscript(parse(text.substring(i + 1, closePos), isStreaming, linkDefs)))
+                    elements.add(InlineElement.Subscript(parse(text.substring(i + 1, closePos), isStreaming = false, linkDefs = linkDefs)))
                     i = closePos + 1
                     textStart = i
                     continue
+                }
+                if (isStreaming && canOpenDelimited(text, i, 1)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
                 }
             }
 
@@ -110,10 +140,15 @@ class InlineParser {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
                     }
-                    elements.add(InlineElement.Italic(parse(text.substring(i + 1, closePos), isStreaming, linkDefs)))
+                    elements.add(InlineElement.Italic(parse(text.substring(i + 1, closePos), isStreaming = false, linkDefs = linkDefs)))
                     i = closePos + 1
                     textStart = i
                     continue
+                }
+                if (isStreaming && canOpenDelimited(text, i, 1)) {
+                    appendText(elements, text, textStart, i)
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
                 }
             }
 
@@ -140,6 +175,11 @@ class InlineParser {
                 i = i + linkMatch.third
                 textStart = i
                 continue
+            }
+            if (isStreaming && text[i] == '[' && looksLikeUnfinishedLink(text, i)) {
+                appendText(elements, text, textStart, i)
+                elements.add(InlineElement.Text(text.substring(i)))
+                return elements
             }
 
             val refLinkMatch = matchRefLinkAt(text, i)
@@ -206,10 +246,80 @@ class InlineParser {
     private fun findCloseMarker(text: String, searchStart: Int, marker: String): Int {
         var i = searchStart
         while (i <= text.length - marker.length) {
-            if (text.substring(i, i + marker.length) == marker) return i
+            if (text.regionMatches(i, marker, 0, marker.length) && !isEscaped(text, i) && isExactMarkerRun(text, i, marker)) {
+                return i
+            }
             i++
         }
         return -1
+    }
+
+    private fun appendText(
+        elements: MutableList<InlineElement>,
+        text: String,
+        start: Int,
+        endExclusive: Int
+    ) {
+        if (endExclusive > start) {
+            elements.add(InlineElement.Text(text.substring(start, endExclusive)))
+        }
+    }
+
+    private fun canOpenDelimited(text: String, pos: Int, markerLength: Int): Boolean {
+        val nextIndex = pos + markerLength
+        if (nextIndex >= text.length) return false
+        val nextChar = text[nextIndex]
+        if (nextChar.isWhitespace()) return false
+        val prevChar = text.getOrNull(pos - 1)
+        return prevChar == null || prevChar.isWhitespace() || isPunctuation(prevChar)
+    }
+
+    private fun looksLikeUnfinishedLink(text: String, pos: Int): Boolean {
+        val closingBracket = findUnescapedChar(text, ']', pos + 1)
+        if (closingBracket < 0) return false
+        val nextIndex = closingBracket + 1
+        if (nextIndex >= text.length) return false
+        return when (text[nextIndex]) {
+            '(' -> findUnescapedChar(text, ')', nextIndex + 1) < 0
+            '[' -> findUnescapedChar(text, ']', nextIndex + 1) < 0
+            else -> false
+        }
+    }
+
+    private fun findUnescapedChar(text: String, target: Char, start: Int): Int {
+        var index = start
+        while (index < text.length) {
+            if (text[index] == target && !isEscaped(text, index)) {
+                return index
+            }
+            index++
+        }
+        return -1
+    }
+
+    private fun isEscaped(text: String, index: Int): Boolean {
+        var backslashCount = 0
+        var cursor = index - 1
+        while (cursor >= 0 && text[cursor] == '\\') {
+            backslashCount++
+            cursor--
+        }
+        return backslashCount % 2 == 1
+    }
+
+    private fun isExactMarkerRun(text: String, index: Int, marker: String): Boolean {
+        val markerChar = marker[0]
+        if (markerChar != '*' && markerChar != '~' && markerChar != '`') {
+            return true
+        }
+        if (index > 0 && text[index - 1] == markerChar) return false
+        val after = index + marker.length
+        if (after < text.length && text[after] == markerChar) return false
+        return true
+    }
+
+    private fun isPunctuation(char: Char): Boolean {
+        return !char.isLetterOrDigit() && !char.isWhitespace()
     }
 
     companion object {
