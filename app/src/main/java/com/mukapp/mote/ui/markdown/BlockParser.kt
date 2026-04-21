@@ -81,7 +81,7 @@ class BlockParser {
                 continue
             }
 
-            if (trimmed.startsWith("```")) {
+            if (isBacktickFenceStart(trimmed)) {
                 val result = parseCodeBlock(lines, i, offset, isStreaming)
                 blocks.add(result.block)
                 i = result.nextLineIndex
@@ -239,7 +239,8 @@ class BlockParser {
         isStreaming: Boolean
     ): CodeBlockResult {
         val firstLine = lines[startIndex].trimStart()
-        val language = firstLine.removePrefix("```").trim()
+        val fenceLength = leadingBacktickCount(firstLine)
+        val language = firstLine.substring(fenceLength).trim()
         val codeLines = mutableListOf<String>()
         var offset = startOffset + lines[startIndex].length + 1
         var i = startIndex + 1
@@ -248,7 +249,7 @@ class BlockParser {
         while (i < lines.size) {
             val line = lines[i]
             val lineTrimmed = line.trim()
-            if (lineTrimmed.startsWith("```") && lineTrimmed.count { it == '`' } == lineTrimmed.length) {
+            if (isClosingBacktickFence(lineTrimmed, fenceLength)) {
                 closed = true
                 offset += line.length + 1
                 i++
@@ -263,7 +264,7 @@ class BlockParser {
             val lastLine = codeLines.lastOrNull()
             if (lastLine != null) {
                 val lastTrimmed = lastLine.trim()
-                if (lastTrimmed.startsWith("```") && lastTrimmed.count { it == '`' } == lastTrimmed.length) {
+                if (isClosingBacktickFence(lastTrimmed, fenceLength)) {
                     codeLines.removeAt(codeLines.lastIndex)
                     closed = true
                     offset -= lastLine.length + 1
@@ -566,7 +567,7 @@ class BlockParser {
 
     private fun isBlockStart(trimmed: String): Boolean {
         if (trimmed.startsWith("#") && HEADING_PREFIX.containsMatchIn(trimmed)) return true
-        if (trimmed.startsWith("```")) return true
+        if (isBacktickFenceStart(trimmed)) return true
         if (trimmed.startsWith(">")) return true
         if (isHorizontalRuleLike(trimmed)) return true
         if (isUnorderedListPrefix(trimmed)) return true
@@ -590,6 +591,26 @@ class BlockParser {
         if (trimmed.startsWith("|")) return true
         if (trimmed.startsWith("[") && trimmed.contains("]:") && LINK_DEF_PREFIX.containsMatchIn(trimmed)) return true
         return false
+    }
+
+    private fun isBacktickFenceStart(trimmed: String): Boolean {
+        val backtickCount = leadingBacktickCount(trimmed)
+        if (backtickCount < 3) return false
+        if (trimmed.length == backtickCount) return true
+        return !trimmed.substring(backtickCount).contains('`')
+    }
+
+    private fun isClosingBacktickFence(trimmed: String, requiredLength: Int): Boolean {
+        val backtickCount = leadingBacktickCount(trimmed)
+        return backtickCount >= requiredLength && backtickCount == trimmed.length
+    }
+
+    private fun leadingBacktickCount(text: String): Int {
+        var count = 0
+        while (count < text.length && text[count] == '`') {
+            count++
+        }
+        return count
     }
 
     private fun isTableSeparatorRow(line: String, expectedColumnCount: Int): Boolean {

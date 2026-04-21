@@ -1,0 +1,191 @@
+package com.mukapp.mote.ui.markdown
+
+import android.content.Context
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.TypefaceSpan
+import io.noties.prism4j.AbsVisitor
+import io.noties.prism4j.GrammarLocator
+import io.noties.prism4j.Prism4j
+
+internal class MarkdownCodeSpanRenderer(context: Context) {
+
+    private val prism4j: Prism4j? = runCatching {
+        Prism4j(createGrammarLocator())
+    }.getOrNull()
+
+    private val defaultTextColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
+    }
+    private val keywordColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+    }
+    private val stringColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorSecondary, 0xFF386A20.toInt())
+    }
+    private val commentColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF707579.toInt())
+    }
+    private val numberColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorTertiary, 0xFF7D5260.toInt())
+    }
+    private val punctuationColor: Int by lazy {
+        blendWithAlpha(defaultTextColor, 0xCC)
+    }
+    private val annotationColor: Int by lazy {
+        resolveThemeColor(context, com.google.android.material.R.attr.colorSecondary, 0xFF006C4C.toInt())
+    }
+
+    fun buildCodeContent(code: String, language: String): SpannableStringBuilder {
+        val ssb = SpannableStringBuilder(code)
+        if (ssb.isNotEmpty()) {
+            ssb.setSpan(TypefaceSpan("monospace"), 0, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (!applyPrismHighlight(ssb, code, language)) {
+                applyFallbackHighlight(ssb, language, 0, ssb.length)
+            }
+        }
+        return ssb
+    }
+
+    private fun applyPrismHighlight(ssb: SpannableStringBuilder, code: String, language: String): Boolean {
+        val prism = prism4j ?: return false
+        val grammar = prism.grammar(normalizeLanguage(language)) ?: return false
+        val nodes = prism.tokenize(code, grammar)
+        if (nodes.isEmpty()) return false
+
+        var offset = 0
+        object : AbsVisitor() {
+            override fun visitText(text: Prism4j.Text) {
+                offset += text.literal().length
+            }
+
+            override fun visitSyntax(syntax: Prism4j.Syntax) {
+                val start = offset
+                if (syntax.tokenized()) {
+                    visit(syntax.children())
+                } else {
+                    offset += syntax.matchedString().length
+                }
+                val end = offset
+                if (end > start) {
+                    colorForTokenType(syntax.type(), syntax.alias())?.let { color ->
+                        ssb.setSpan(
+                            ForegroundColorSpan(color),
+                            start,
+                            end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                    }
+                }
+            }
+        }.visit(nodes)
+        return true
+    }
+
+    private fun colorForTokenType(type: String?, alias: String?): Int? {
+        val normalized = (alias ?: type).orEmpty().lowercase()
+        return when (normalized) {
+            "keyword", "operator", "boolean", "builtin", "atrule", "important" -> keywordColor
+            "string", "char", "attr-value", "template-string", "regex", "url" -> stringColor
+            "comment", "prolog", "doctype", "cdata" -> commentColor
+            "number", "symbol", "constant" -> numberColor
+            "punctuation", "delimiter" -> punctuationColor
+            "annotation", "decorator", "tag", "property", "attr-name" -> annotationColor
+            else -> null
+        }
+    }
+
+    private fun createGrammarLocator(): GrammarLocator {
+        val clazz = Class.forName("com.mukapp.mote.ui.markdown.MarkdownGrammarLocator")
+        val ctor = clazz.getDeclaredConstructor()
+        ctor.isAccessible = true
+        return ctor.newInstance() as GrammarLocator
+    }
+
+    private fun normalizeLanguage(language: String): String {
+        return when (language.trim().lowercase()) {
+            "kt", "kts" -> "kotlin"
+            "js" -> "javascript"
+            "ts", "tsx", "jsx" -> "javascript"
+            "py" -> "python"
+            "html", "xml", "svg" -> "markup"
+            "yml" -> "yaml"
+            "c++" -> "cpp"
+            "cs" -> "csharp"
+            else -> language.trim().lowercase()
+        }
+    }
+
+    private fun applyFallbackHighlight(ssb: SpannableStringBuilder, language: String, start: Int, end: Int) {
+        val code = ssb.substring(start, end)
+        val langLower = language.lowercase()
+
+        val keywords = when {
+            langLower in setOf("bash", "sh", "shell", "zsh") -> SHELL_KEYWORDS
+            else -> null
+        }
+
+        if (keywords != null) {
+            for (keyword in keywords) {
+                var searchFrom = 0
+                while (searchFrom < code.length) {
+                    val idx = code.indexOf(keyword, searchFrom)
+                    if (idx < 0) break
+                    val beforeOk = idx == 0 || !code[idx - 1].isLetterOrDigit()
+                    val afterIdx = idx + keyword.length
+                    val afterOk = afterIdx >= code.length || !code[afterIdx].isLetterOrDigit()
+                    if (beforeOk && afterOk) {
+                        ssb.setSpan(
+                            ForegroundColorSpan(keywordColor),
+                            start + idx,
+                            start + afterIdx,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                    }
+                    searchFrom = idx + keyword.length
+                }
+            }
+        }
+
+        for (match in STRING_REGEX.findAll(code)) {
+            val matchStart = start + match.range.first
+            val matchEnd = start + match.range.last + 1
+            if (matchStart < end && matchEnd <= end) {
+                ssb.setSpan(
+                    ForegroundColorSpan(stringColor),
+                    matchStart,
+                    matchEnd,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+
+        for (match in COMMENT_REGEX.findAll(code)) {
+            val matchStart = start + match.range.first
+            val matchEnd = start + match.range.last + 1
+            if (matchStart < end && matchEnd <= end) {
+                ssb.setSpan(
+                    ForegroundColorSpan(commentColor),
+                    matchStart,
+                    matchEnd,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+    }
+
+    private companion object {
+        private val STRING_REGEX = Regex("""\"[^\"]*\"|'[^']*'|\"\"\"[\s\S]*?\"\"\"""")
+        private val COMMENT_REGEX = Regex("#.*?$", RegexOption.MULTILINE)
+
+        private val SHELL_KEYWORDS = setOf(
+            "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+            "case", "esac", "function", "return", "exit", "break", "continue", "in",
+            "echo", "printf", "read", "cd", "pwd", "ls", "mkdir", "rm", "cp", "mv",
+            "cat", "grep", "sed", "awk", "find", "sort", "uniq", "wc", "head", "tail",
+            "chmod", "chown", "export", "source", "alias", "unset", "set", "shift",
+            "test", "true", "false", "local", "declare", "typeset", "readonly"
+        )
+    }
+}

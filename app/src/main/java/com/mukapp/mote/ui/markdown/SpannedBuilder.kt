@@ -17,11 +17,11 @@ import android.text.style.TypefaceSpan
 import android.text.style.URLSpan
 import android.util.TypedValue
 import androidx.annotation.ColorInt
-import androidx.core.content.ContextCompat
 
 class SpannedBuilder(private val context: Context) {
 
     private val inlineParser = InlineParser()
+    private val codeSpanRenderer = MarkdownCodeSpanRenderer(context)
 
     /** 表格可用绘制宽度（像素），由外部设置 */
     var tableAvailableWidth: Int = 0
@@ -46,18 +46,6 @@ class SpannedBuilder(private val context: Context) {
         resolveThemeColor(com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
     }
 
-    private val keywordColor: Int by lazy {
-        resolveThemeColor(com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
-    }
-
-    private val stringColor: Int by lazy {
-        resolveThemeColor(com.google.android.material.R.attr.colorSecondary, 0xFF386A20.toInt())
-    }
-
-    private val commentColor: Int by lazy {
-        resolveThemeColor(com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF707579.toInt())
-    }
-
     private val bulletGapWidth: Int by lazy {
         TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP, 8f,
@@ -71,22 +59,32 @@ class SpannedBuilder(private val context: Context) {
         return ssb
     }
 
+    fun buildSingleBlock(block: MdBlock, isStreaming: Boolean = false, linkDefs: Map<String, Pair<String, String>> = emptyMap()): SpannableStringBuilder {
+        val ssb = SpannableStringBuilder()
+        appendSingleBlock(ssb, block, isStreaming, linkDefs)
+        return ssb
+    }
+
     private fun appendBlocks(ssb: SpannableStringBuilder, blocks: List<MdBlock>, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         for ((index, block) in blocks.withIndex()) {
-            when (block) {
-                is MdBlock.Heading -> appendHeading(ssb, block, linkDefs)
-                is MdBlock.CodeBlock -> appendCodeBlock(ssb, block)
-                is MdBlock.UnorderedList -> appendUnorderedList(ssb, block, isStreaming, linkDefs)
-                is MdBlock.OrderedList -> appendOrderedList(ssb, block, isStreaming, linkDefs)
-                is MdBlock.TaskList -> appendTaskList(ssb, block, isStreaming, linkDefs)
-                is MdBlock.Blockquote -> appendBlockquote(ssb, block, isStreaming, linkDefs)
-                is MdBlock.Table -> appendTable(ssb, block, isStreaming, linkDefs)
-                is MdBlock.Paragraph -> appendParagraph(ssb, block, isStreaming, linkDefs)
-                is MdBlock.HorizontalRule -> appendHorizontalRule(ssb)
-            }
+            appendSingleBlock(ssb, block, isStreaming, linkDefs)
             if (index < blocks.lastIndex) {
                 ssb.append('\n')
             }
+        }
+    }
+
+    private fun appendSingleBlock(ssb: SpannableStringBuilder, block: MdBlock, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
+        when (block) {
+            is MdBlock.Heading -> appendHeading(ssb, block, linkDefs)
+            is MdBlock.CodeBlock -> appendCodeBlock(ssb, block)
+            is MdBlock.UnorderedList -> appendUnorderedList(ssb, block, isStreaming, linkDefs)
+            is MdBlock.OrderedList -> appendOrderedList(ssb, block, isStreaming, linkDefs)
+            is MdBlock.TaskList -> appendTaskList(ssb, block, isStreaming, linkDefs)
+            is MdBlock.Blockquote -> appendBlockquote(ssb, block, isStreaming, linkDefs)
+            is MdBlock.Table -> appendTable(ssb, block, isStreaming, linkDefs)
+            is MdBlock.Paragraph -> appendParagraph(ssb, block, isStreaming, linkDefs)
+            is MdBlock.HorizontalRule -> appendHorizontalRule(ssb)
         }
     }
 
@@ -105,62 +103,14 @@ class SpannedBuilder(private val context: Context) {
             ssb.append(codeBlock.language)
             ssb.append('\n')
         }
-        ssb.append(codeBlock.code)
+        ssb.append(codeSpanRenderer.buildCodeContent(codeBlock.code, codeBlock.language))
         val end = ssb.length
         ssb.setSpan(BackgroundColorSpan(codeBlockBgColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         ssb.setSpan(TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-
-        applySyntaxHighlight(ssb, codeBlock.language, start, end)
     }
 
-    private fun applySyntaxHighlight(ssb: SpannableStringBuilder, language: String, start: Int, end: Int) {
-        val code = ssb.substring(start, end)
-        val langLower = language.lowercase()
-
-        val keywords = when {
-            langLower in setOf("kotlin", "java", "scala") -> KOTLIN_JAVA_KEYWORDS
-            langLower in setOf("python", "py") -> PYTHON_KEYWORDS
-            langLower in setOf("javascript", "js", "typescript", "ts") -> JS_KEYWORDS
-            langLower == "c" || langLower == "cpp" || langLower == "c++" -> C_KEYWORDS
-            langLower in setOf("bash", "sh", "shell", "zsh") -> SHELL_KEYWORDS
-            langLower in setOf("sql") -> SQL_KEYWORDS
-            else -> null
-        }
-
-        if (keywords != null) {
-            for (keyword in keywords) {
-                var searchFrom = 0
-                while (searchFrom < code.length) {
-                    val idx = code.indexOf(keyword, searchFrom)
-                    if (idx < 0) break
-                    val beforeOk = idx == 0 || !code[idx - 1].isLetterOrDigit()
-                    val afterIdx = idx + keyword.length
-                    val afterOk = afterIdx >= code.length || !code[afterIdx].isLetterOrDigit()
-                    if (beforeOk && afterOk) {
-                        ssb.setSpan(ForegroundColorSpan(keywordColor), start + idx, start + afterIdx, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    }
-                    searchFrom = idx + keyword.length
-                }
-            }
-        }
-
-        val stringPattern = STRING_REGEX
-        for (match in stringPattern.findAll(code)) {
-            val matchStart = start + match.range.first
-            val matchEnd = start + match.range.last + 1
-            if (matchStart < end && matchEnd <= end) {
-                ssb.setSpan(ForegroundColorSpan(stringColor), matchStart, matchEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-        }
-
-        val commentPattern = COMMENT_REGEX
-        for (match in commentPattern.findAll(code)) {
-            val matchStart = start + match.range.first
-            val matchEnd = start + match.range.last + 1
-            if (matchStart < end && matchEnd <= end) {
-                ssb.setSpan(ForegroundColorSpan(commentColor), matchStart, matchEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-        }
+    fun buildCodeContent(code: String, language: String): SpannableStringBuilder {
+        return codeSpanRenderer.buildCodeContent(code, language)
     }
 
     private fun appendUnorderedList(ssb: SpannableStringBuilder, list: MdBlock.UnorderedList, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
@@ -346,74 +296,13 @@ class SpannedBuilder(private val context: Context) {
 
     @ColorInt
     private fun resolveThemeColor(attr: Int, @ColorInt fallback: Int): Int {
-        val typedValue = TypedValue()
-        val resolved = context.theme.resolveAttribute(attr, typedValue, true)
-        return if (resolved) {
-            if (typedValue.resourceId != 0) ContextCompat.getColor(context, typedValue.resourceId) else typedValue.data
-        } else fallback
+        return resolveThemeColor(context, attr, fallback)
     }
 
     @ColorInt
     private fun blendWithAlpha(@ColorInt color: Int, alpha: Int): Int {
-        val r = (color shr 16) and 0xFF
-        val g = (color shr 8) and 0xFF
-        val b = color and 0xFF
-        return (alpha shl 24) or (r shl 16) or (g shl 8) or b
+        return com.mukapp.mote.ui.markdown.blendWithAlpha(color, alpha)
     }
 
-    companion object {
-        private val STRING_REGEX = Regex("""\"[^"]*\"|'[^']*'|\"\"\"[\s\S]*?\"\"\"""")
-        private val COMMENT_REGEX = Regex("//.*?$|/\\*[\\s\\S]*?\\*/", RegexOption.MULTILINE)
-
-        private val KOTLIN_JAVA_KEYWORDS = setOf(
-            "fun", "val", "var", "class", "interface", "object", "if", "else", "when", "for",
-            "while", "do", "return", "break", "continue", "try", "catch", "finally", "throw",
-            "import", "package", "new", "this", "super", "null", "true", "false", "override",
-            "private", "protected", "public", "internal", "abstract", "open", "sealed", "data",
-            "enum", "annotation", "companion", "init", "constructor", "by", "lazy", "lateinit",
-            "inline", "reified", "suspend", "operator", "infix", "tailrec", "crossinline",
-            "noinline", "typealias", "where", "is", "as", "in", "out", "void", "static",
-            "final", "extends", "implements", "throws", "instanceof", "boolean", "int",
-            "long", "float", "double", "char", "byte", "short", "String"
-        )
-        private val PYTHON_KEYWORDS = setOf(
-            "def", "class", "if", "elif", "else", "for", "while", "return", "import", "from",
-            "as", "try", "except", "finally", "raise", "with", "yield", "lambda", "pass",
-            "break", "continue", "and", "or", "not", "in", "is", "None", "True", "False",
-            "global", "nonlocal", "assert", "del", "async", "await", "self"
-        )
-        private val JS_KEYWORDS = setOf(
-            "function", "const", "let", "var", "class", "if", "else", "for", "while", "do",
-            "return", "break", "continue", "try", "catch", "finally", "throw", "new", "this",
-            "super", "null", "undefined", "true", "false", "typeof", "instanceof", "in",
-            "of", "async", "await", "yield", "import", "export", "from", "default", "extends",
-            "static", "get", "set", "interface", "type", "enum", "implements"
-        )
-        private val C_KEYWORDS = setOf(
-            "int", "long", "float", "double", "char", "void", "bool", "auto", "const",
-            "static", "extern", "register", "volatile", "signed", "unsigned", "short",
-            "struct", "union", "enum", "typedef", "if", "else", "for", "while", "do",
-            "switch", "case", "default", "break", "continue", "return", "goto", "sizeof",
-            "NULL", "true", "false", "class", "namespace", "using", "template", "virtual",
-            "override", "public", "private", "protected", "new", "delete", "try", "catch",
-            "throw", "constexpr", "nullptr", "auto", "decltype", "static_cast", "dynamic_cast"
-        )
-        private val SHELL_KEYWORDS = setOf(
-            "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
-            "case", "esac", "function", "return", "exit", "break", "continue", "in",
-            "echo", "printf", "read", "cd", "pwd", "ls", "mkdir", "rm", "cp", "mv",
-            "cat", "grep", "sed", "awk", "find", "sort", "uniq", "wc", "head", "tail",
-            "chmod", "chown", "export", "source", "alias", "unset", "set", "shift",
-            "test", "true", "false", "local", "declare", "typeset", "readonly"
-        )
-        private val SQL_KEYWORDS = setOf(
-            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET",
-            "DELETE", "CREATE", "TABLE", "ALTER", "DROP", "INDEX", "VIEW", "JOIN",
-            "INNER", "LEFT", "RIGHT", "OUTER", "ON", "AND", "OR", "NOT", "NULL",
-            "IS", "IN", "BETWEEN", "LIKE", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
-            "OFFSET", "UNION", "ALL", "AS", "DISTINCT", "COUNT", "SUM", "AVG", "MIN",
-            "MAX", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END", "PRIMARY", "KEY",
-            "FOREIGN", "REFERENCES", "CONSTRAINT", "DEFAULT", "CHECK", "UNIQUE"
-        )
-    }
+    companion object
 }

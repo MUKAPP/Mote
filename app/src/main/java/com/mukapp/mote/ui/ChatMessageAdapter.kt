@@ -2,11 +2,9 @@ package com.mukapp.mote.ui
 
 import android.widget.TextView
 import android.util.TypedValue
-import android.text.method.LinkMovementMethod
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import androidx.collection.LruCache
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.data.model.ChatMessage
@@ -17,7 +15,6 @@ import com.mukapp.mote.databinding.IntermediateStepsBlockBinding
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
 import com.mukapp.mote.databinding.ItemToolResultBinding
-import com.mukapp.mote.ui.markdown.StreamingMarkdownRenderer
 import com.mukapp.mote.R
 import org.json.JSONObject
 
@@ -33,7 +30,6 @@ class ChatMessageAdapter(
 
     private var isSending: Boolean = false
     private var streamingMessageId: String? = null
-    private val rendererCache = LruCache<String, StreamingMarkdownRenderer>(16)
     private var maxStepsHeightPx: Int = 0
 
     init {
@@ -76,15 +72,6 @@ class ChatMessageAdapter(
         if (holder is AssistantViewHolder) {
             holder.clear()
         }
-    }
-
-    private fun getOrCreateRenderer(messageId: String, context: android.content.Context): StreamingMarkdownRenderer {
-        var renderer = rendererCache[messageId]
-        if (renderer == null) {
-            renderer = StreamingMarkdownRenderer(context.applicationContext)
-            rendererCache.put(messageId, renderer)
-        }
-        return renderer
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
@@ -185,20 +172,8 @@ class ChatMessageAdapter(
 
         fun clear() {
             streamingThinkingTextView = null
+            binding.markdownContent.clearMarkdown()
         }
-
-        /** 根据 markdownContent 的实际宽度更新表格绘制区域 */
-        private fun updateTableWidth(renderer: StreamingMarkdownRenderer) {
-            val tv = binding.markdownContent
-            val w = if (tv.width > 0) tv.width - tv.paddingLeft - tv.paddingRight
-                    else itemView.width - (tv.marginStart + tv.marginEnd).coerceAtLeast(0)
-            if (w > 0) renderer.tableAvailableWidth = w
-        }
-
-        private val android.view.View.marginStart: Int
-            get() = (layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.marginStart ?: 0
-        private val android.view.View.marginEnd: Int
-            get() = (layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.marginEnd ?: 0
 
         fun bind(message: ChatMessage, position: Int) {
             streamingThinkingTextView = null
@@ -213,18 +188,9 @@ class ChatMessageAdapter(
             binding.textStatus.text = itemView.context.getString(R.string.status_generating)
             binding.markdownContent.isVisible = hasContent
             if (hasContent) {
-                val renderer = getOrCreateRenderer(message.id, itemView.context)
-                updateTableWidth(renderer)
-                if (isStreamingMessage) {
-                    binding.markdownContent.text = renderer.setMarkdown(message.content)
-                    binding.markdownContent.movementMethod = null
-                } else {
-                    binding.markdownContent.text = renderer.renderStatic(message.content)
-                    binding.markdownContent.movementMethod = LinkMovementMethod.getInstance()
-                }
+                binding.markdownContent.setMarkdown(message.content, isStreamingMessage)
             } else {
-                binding.markdownContent.text = ""
-                binding.markdownContent.movementMethod = null
+                binding.markdownContent.clearMarkdown()
             }
 
             binding.layoutActions.isVisible = !isStreamingMessage
@@ -257,12 +223,9 @@ class ChatMessageAdapter(
             binding.textStatus.isVisible = !hasContent && !hasSteps
             binding.markdownContent.isVisible = hasContent
             if (hasContent) {
-                binding.markdownContent.movementMethod = null
-                val renderer = getOrCreateRenderer(message.id, itemView.context)
-                updateTableWidth(renderer)
-                binding.markdownContent.text = renderer.setMarkdown(message.content)
+                binding.markdownContent.setMarkdown(message.content, true)
             } else {
-                binding.markdownContent.text = ""
+                binding.markdownContent.clearMarkdown()
             }
 
             if (hasContent && binding.stepsBlock.scrollSteps.isVisible

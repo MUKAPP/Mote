@@ -13,6 +13,7 @@ fragment = "1.8.9"
 lifecycle = "2.9.4"
 recyclerview = "1.4.0"
 blurview = "version-3.2.0"
+prism4j = "2.0.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -30,6 +31,7 @@ androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecyc
 androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
 androidx-recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "recyclerview" }
 blurview = { group = "com.github.Dimezis", name = "BlurView", version.ref = "blurview" }
+prism4j-core = { group = "io.noties", name = "prism4j", version.ref = "prism4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
