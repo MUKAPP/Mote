@@ -1,5 +1,6 @@
 package com.mukapp.mote.ui
 
+import androidx.core.view.updateLayoutParams
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import android.view.LayoutInflater
@@ -12,6 +13,7 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
+import com.mukapp.mote.util.dpInt
 
 class ChatMessageAdapter(
     private val onCopyMessage: (ChatMessage) -> Unit,
@@ -168,6 +170,10 @@ class ChatMessageAdapter(
             val hasParts = message.assistantParts.isNotEmpty()
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
             syncThinkingPartExpansion(message, isStreamingMessage)
+
+            binding.markdownContent.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = if (isStreamingMessage) 16.dpInt else 0
+            }
 
             binding.textAiLabel.text = itemView.context.getString(R.string.label_ai)
             binding.textStatus.isVisible = !hasContent && !hasParts
