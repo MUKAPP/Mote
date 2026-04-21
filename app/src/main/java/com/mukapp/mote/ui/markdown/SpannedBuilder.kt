@@ -24,6 +24,9 @@ class SpannedBuilder(private val context: Context) {
     private val codeColors = resolveMarkdownCodeColors(context)
     private val codeSpanRenderer = MarkdownCodeSpanRenderer(context, codeColors)
 
+    /** 共享的代码高亮渲染器，供 MarkdownCodeBlockView 复用，避免重复创建 Prism4j 实例 */
+    val sharedCodeSpanRenderer: MarkdownCodeSpanRenderer get() = codeSpanRenderer
+
     /** 表格可用绘制宽度（像素），由外部设置 */
     var tableAvailableWidth: Int = 0
 

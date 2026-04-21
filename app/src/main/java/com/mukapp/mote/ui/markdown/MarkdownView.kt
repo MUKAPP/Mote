@@ -57,6 +57,7 @@ class MarkdownView @JvmOverloads constructor(
 
     private val blockParser = BlockParser()
     private val spannedBuilder = SpannedBuilder(context)
+    private val codeSpanRenderer: MarkdownCodeSpanRenderer = spannedBuilder.sharedCodeSpanRenderer
     private val defaultTextAppearanceRes = resolveThemeResource(
         context,
         com.google.android.material.R.attr.textAppearanceBodyLarge,
@@ -110,6 +111,8 @@ class MarkdownView @JvmOverloads constructor(
     private var renderMode: RenderMode = RenderMode.None
     private var lastRenderedPartStates: List<RenderedAssistantPartState> = emptyList()
     private var lastRenderedLinkDefs: Map<String, Pair<String, String>> = emptyMap()
+    /** 缓存上一次渲染 Markdown 文本时的 block 列表，用于流式增量更新 */
+    private var lastRenderedBlocks: List<MdBlock> = emptyList()
 
     init {
         orientation = VERTICAL
@@ -139,9 +142,23 @@ class MarkdownView @JvmOverloads constructor(
         }
         isVisible = true
 
-        resetRenderedPartState()
-        removeAllViews()
-        renderMarkdownTextInto(this, text, isStreaming, collectLinkDefs(text, isStreaming))
+        val linkDefs = collectLinkDefs(text, isStreaming)
+        val blocks = blockParser.parse(text, isStreaming, linkDefs)
+
+        if (renderMode == RenderMode.Markdown && lastRenderedLinkDefs == linkDefs) {
+            renderBlocksIncrementally(this, blocks, isStreaming, linkDefs)
+        } else {
+            resetRenderedPartState()
+            removeAllViews()
+            blocks.forEachIndexed { index, block ->
+                addView(
+                    createBlockView(block, isStreaming, linkDefs, nested = false, isLastInContainer = index == blocks.lastIndex)
+                )
+            }
+        }
+
+        lastRenderedBlocks = blocks
+        lastRenderedLinkDefs = linkDefs
         renderMode = RenderMode.Markdown
     }
 
@@ -216,7 +233,7 @@ class MarkdownView @JvmOverloads constructor(
         if (text.isBlank()) {
             return
         }
-        val blocks = blockParser.parse(text, isStreaming = isStreaming)
+        val blocks = blockParser.parse(text, isStreaming, linkDefs)
         blocks.forEachIndexed { index, block ->
             container.addView(
                 createBlockView(
@@ -225,6 +242,54 @@ class MarkdownView @JvmOverloads constructor(
                     linkDefs,
                     nested = false,
                     isLastInContainer = index == blocks.lastIndex
+                )
+            )
+        }
+    }
+
+    /**
+     * Block 级别增量更新：对比上一次的 block 列表，
+     * 只替换发生变化的尾部 block，避免流式渲染时全量重建视图树。
+     */
+    private fun renderBlocksIncrementally(
+        container: ViewGroup,
+        newBlocks: List<MdBlock>,
+        isStreaming: Boolean,
+        linkDefs: Map<String, Pair<String, String>>
+    ) {
+        val oldBlocks = lastRenderedBlocks
+        val oldCount = oldBlocks.size
+        val newCount = newBlocks.size
+
+        // 找到第一个不同的 block 位置
+        val sharedCount = minOf(oldCount, newCount)
+        var firstDiffIndex = sharedCount
+        for (i in 0 until sharedCount) {
+            if (oldBlocks[i] != newBlocks[i]) {
+                firstDiffIndex = i
+                break
+            }
+        }
+
+        // 如果完全相同，无需更新
+        if (firstDiffIndex == newCount && oldCount == newCount) {
+            return
+        }
+
+        // 移除从 firstDiffIndex 开始的旧视图
+        while (container.childCount > firstDiffIndex) {
+            container.removeViewAt(container.childCount - 1)
+        }
+
+        // 添加从 firstDiffIndex 开始的新 block 视图
+        for (i in firstDiffIndex until newCount) {
+            container.addView(
+                createBlockView(
+                    newBlocks[i],
+                    isStreaming,
+                    linkDefs,
+                    nested = false,
+                    isLastInContainer = i == newBlocks.lastIndex
                 )
             )
         }
@@ -360,6 +425,7 @@ class MarkdownView @JvmOverloads constructor(
         renderMode = RenderMode.None
         lastRenderedPartStates = emptyList()
         lastRenderedLinkDefs = emptyMap()
+        lastRenderedBlocks = emptyList()
     }
 
     private fun createThinkingPartView(
@@ -544,6 +610,7 @@ class MarkdownView @JvmOverloads constructor(
     ): View {
         return MarkdownCodeBlockView(context).apply {
             layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
+            setSharedCodeSpanRenderer(codeSpanRenderer)
             setCodeBlock(codeBlock.language, codeBlock.code)
         }
     }

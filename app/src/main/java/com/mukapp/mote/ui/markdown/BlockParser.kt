@@ -10,6 +10,16 @@ class BlockParser {
         return parseBlocks(lines, 0, lines.size, isStreaming, linkDefs, tailLineComplete)
     }
 
+    /**
+     * 使用外部提供的 linkDefs 解析，避免重复收集链接定义。
+     */
+    fun parse(text: String, isStreaming: Boolean, externalLinkDefs: Map<String, Pair<String, String>>): List<MdBlock> {
+        if (text.isBlank()) return emptyList()
+        val lines = text.lines()
+        val tailLineComplete = isTailLineComplete(text)
+        return parseBlocks(lines, 0, lines.size, isStreaming, externalLinkDefs, tailLineComplete)
+    }
+
     private fun collectLinkDefinitions(
         lines: List<String>,
         isStreaming: Boolean,
@@ -356,9 +366,7 @@ class BlockParser {
             }
         }
 
-        val innerText = quoteLines.joinToString("\n")
-        val childLines = innerText.lines()
-        val children = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
+        val children = parseBlocks(quoteLines, 0, quoteLines.size, isStreaming, linkDefs, tailLineComplete)
         val endOffset = offset - 1
 
         return BlockquoteResult(MdBlock.Blockquote(children, startOffset, endOffset), i, offset)
@@ -399,9 +407,7 @@ class BlockParser {
                 childLines.addAll(normalizeListContinuationLines(continuation.lines))
                 i = continuation.nextLineIndex
                 offset = continuation.nextOffset
-                val childText = childLines.joinToString("\n")
-                val childLineList = childText.lines()
-                val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
+                val childBlocks = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
                 items.add(Pair(taskItem, childBlocks))
             } else {
                 break
@@ -443,9 +449,7 @@ class BlockParser {
                 childLines.addAll(normalizeListContinuationLines(continuation.lines))
                 i = continuation.nextLineIndex
                 offset = continuation.nextOffset
-                val childText = childLines.joinToString("\n")
-                val childLineList = childText.lines()
-                val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
+                val childBlocks = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
                 items.add(childBlocks)
             } else {
                 break
@@ -487,9 +491,7 @@ class BlockParser {
                 childLines.addAll(normalizeListContinuationLines(continuation.lines))
                 i = continuation.nextLineIndex
                 offset = continuation.nextOffset
-                val childText = childLines.joinToString("\n")
-                val childLineList = childText.lines()
-                val childBlocks = parseBlocks(childLineList, 0, childLineList.size, isStreaming, linkDefs, tailLineComplete)
+                val childBlocks = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
                 items.add(childBlocks)
             } else {
                 break

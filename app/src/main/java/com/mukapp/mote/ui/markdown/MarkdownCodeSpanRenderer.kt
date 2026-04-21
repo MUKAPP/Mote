@@ -9,7 +9,7 @@ import io.noties.prism4j.AbsVisitor
 import io.noties.prism4j.GrammarLocator
 import io.noties.prism4j.Prism4j
 
-internal class MarkdownCodeSpanRenderer(
+class MarkdownCodeSpanRenderer(
     context: Context,
     private val codeColors: MarkdownCodeColors = resolveMarkdownCodeColors(context)
 ) {

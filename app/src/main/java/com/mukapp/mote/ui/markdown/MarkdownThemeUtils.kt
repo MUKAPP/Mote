@@ -7,7 +7,7 @@ import androidx.annotation.ColorInt
 import androidx.core.content.ContextCompat
 import com.mukapp.mote.R
 
-internal data class MarkdownCodeColors(
+data class MarkdownCodeColors(
     @get:ColorInt val blockBackgroundColor: Int,
     @get:ColorInt val headerTextColor: Int,
     @get:ColorInt val codeTextColor: Int,
@@ -22,7 +22,7 @@ internal data class MarkdownCodeColors(
     @get:ColorInt val inlineCodeTextColor: Int
 )
 
-internal fun resolveMarkdownCodeColors(context: Context): MarkdownCodeColors {
+fun resolveMarkdownCodeColors(context: Context): MarkdownCodeColors {
     val blockBackgroundColor = ContextCompat.getColor(context, R.color.markdown_code_block_background)
     val headerTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_header_text)
     val codeTextColor = ContextCompat.getColor(context, R.color.markdown_code_block_text)
