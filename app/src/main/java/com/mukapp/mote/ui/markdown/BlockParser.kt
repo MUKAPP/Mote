@@ -300,6 +300,7 @@ class BlockParser {
         val separatorLine = lines[startIndex + 1].trim()
         if (!isTableSeparatorRow(separatorLine, headerCells.size)) return null
 
+        val alignments = parseTableAlignments(separatorLine, headerCells.size)
         val headers = headerCells
         val rows = mutableListOf<List<String>>()
         var offset = startOffset
@@ -317,7 +318,7 @@ class BlockParser {
             offset += lines[i].length + 1; i++
         }
 
-        return TableResult(MdBlock.Table(headers, rows, startOffset, offset - 1), i, offset)
+        return TableResult(MdBlock.Table(headers, rows, alignments, startOffset, offset - 1), i, offset)
     }
 
     private fun parseTableRow(line: String): List<String> {
@@ -600,6 +601,25 @@ class BlockParser {
         return cells.all { cell ->
             val trimmed = cell.trim()
             trimmed.isNotEmpty() && TABLE_SEPARATOR_CELL_REGEX.matches(trimmed)
+        }
+    }
+
+    /** 从分隔行解析各列的对齐方式 */
+    private fun parseTableAlignments(separatorLine: String, colCount: Int): List<MdBlock.Alignment> {
+        val cells = parseTableRow(separatorLine)
+        return List(colCount) { j ->
+            if (j < cells.size) {
+                val cell = cells[j].trim()
+                val left = cell.startsWith(':')
+                val right = cell.endsWith(':')
+                when {
+                    left && right -> MdBlock.Alignment.CENTER
+                    right -> MdBlock.Alignment.RIGHT
+                    else -> MdBlock.Alignment.LEFT
+                }
+            } else {
+                MdBlock.Alignment.LEFT
+            }
         }
     }
 

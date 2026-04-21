@@ -23,6 +23,9 @@ class SpannedBuilder(private val context: Context) {
 
     private val inlineParser = InlineParser()
 
+    /** 表格可用绘制宽度（像素），由外部设置 */
+    var tableAvailableWidth: Int = 0
+
     private val codeBlockBgColor: Int by lazy {
         val surfaceVariant = resolveThemeColor(
             com.google.android.material.R.attr.colorSurfaceVariant,
@@ -210,101 +213,63 @@ class SpannedBuilder(private val context: Context) {
         ssb.setSpan(LeadingMarginSpan.Standard(quoteMargin), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
+    /** 表头背景色 */
+    private val tableHeaderBgColor: Int by lazy {
+        blendWithAlpha(
+            resolveThemeColor(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
+            0x88
+        )
+    }
+
+    /** 表格数据行交替背景色 */
+    private val tableRowAltBgColor: Int by lazy {
+        blendWithAlpha(
+            resolveThemeColor(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
+            0x22
+        )
+    }
+
+    /** 表格网格线颜色 */
+    private val tableGridLineColor: Int by lazy {
+        blendWithAlpha(
+            resolveThemeColor(com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt()),
+            0x66
+        )
+    }
+
+    /** 表头文字颜色 */
+    private val tableHeaderTextColor: Int by lazy {
+        resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
+    }
+
+    /** 表格正文文字颜色 */
+    private val tableCellTextColor: Int by lazy {
+        resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
+    }
+
+    @Suppress("UNUSED_PARAMETER")
     private fun appendTable(ssb: SpannableStringBuilder, table: MdBlock.Table, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         val colCount = table.headers.size
         if (colCount == 0) return
-        if (isStreaming) {
-            appendStreamingTable(ssb, table, linkDefs)
-            return
-        }
-        val colWidths = calculateColumnWidths(table)
 
-        appendTableRow(ssb, table.headers, colWidths, isStreaming, linkDefs, isHeader = true)
-        ssb.append('\n')
-        val sepStart = ssb.length
-        val separator = buildString {
-            append("|")
-            for (w in colWidths) { append(" "); repeat(w) { append("-") }; append(" |") }
-        }
-        ssb.append(separator)
-        ssb.setSpan(TypefaceSpan("monospace"), sepStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val width = if (tableAvailableWidth > 0) tableAvailableWidth else 800
+        val start = ssb.length
+        // 占位符：用单个特殊字符，TableSpan 会完全替换它的绘制
+        ssb.append("\u200B") // zero-width space 作为占位
+        val end = ssb.length
 
-        for (row in table.rows) {
-            ssb.append('\n')
-            appendTableRow(ssb, row, colWidths, isStreaming, linkDefs, isHeader = false)
-        }
-    }
-
-    private fun appendStreamingTable(
-        ssb: SpannableStringBuilder,
-        table: MdBlock.Table,
-        linkDefs: Map<String, Pair<String, String>>
-    ) {
-        appendStreamingTableRow(ssb, table.headers, linkDefs, isHeader = true)
-        ssb.append('\n')
-        val separatorStart = ssb.length
-        val separator = buildString {
-            append("|")
-            repeat(table.headers.size) {
-                append(" --- |")
-            }
-        }
-        ssb.append(separator)
-        ssb.setSpan(TypefaceSpan("monospace"), separatorStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-
-        for (row in table.rows) {
-            ssb.append('\n')
-            appendStreamingTableRow(ssb, row, linkDefs, isHeader = false)
-        }
-    }
-
-    private fun calculateColumnWidths(table: MdBlock.Table): IntArray {
-        val colCount = table.headers.size
-        val widths = IntArray(colCount)
-        for (j in 0 until colCount) widths[j] = table.headers[j].length
-        for (row in table.rows) {
-            for (j in 0 until minOf(colCount, row.size)) {
-                widths[j] = maxOf(widths[j], row[j].length)
-            }
-        }
-        for (j in 0 until colCount) widths[j] = maxOf(widths[j], 3)
-        return widths
-    }
-
-    private fun appendTableRow(ssb: SpannableStringBuilder, cells: List<String>, colWidths: IntArray, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>, isHeader: Boolean) {
-        val rowStart = ssb.length
-        val rowBuilder = StringBuilder()
-        rowBuilder.append("|")
-        for (j in colWidths.indices) {
-            val cellText = if (j < cells.size) cells[j] else ""
-            rowBuilder.append(" ").append(cellText.padEnd(colWidths[j])).append(" |")
-        }
-        val inlineElements = inlineParser.parse(rowBuilder.toString(), isStreaming, linkDefs)
-        appendInlineElements(ssb, inlineElements)
-        if (isHeader) {
-            ssb.setSpan(StyleSpan(Typeface.BOLD), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-        ssb.setSpan(TypefaceSpan("monospace"), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-    }
-
-    private fun appendStreamingTableRow(
-        ssb: SpannableStringBuilder,
-        cells: List<String>,
-        linkDefs: Map<String, Pair<String, String>>,
-        isHeader: Boolean
-    ) {
-        val rowStart = ssb.length
-        val rowBuilder = StringBuilder()
-        rowBuilder.append("|")
-        for (cell in cells) {
-            rowBuilder.append(" ").append(cell).append(" |")
-        }
-        val inlineElements = inlineParser.parse(rowBuilder.toString(), isStreaming = true, linkDefs = linkDefs)
-        appendInlineElements(ssb, inlineElements)
-        if (isHeader) {
-            ssb.setSpan(StyleSpan(Typeface.BOLD), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-        ssb.setSpan(TypefaceSpan("monospace"), rowStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val span = TableSpan(
+            headers = table.headers,
+            rows = table.rows,
+            alignments = table.alignments,
+            headerBgColor = tableHeaderBgColor,
+            altRowBgColor = tableRowAltBgColor,
+            gridLineColor = tableGridLineColor,
+            headerTextColor = tableHeaderTextColor,
+            cellTextColor = tableCellTextColor,
+            availableWidth = width
+        )
+        ssb.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
     private fun appendParagraph(ssb: SpannableStringBuilder, paragraph: MdBlock.Paragraph, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {

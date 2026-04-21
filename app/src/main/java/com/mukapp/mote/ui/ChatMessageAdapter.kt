@@ -187,6 +187,19 @@ class ChatMessageAdapter(
             streamingThinkingTextView = null
         }
 
+        /** 根据 markdownContent 的实际宽度更新表格绘制区域 */
+        private fun updateTableWidth(renderer: StreamingMarkdownRenderer) {
+            val tv = binding.markdownContent
+            val w = if (tv.width > 0) tv.width - tv.paddingLeft - tv.paddingRight
+                    else itemView.width - (tv.marginStart + tv.marginEnd).coerceAtLeast(0)
+            if (w > 0) renderer.tableAvailableWidth = w
+        }
+
+        private val android.view.View.marginStart: Int
+            get() = (layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.marginStart ?: 0
+        private val android.view.View.marginEnd: Int
+            get() = (layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.marginEnd ?: 0
+
         fun bind(message: ChatMessage, position: Int) {
             streamingThinkingTextView = null
             val displaySteps = IntermediateStepsHelper.displayStepsFor(message)
@@ -201,6 +214,7 @@ class ChatMessageAdapter(
             binding.markdownContent.isVisible = hasContent
             if (hasContent) {
                 val renderer = getOrCreateRenderer(message.id, itemView.context)
+                updateTableWidth(renderer)
                 if (isStreamingMessage) {
                     binding.markdownContent.text = renderer.setMarkdown(message.content)
                     binding.markdownContent.movementMethod = null
@@ -245,6 +259,7 @@ class ChatMessageAdapter(
             if (hasContent) {
                 binding.markdownContent.movementMethod = null
                 val renderer = getOrCreateRenderer(message.id, itemView.context)
+                updateTableWidth(renderer)
                 binding.markdownContent.text = renderer.setMarkdown(message.content)
             } else {
                 binding.markdownContent.text = ""

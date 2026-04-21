@@ -43,9 +43,13 @@ sealed class MdBlock {
         override val endOffset: Int
     ) : MdBlock()
 
+    /** 表格列对齐方式 */
+    enum class Alignment { LEFT, CENTER, RIGHT }
+
     data class Table(
         val headers: List<String>,
         val rows: List<List<String>>,
+        val alignments: List<Alignment>,
         override val startOffset: Int,
         override val endOffset: Int
     ) : MdBlock()

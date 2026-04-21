@@ -10,6 +10,11 @@ class StreamingMarkdownRenderer(context: Context) {
 
     private var lastText: String = ""
 
+    /** 设置表格绘制的可用宽度（像素） */
+    var tableAvailableWidth: Int
+        get() = spannedBuilder.tableAvailableWidth
+        set(value) { spannedBuilder.tableAvailableWidth = value }
+
     fun setMarkdown(text: String): Spanned {
         lastText = text
         val blocks = blockParser.parse(text, isStreaming = true)
