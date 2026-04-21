@@ -19,7 +19,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent">
 
-            <androidx.recyclerview.widget.RecyclerView
+            <com.mukapp.mote.ui.BottomFadeRecyclerView
                 android:id="@+id/recycler_messages"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"

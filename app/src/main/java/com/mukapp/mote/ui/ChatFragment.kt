@@ -50,6 +50,12 @@ class ChatFragment : Fragment() {
     private var followOutput: Boolean = true
     private var updatingDraft: Boolean = false
 
+    private var systemBottomInset = 0
+    private var imeBottomInset = 0
+    private val topOffset = (56 + 16).dpInt
+    private val cardMarginBottom = 16.dpInt
+    private val bottomOffset = cardMarginBottom + 8.dpInt
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -67,12 +73,6 @@ class ChatFragment : Fragment() {
 
         binding.recyclerMessages.clipToPadding = false
 
-        val topOffset = (56 + 16).dpInt
-        val cardMarginBottom = 16.dpInt
-        val bottomOffset = cardMarginBottom + (8).dpInt
-
-        var systemBottomInset = 0
-        var imeBottomInset = 0
         var imeAnimationRunning = false
 
         fun updateContentPadding(top: Int = binding.recyclerMessages.paddingTop, bottom: Int) {
@@ -248,7 +248,14 @@ class ChatFragment : Fragment() {
                 dx: Int,
                 dy: Int
             ) {
-                followOutput = !recyclerView.canScrollVertically(1)
+                val distanceToBottom = (
+                        recyclerView.computeVerticalScrollRange() -
+                                recyclerView.computeVerticalScrollOffset() -
+                                recyclerView.computeVerticalScrollExtent()
+                        ).coerceAtLeast(0)
+                val currentBottom = max(systemBottomInset, imeBottomInset)
+
+                followOutput = distanceToBottom <= currentBottom + binding.cardInput.height + cardMarginBottom
             }
         })
     }
