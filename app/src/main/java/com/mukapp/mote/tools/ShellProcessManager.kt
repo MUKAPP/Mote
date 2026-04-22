@@ -3,7 +3,9 @@ package com.mukapp.mote.tools
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 object ShellProcessManager {
     private val processes = ConcurrentHashMap<String, ShellProcess>()
@@ -39,7 +41,7 @@ object ShellProcessManager {
         processes.remove(id)
     }
 
-    fun generateId(): String = "shell_${System.currentTimeMillis()}"
+    fun generateId(): String = "shell_${UUID.randomUUID().toString().take(8)}"
 
     private fun evictCompletedProcesses() {
         val completed = processes.entries.filter { it.value.isComplete }
@@ -108,9 +110,18 @@ object ShellProcessManager {
         }
 
         entry.process.destroy()
+        val exited = try {
+            entry.process.waitFor(3, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            false
+        }
+        if (!exited) {
+            entry.process.destroyForcibly()
+        }
+        processes.remove(id)
         return JSONObject().apply {
             put("ok", true)
-            put("message", "已发送停止信号")
+            put("message", if (exited) "进程已停止" else "进程已强制终止")
         }
     }
 

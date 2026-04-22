@@ -50,6 +50,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
 
+    // 流式阶段用 StringBuilder 累积文本，避免每个 delta 都重新分配 String
+    private val streamingBuilders = mutableMapOf<String, StringBuilder>()
+    private var cachedAssistantContent: String? = null
+
     init {
         loadHistory()
     }
@@ -265,6 +269,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             cancelPendingStreamingPublish()
+            streamingBuilders.clear()
+            cachedAssistantContent = null
             activeSendJob = null
             stopGenerationRequested = false
             _isSending.value = false
@@ -420,11 +426,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (delta.isEmpty()) {
             return
         }
+        cachedAssistantContent = null
         val lastPart = parts.lastOrNull()
         if (lastPart is AssistantThinkingPart) {
-            parts[parts.lastIndex] = lastPart.copy(text = lastPart.text + delta)
+            val builder = streamingBuilders.getOrPut(lastPart.id) { StringBuilder(lastPart.text) }
+            builder.append(delta)
+            parts[parts.lastIndex] = lastPart.copy(text = builder.toString())
         } else {
-            parts += AssistantThinkingPart(text = delta)
+            val newPart = AssistantThinkingPart(text = delta)
+            streamingBuilders[newPart.id] = StringBuilder(delta)
+            parts += newPart
         }
     }
 
@@ -432,11 +443,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (delta.isEmpty()) {
             return
         }
+        cachedAssistantContent = null
         val lastPart = parts.lastOrNull()
         if (lastPart is AssistantMarkdownPart) {
-            parts[parts.lastIndex] = lastPart.copy(text = lastPart.text + delta)
+            val builder = streamingBuilders.getOrPut(lastPart.id) { StringBuilder(lastPart.text) }
+            builder.append(delta)
+            parts[parts.lastIndex] = lastPart.copy(text = builder.toString())
         } else {
-            parts += AssistantMarkdownPart(text = delta)
+            val newPart = AssistantMarkdownPart(text = delta)
+            streamingBuilders[newPart.id] = StringBuilder(delta)
+            parts += newPart
         }
     }
 
@@ -452,7 +468,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun buildAssistantContent(parts: List<AssistantPart>): String {
-        return parts.asSequence()
+        cachedAssistantContent?.let { return it }
+        val result = parts.asSequence()
             .mapNotNull { part ->
                 when (part) {
                     is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
@@ -460,6 +477,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             .joinToString(separator = "\n\n")
+        cachedAssistantContent = result
+        return result
     }
 
     private fun rebuildConversationFromUiMessages() {
