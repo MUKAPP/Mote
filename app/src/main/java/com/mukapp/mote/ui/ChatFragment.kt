@@ -48,6 +48,7 @@ class ChatFragment : Fragment() {
     private var latestSettings: ApiSettings = ApiSettings()
     private var latestIsSending: Boolean = false
     private var followOutput: Boolean = true
+    private var userScrolling: Boolean = false
     private var updatingDraft: Boolean = false
 
     private var systemBottomInset = 0
@@ -243,19 +244,41 @@ class ChatFragment : Fragment() {
         binding.recyclerMessages.itemAnimator = null
         binding.recyclerMessages.addOnScrollListener(object :
             androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(
+                recyclerView: androidx.recyclerview.widget.RecyclerView,
+                newState: Int
+            ) {
+                when (newState) {
+                    androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_DRAGGING -> {
+                        // 仅用户手指触摸拖拽时标记
+                        userScrolling = true
+                    }
+                    androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_IDLE -> {
+                        if (userScrolling) {
+                            // 用户发起的滚动结束后，根据是否在底部决定是否吸附
+                            followOutput = !recyclerView.canScrollVertically(1)
+                        }
+                        userScrolling = false
+                    }
+                }
+            }
+
             override fun onScrolled(
                 recyclerView: androidx.recyclerview.widget.RecyclerView,
                 dx: Int,
                 dy: Int
             ) {
-                val distanceToBottom = (
-                        recyclerView.computeVerticalScrollRange() -
-                                recyclerView.computeVerticalScrollOffset() -
-                                recyclerView.computeVerticalScrollExtent()
-                        ).coerceAtLeast(0)
-                val currentBottom = max(systemBottomInset, imeBottomInset)
-
-                followOutput = distanceToBottom <= currentBottom + binding.cardInput.height + cardMarginBottom
+                if (!userScrolling) {
+                    return
+                }
+                // 用户主动上滑时，取消吸附
+                if (dy < 0) {
+                    followOutput = false
+                }
+                // 用户主动下滑且已到底部，恢复吸附
+                if (dy > 0 && !recyclerView.canScrollVertically(1)) {
+                    followOutput = true
+                }
             }
         })
     }
@@ -336,23 +359,11 @@ class ChatFragment : Fragment() {
     }
 
     private fun scrollToBottom() {
-        val layoutManager = binding.recyclerMessages.layoutManager as? LinearLayoutManager ?: return
         val lastPosition = adapter.itemCount - 1
         if (lastPosition < 0) {
             return
         }
-
-        val viewHolder = binding.recyclerMessages.findViewHolderForAdapterPosition(lastPosition)
-        if (viewHolder != null && viewHolder.itemView.height > 0) {
-            val itemHeight = viewHolder.itemView.height
-            val offset = binding.recyclerMessages.height -
-                    binding.recyclerMessages.paddingTop -
-                    binding.recyclerMessages.paddingBottom -
-                    itemHeight
-            layoutManager.scrollToPositionWithOffset(lastPosition, offset)
-        } else {
-            layoutManager.scrollToPosition(lastPosition)
-        }
+        binding.recyclerMessages.smoothScrollToPosition(lastPosition)
     }
 
     private fun renderEmptyState() {

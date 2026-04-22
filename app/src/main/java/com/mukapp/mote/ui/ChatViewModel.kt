@@ -136,7 +136,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 val assistantParts = mutableListOf<AssistantPart>()
 
-                repeat(50) { roundIndex ->
+                repeat(200) { roundIndex ->
                     val accumulatedReply = StringBuilder()
                     val accumulatedThinking = StringBuilder()
                     val response = ChatApiClient.streamChat(
