@@ -26,6 +26,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -130,8 +132,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     .toMutableList()
                     .apply {
-                    add(0, ChatMessage(role = ChatRole.System, content = SystemPrompt))
-                }
+                        add(0, ChatMessage(role = ChatRole.System, content = buildSystemPrompt()))
+                    }
                 val assistantParts = mutableListOf<AssistantPart>()
 
                 repeat(50) { roundIndex ->
@@ -170,8 +172,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     if (response.toolCalls.isEmpty()) {
-                        val finalReply = buildAssistantContent(assistantParts).takeIf { it.isNotBlank() }
-                            ?: throw IllegalStateException("接口返回内容为空。")
+                        val finalReply =
+                            buildAssistantContent(assistantParts).takeIf { it.isNotBlank() }
+                                ?: throw IllegalStateException("接口返回内容为空。")
 
                         uiMessagesInternal[assistantIndex] = ChatMessage(
                             id = assistantId,
@@ -456,7 +459,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun appendAssistantToolResults(parts: MutableList<AssistantPart>, toolResults: List<ChatMessage>) {
+    private fun appendAssistantToolResults(
+        parts: MutableList<AssistantPart>,
+        toolResults: List<ChatMessage>
+    ) {
         toolResults.forEach { result ->
             parts += AssistantToolPart(
                 id = result.toolCallId ?: UUID.randomUUID().toString(),
@@ -486,8 +492,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         conversationMessagesInternal.addAll(
             uiMessagesInternal.filter { message ->
                 message.role != ChatRole.Tool &&
-                    message.role != ChatRole.System &&
-                    !message.excludeFromConversation
+                        message.role != ChatRole.System &&
+                        !message.excludeFromConversation
             }
         )
     }
@@ -538,28 +544,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        val SystemPrompt = """
-            # 角色定义
-            你是一个运行在 Android 设备上的 AI Agent，具备读取本地文件和执行 Shell 命令的权限。
-
-            # 安全与权限控制（最高优先级）
-            执行任何高风险 Shell 命令（如 `rm` 删除文件或目录、移动敏感数据等破坏性操作）前，严禁直接执行。你必须先向用户展示将要执行的完整命令并说明潜在风险，明确征求用户同意，仅在获得明确授权后方可执行。
-
-            # 核心工作流：耗时 Shell 命令执行规范
-            当判断需要执行耗时较长的 Shell 命令时，必须严格遵守以下执行链路：
-            1. 使用 `background` 模式启动该 Shell 命令。
-            2. 立即调用 `wait` 工具，根据预估耗时等待适当时间。
-            3. 调用 `shell_status` 工具查询任务是否完成。
-            4. 若未完成，则重复步骤 2 和步骤 3；若已完成，则读取并分析结果。
-
-            # 工具调用展示要求
-            - 每次调用任何工具时，都要传入 `description` 参数，用一句简短中文说明本次操作目的。
-            - `description` 会直接展示给用户作为工具标题，应描述要做什么，不要直接复述 shell `command` 或整段参数。
-            - 示例：`读取 LocalAiTools.kt 前 200 行`、`列出 app/src/main 目录内容`、`执行 Debug 构建并检查结果`。
-
-            # 约束与注意事项
-            - 文件路径以安卓标准的 `/sdcard/` 或应用私有目录为主。
-            - 确保命令适用于当前安卓非 Root 环境。
-        """.trimIndent()
+        fun buildSystemPrompt(): String {
+            val currentTime = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+            return """
+                # 角色定义
+                你是一个运行在 Android 设备上的 AI Agent，具备读取本地文件和执行 Shell 命令的权限。
+                当前时间：$currentTime
+                
+                # 安全与权限控制（最高优先级）
+                执行任何高风险 Shell 命令（如 `rm` 删除文件/目录、移动或修改敏感数据等破坏性操作）前，严禁直接调用工具。必须先向用户展示将要执行的完整命令并说明风险，仅在获得用户明确同意后方可执行。
+                
+                # 环境
+                - 路径规范：以安卓标准的 `/sdcard/` 或应用私有目录为主。外部存储需注意是否有读写权限。
+                - Shell 环境：Android Shell，部分 GNU/Linux 标准命令或参数可能不支持。
+            """.trimIndent()
+        }
     }
 }
