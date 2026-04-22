@@ -9,6 +9,8 @@ object IntermediateStepsHelper {
         }
 
         val json = runCatching { JSONObject(arguments) }.getOrNull() ?: return "$toolName: $arguments"
+        json.optString("description").trim().takeIf { it.isNotEmpty() }?.let { return it }
+
         return when (toolName) {
             "read_file" -> {
                 val path = json.optString("path", "")

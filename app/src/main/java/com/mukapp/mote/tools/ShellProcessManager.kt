@@ -35,6 +35,10 @@ object ShellProcessManager {
 
     fun getProcess(id: String): ShellProcess? = processes[id]
 
+    fun remove(id: String) {
+        processes.remove(id)
+    }
+
     fun generateId(): String = "shell_${System.currentTimeMillis()}"
 
     private fun evictCompletedProcesses() {

@@ -8,6 +8,8 @@ import com.mukapp.mote.util.optIntOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -73,12 +75,8 @@ object LocalAiTools {
         require(rawPath.isNotEmpty()) { "path 不能为空。" }
 
         val firstLines = payload.optIntOrNull("first_lines")
-        val startLine = payload.optIntOrNull("start_line")
-        val endLine = payload.optIntOrNull("end_line")
-
-        require(firstLines != null || startLine != null || endLine != null) {
-            "必须提供 first_lines，或者同时提供 start_line 和 end_line。"
-        }
+        val rawStartLine = payload.optIntOrNull("start_line")
+        val rawEndLine = payload.optIntOrNull("end_line")
 
         val targetFile = File(rawPath).canonicalFile
         require(targetFile.exists() && targetFile.isFile) { "文件不存在。" }
@@ -86,20 +84,26 @@ object LocalAiTools {
             "文件不可读，当前应用可能没有权限访问该路径。对于外部存储路径，请先在设置页授予文件管理应用权限。"
         }
 
+        // 未提供任何行范围参数时，默认读取前 200 行
+        val defaultFirstLines = 200
+
         val (actualStartLine, actualEndLine) = if (firstLines != null) {
             require(firstLines > 0) { "first_lines 必须大于 0。" }
             require(firstLines <= MaxReadLines) { "first_lines 不能超过 $MaxReadLines。" }
             1 to firstLines
-        } else {
-            require(startLine != null && endLine != null) {
-                "如果不使用 first_lines，则必须同时提供 start_line 和 end_line。"
-            }
-            require(startLine > 0) { "start_line 必须大于 0。" }
-            require(endLine >= startLine) { "end_line 不能小于 start_line。" }
+        } else if (rawStartLine != null || rawEndLine != null) {
+            // 将 0 自动修正为 1，兼容 0-based 行号
+            val startLine = maxOf(rawStartLine ?: 1, 1)
+            val endLine = maxOf(rawEndLine ?: startLine, startLine)
             val requestedLines = endLine - startLine + 1
             require(requestedLines <= MaxReadLines) { "单次读取行数不能超过 $MaxReadLines。" }
             startLine to endLine
+        } else {
+            // 都没提供，默认读取前 defaultFirstLines 行
+            1 to defaultFirstLines
         }
+
+        val fileSize = targetFile.length()
 
         val selectedLines = mutableListOf<String>()
         var totalLines = 0
@@ -110,13 +114,10 @@ object LocalAiTools {
                 if (lineNumber in actualStartLine..actualEndLine) {
                     selectedLines += "$lineNumber: $line"
                 }
-                if (lineNumber >= actualEndLine) {
-                    return@useLines
-                }
             }
         }
 
-        val actualReturnedEndLine = if (selectedLines.isEmpty()) {
+        val returnedEnd = if (selectedLines.isEmpty()) {
             actualStartLine - 1
         } else {
             actualStartLine + selectedLines.size - 1
@@ -125,12 +126,11 @@ object LocalAiTools {
         return JSONObject().apply {
             put("ok", true)
             put("path", targetFile.path.replace('\\', '/'))
-            put("requestedStartLine", actualStartLine)
-            put("requestedEndLine", actualEndLine)
-            put("returnedStartLine", if (selectedLines.isEmpty()) JSONObject.NULL else actualStartLine)
-            put("returnedEndLine", if (selectedLines.isEmpty()) JSONObject.NULL else actualReturnedEndLine)
-            put("returnedLineCount", selectedLines.size)
-            put("totalLines", totalLines)
+            put("size", fileSize)
+            put("total_lines", totalLines)
+            put("start", if (selectedLines.isEmpty()) JSONObject.NULL else actualStartLine)
+            put("end", if (selectedLines.isEmpty()) JSONObject.NULL else returnedEnd)
+            put("lines", selectedLines.size)
             put("content", selectedLines.joinToString(separator = "\n"))
         }.toString(2)
     }
@@ -155,12 +155,14 @@ object LocalAiTools {
                 ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase(Locale.ROOT) })
                 .orEmpty()
 
+            val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT)
+
             JSONObject().apply {
                 put("ok", true)
                 put("path", target.path.replace('\\', '/'))
                 put("type", "directory")
-                put("returnedCount", minOf(children.size, limit))
-                put("totalCount", children.size)
+                put("returned", minOf(children.size, limit))
+                put("total", children.size)
                 put(
                     "entries",
                     JSONArray().apply {
@@ -168,11 +170,11 @@ object LocalAiTools {
                             put(
                                 JSONObject().apply {
                                     put("name", child.name)
-                                    put("path", child.path.replace('\\', '/'))
-                                    put("type", if (child.isDirectory) "directory" else "file")
+                                    put("type", if (child.isDirectory) "dir" else "file")
                                     if (child.isFile) {
                                         put("size", child.length())
                                     }
+                                    put("modified", dateFmt.format(Date(child.lastModified())))
                                 }
                             )
                         }
@@ -230,6 +232,9 @@ object LocalAiTools {
             val stderr: String
             synchronized(entry.outputBuffer) { stdout = entry.outputBuffer.toString() }
             synchronized(entry.errorBuffer) { stderr = entry.errorBuffer.toString() }
+
+            // 前台命令已完成，从进程管理器中清理
+            ShellProcessManager.remove(id)
 
             return JSONObject().apply {
                 put("ok", true)
@@ -289,7 +294,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ReadFileToolName)
-                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容")
+                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -297,6 +302,7 @@ object LocalAiTools {
                             put(
                                 "properties",
                                 JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
                                     put(
                                         "path",
                                         JSONObject().apply {
@@ -315,7 +321,7 @@ object LocalAiTools {
                                         "start_line",
                                         JSONObject().apply {
                                             put("type", "integer")
-                                            put("description", "起始行号，从 1 开始。需要和 end_line 一起使用。")
+                                            put("description", "起始行号，从 1 开始（传入 0 会自动修正为 1）。需要和 end_line 一起使用。")
                                         }
                                     )
                                     put(
@@ -327,7 +333,7 @@ object LocalAiTools {
                                     )
                                 }
                             )
-                            put("required", JSONArray().put("path"))
+                            put("required", JSONArray().put("description").put("path"))
                             put("additionalProperties", false)
                         }
                     )
@@ -351,6 +357,7 @@ object LocalAiTools {
                             put(
                                 "properties",
                                 JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
                                     put(
                                         "path",
                                         JSONObject().apply {
@@ -367,7 +374,7 @@ object LocalAiTools {
                                     )
                                 }
                             )
-                            put("required", JSONArray().put("path"))
+                            put("required", JSONArray().put("description").put("path"))
                             put("additionalProperties", false)
                         }
                     )
@@ -391,6 +398,7 @@ object LocalAiTools {
                             put(
                                 "properties",
                                 JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
                                     put(
                                         "command",
                                         JSONObject().apply {
@@ -414,7 +422,7 @@ object LocalAiTools {
                                     )
                                 }
                             )
-                            put("required", JSONArray().put("command"))
+                            put("required", JSONArray().put("description").put("command"))
                             put("additionalProperties", false)
                         }
                     )
@@ -438,6 +446,7 @@ object LocalAiTools {
                             put(
                                 "properties",
                                 JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
                                     put(
                                         "id",
                                         JSONObject().apply {
@@ -447,7 +456,7 @@ object LocalAiTools {
                                     )
                                 }
                             )
-                            put("required", JSONArray().put("id"))
+                            put("required", JSONArray().put("description").put("id"))
                             put("additionalProperties", false)
                         }
                     )
@@ -471,6 +480,7 @@ object LocalAiTools {
                             put(
                                 "properties",
                                 JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
                                     put(
                                         "id",
                                         JSONObject().apply {
@@ -480,7 +490,7 @@ object LocalAiTools {
                                     )
                                 }
                             )
-                            put("required", JSONArray().put("id"))
+                            put("required", JSONArray().put("description").put("id"))
                             put("additionalProperties", false)
                         }
                     )
@@ -504,6 +514,7 @@ object LocalAiTools {
                             put(
                                 "properties",
                                 JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
                                     put(
                                         "seconds",
                                         JSONObject().apply {
@@ -513,11 +524,21 @@ object LocalAiTools {
                                     )
                                 }
                             )
-                            put("required", JSONArray().put("seconds"))
+                            put("required", JSONArray().put("description").put("seconds"))
                             put("additionalProperties", false)
                         }
                     )
                 }
+            )
+        }
+    }
+
+    private fun buildToolCallDescriptionProperty(): JSONObject {
+        return JSONObject().apply {
+            put("type", "string")
+            put(
+                "description",
+                "对本次工具执行目的的简短描述，会直接展示给用户作为工具标题。请描述要做什么，不要只重复命令或参数。例如：读取 LocalAiTools.kt 前 200 行、列出 app/src/main 目录、执行 Debug 构建并检查结果。"
             )
         }
     }
