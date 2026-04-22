@@ -1,8 +1,10 @@
 package com.mukapp.mote
 
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
@@ -45,13 +47,33 @@ class SettingsActivity : AppCompatActivity() {
         binding.toolbar.setNavigationOnClickListener {
             finish()
         }
+
+        val fallbackSurfaceColor = MaterialColors.getColor(
+            binding.root,
+            com.google.android.material.R.attr.colorSurface
+        )
+        val frameClearDrawable = window.decorView.background ?: ColorDrawable(fallbackSurfaceColor)
+        val blurBaseColor = MaterialColors.getColor(
+            binding.root,
+            com.google.android.material.R.attr.colorSurfaceContainerLow
+        )
+        val overlayColor = ColorUtils.setAlphaComponent(blurBaseColor, (255 * 0.6f).toInt())
+        binding.blurViewToolbar.setupWith(binding.blurTarget)
+            .setFrameClearDrawable(frameClearDrawable)
+            .setBlurRadius(20f)
+            .setOverlayColor(overlayColor)
     }
 
     private fun setupInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            binding.toolbar.updatePadding(top = systemBars.top)
-            binding.settingsContent.root.updatePadding(bottom = systemBars.bottom)
+            val toolbarHeight = binding.toolbar.minimumHeight.takeIf { it > 0 }
+                ?: (56 * resources.displayMetrics.density).toInt()
+            binding.blurViewToolbar.updatePadding(top = systemBars.top)
+            binding.settingsContent.root.updatePadding(
+                top = systemBars.top + toolbarHeight,
+                bottom = systemBars.bottom
+            )
             insets
         }
     }
