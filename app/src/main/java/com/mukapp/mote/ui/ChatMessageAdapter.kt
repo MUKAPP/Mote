@@ -13,7 +13,6 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
-import com.mukapp.mote.util.dpInt
 
 class ChatMessageAdapter(
     private val onCopyMessage: (ChatMessage) -> Unit,
@@ -162,6 +161,7 @@ class ChatMessageAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
         fun clear() {
             binding.markdownContent.clearMarkdown()
+            binding.typingIndicator.setAnimating(false)
         }
 
         fun bind(message: ChatMessage, position: Int) {
@@ -173,12 +173,14 @@ class ChatMessageAdapter(
             syncThinkingPartExpansion(message, isStreamingMessage)
 
             binding.markdownContent.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                bottomMargin = if (isStreamingMessage) 16.dpInt else 0
+                bottomMargin = 0
             }
 
             binding.textAiLabel.text = itemView.context.getString(R.string.label_ai)
             binding.textStatus.isVisible = showGeneratingStatus
             binding.textStatus.text = itemView.context.getString(R.string.status_generating)
+            binding.typingIndicator.isVisible = isStreamingMessage
+            binding.typingIndicator.setAnimating(isStreamingMessage)
             binding.markdownContent.isVisible = hasParts || hasContent
             if (hasParts) {
                 binding.markdownContent.setParts(
@@ -224,6 +226,13 @@ class ChatMessageAdapter(
                 ?.takeIf { it.text.isNotBlank() }
                 ?.id
         }
+    }
+
+    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+        if (holder is AssistantViewHolder) {
+            holder.clear()
+        }
+        super.onViewRecycled(holder)
     }
 
     private inner class UserViewHolder(
