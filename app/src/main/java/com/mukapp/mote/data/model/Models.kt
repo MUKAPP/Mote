@@ -39,7 +39,8 @@ data class AssistantToolPart(
     override val id: String = UUID.randomUUID().toString(),
     val toolName: String = "",
     val toolArguments: String = "",
-    val result: String = ""
+    val result: String = "",
+    val isLoading: Boolean = false
 ) : AssistantPart
 
 data class ApiSettings(

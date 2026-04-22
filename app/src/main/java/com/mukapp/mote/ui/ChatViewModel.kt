@@ -202,6 +202,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         toolCalls = response.toolCalls
                     )
 
+                    // 先插入 loading 占位工具块，立即推送 UI
+                    val loadingToolParts = response.toolCalls.map { toolCall ->
+                        AssistantToolPart(
+                            id = toolCall.id,
+                            toolName = toolCall.name,
+                            toolArguments = toolCall.arguments,
+                            result = "",
+                            isLoading = true
+                        )
+                    }
+                    assistantParts.addAll(loadingToolParts)
+                    cachedAssistantContent = null
+                    updateStreamingAssistantMessage(
+                        assistantIndex = assistantIndex,
+                        assistantId = assistantId,
+                        content = buildAssistantContent(assistantParts),
+                        assistantParts = assistantParts
+                    )
+
                     val toolResults = withContext(Dispatchers.IO) {
                         response.toolCalls.map { toolCall ->
                             LocalAiTools.executeToolCall(appContext, toolCall)
@@ -209,7 +228,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     workingConversation.addAll(toolResults)
 
-                    appendAssistantToolResults(assistantParts, toolResults)
+                    // 用实际结果替换 loading 占位
+                    replaceLoadingToolParts(assistantParts, toolResults)
 
                     val waitSeconds = response.toolCalls.maxOfOrNull { toolCall ->
                         if (toolCall.name == LocalAiTools.WaitToolName) {
@@ -470,6 +490,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 toolArguments = result.toolArguments.orEmpty(),
                 result = result.content
             )
+        }
+    }
+
+    private fun replaceLoadingToolParts(
+        parts: MutableList<AssistantPart>,
+        toolResults: List<ChatMessage>
+    ) {
+        cachedAssistantContent = null
+        val resultById = toolResults.associateBy { it.toolCallId }
+        for (index in parts.indices) {
+            val part = parts[index]
+            if (part is AssistantToolPart && part.isLoading) {
+                val result = resultById[part.id]
+                parts[index] = part.copy(
+                    result = result?.content.orEmpty(),
+                    isLoading = false
+                )
+            }
         }
     }
 

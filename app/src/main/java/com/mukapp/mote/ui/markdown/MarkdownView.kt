@@ -439,7 +439,7 @@ class MarkdownView @JvmOverloads constructor(
             is AssistantToolPart -> RenderedAssistantPartState(
                 id = part.id,
                 kind = AssistantPartKind.Tool,
-                contentHash = 31 * (31 * part.toolName.hashCode() + part.toolArguments.hashCode()) + part.result.hashCode(),
+                contentHash = 31 * (31 * (31 * part.toolName.hashCode() + part.toolArguments.hashCode()) + part.result.hashCode()) + part.isLoading.hashCode(),
                 expanded = expandedToolPartIds.contains(part.id)
             )
         }
@@ -652,7 +652,11 @@ class MarkdownView @JvmOverloads constructor(
         binding.root.layoutParams = createBlockLayoutParams()
         val expanded = expandedToolPartIds.contains(toolPart.id)
 
-        binding.textSummary.text = IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)
+        binding.textSummary.text = if (toolPart.isLoading) {
+            "⏳ ${IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)}"
+        } else {
+            IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)
+        }
 
         var detailPopulated = false
         fun populateDetail() {
