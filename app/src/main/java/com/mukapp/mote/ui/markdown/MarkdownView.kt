@@ -113,6 +113,8 @@ class MarkdownView @JvmOverloads constructor(
     private var lastRenderedLinkDefs: Map<String, Pair<String, String>> = emptyMap()
     /** 缓存上一次渲染 Markdown 文本时的 block 列表，用于流式增量更新 */
     private var lastRenderedBlocks: List<MdBlock> = emptyList()
+    /** 缓存上一次渲染时的 isStreaming 状态，用于检测流式→非流式转换时强制全量重建 */
+    private var lastRenderedIsStreaming: Boolean = false
 
     init {
         orientation = VERTICAL
@@ -145,7 +147,11 @@ class MarkdownView @JvmOverloads constructor(
         val linkDefs = collectLinkDefs(text, isStreaming)
         val blocks = blockParser.parse(text, isStreaming, linkDefs)
 
-        if (renderMode == RenderMode.Markdown && lastRenderedLinkDefs == linkDefs) {
+        val canIncremental = renderMode == RenderMode.Markdown
+            && lastRenderedLinkDefs == linkDefs
+            && !(lastRenderedIsStreaming && !isStreaming)  // 流式→非流式需要全量重建以启用链接点击
+
+        if (canIncremental) {
             renderBlocksIncrementally(this, blocks, isStreaming, linkDefs)
         } else {
             resetRenderedPartState()
@@ -159,6 +165,7 @@ class MarkdownView @JvmOverloads constructor(
 
         lastRenderedBlocks = blocks
         lastRenderedLinkDefs = linkDefs
+        lastRenderedIsStreaming = isStreaming
         renderMode = RenderMode.Markdown
     }
 
@@ -426,6 +433,7 @@ class MarkdownView @JvmOverloads constructor(
         lastRenderedPartStates = emptyList()
         lastRenderedLinkDefs = emptyMap()
         lastRenderedBlocks = emptyList()
+        lastRenderedIsStreaming = false
     }
 
     private fun createThinkingPartView(
