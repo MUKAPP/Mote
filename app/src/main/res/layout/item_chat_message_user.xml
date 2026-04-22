@@ -24,7 +24,7 @@
                 android:paddingHorizontal="16dp"
                 android:paddingTop="16dp"
                 android:textAppearance="?attr/textAppearanceBodyLarge"
-                android:textColor="?attr/colorOnPrimaryContainer"
+                android:textColor="?attr/colorOnSurface"
                 android:textIsSelectable="true" />
 
             <LinearLayout
