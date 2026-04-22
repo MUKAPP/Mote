@@ -39,6 +39,7 @@ app/src/main/java/com/mukapp/mote/
 │   ├── LocalAiTools.kt          # AI 工具定义与执行调度（read_file, list_path, shell 等）
 │   └── ShellProcessManager.kt   # Shell 进程生命周期管理（前台/后台、输出缓冲）
 ├── ui/
+│   ├── BottomFadeRecyclerView.kt # 自定义 RecyclerView，只在底部物理边缘处显示虚化渐变效果
 │   ├── ChatFragment.kt          # 聊天界面 Fragment
 │   ├── ChatViewModel.kt         # 聊天业务逻辑（消息收发、工具调用循环、历史管理、编辑/删除/重试）
 │   ├── ChatMessageAdapter.kt    # 聊天消息列表适配器（流式更新、assistant 片段渲染、工具结果折叠）
@@ -75,16 +76,18 @@ app/src/main/java/com/mukapp/mote/
 
 ```
 用户输入 → ChatViewModel.sendMessage()
-  → 构建 conversationMessages（含 SystemPrompt）
+  → 基于 conversationMessagesInternal 构建 workingConversation，并在发送前临时插入 SystemPrompt
   → ChatApiClient.streamChat()（SSE 流式请求，支持非流式回退）
-  → 若返回 toolCalls → LocalAiTools.executeToolCall() → 结果追加到对话 → 再次请求
-  → 若无 toolCalls → 最终回复 → 更新 uiMessages → 持久化
+  → 若返回 toolCalls → 将 assistant tool_calls 消息与 tool 结果追加到 workingConversation → 再次请求
+  → 若无 toolCalls → 最终回复 → 将 workingConversation（去除 System 消息）回写到 conversationMessagesInternal → 更新 uiMessages 并持久化
 ```
 
 ### 双消息列表
 
 - `uiMessagesInternal`：展示给用户的消息（过滤掉 Tool 角色消息，assistant 消息包含有序 `assistantParts`）
-- `conversationMessagesInternal`：发送给 API 的消息（过滤掉 Tool 角色消息，仅保留实际对话内容）
+- `conversationMessagesInternal`：发送给 API 的上下文消息列表；通常不包含 System 消息，工具调用链路中会保留 assistant `toolCalls` 消息和 Tool 消息
+
+从 UI 重新构建会话时，会过滤 `Tool`、`System` 和 `excludeFromConversation=true` 的消息；但工具调用链路成功完成后，会以真实请求上下文回写 `conversationMessagesInternal`。
 
 ### ChatMessageAdapter 差异化更新策略
 
@@ -107,12 +110,14 @@ Mote 向模型注册了以下工具，定义在 `LocalAiTools.kt`：
 
 | 工具名            | 功能                 | 关键参数                                            |
 | -------------- | ------------------ | ----------------------------------------------- |
-| `read_file`    | 读取设备上的文本文件         | `path`, `first_lines` 或 `start_line`/`end_line` |
-| `list_path`    | 列出目录内容或文件信息        | `path`, `limit`                                 |
-| `shell`        | 执行 Shell 命令        | `command`, `work_dir`, `background`             |
-| `shell_status` | 查询后台 Shell 进程状态    | `id`                                            |
-| `shell_stop`   | 停止后台 Shell 进程      | `id`                                            |
-| `wait`         | 等待指定秒数（配合后台 Shell） | `seconds`                                       |
+| `read_file`    | 读取设备上的文本文件         | `description`, `path`, `first_lines` 或 `start_line`/`end_line` |
+| `list_path`    | 列出目录内容或文件信息        | `description`, `path`, `limit`                                 |
+| `shell`        | 执行 Shell 命令        | `description`, `command`, `work_dir`, `background`             |
+| `shell_status` | 查询后台 Shell 进程状态    | `description`, `id`                                            |
+| `shell_stop`   | 停止后台 Shell 进程      | `description`, `id`                                            |
+| `wait`         | 等待指定秒数（配合后台 Shell） | `description`, `seconds`                                       |
+
+其中 `description` 为必填参数，需要用一句简短中文说明本次工具执行的目的；该文本会直接展示给用户作为工具标题。
 
 工具调用最多循环 50 轮。Shell 命令超过 30 秒自动转为后台运行。
 
