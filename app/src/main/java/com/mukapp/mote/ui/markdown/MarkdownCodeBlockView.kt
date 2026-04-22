@@ -54,6 +54,10 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     }
 
     private var codeContent: String = ""
+    /** 上一次成功渲染的语言，用于在 setCodeBlock 完全等价时复用 Spannable，避免 prism4j 重复 tokenize */
+    private var lastRenderedLanguage: String? = null
+    /** 上一次成功渲染的代码内容 */
+    private var lastRenderedCode: String? = null
 
     private val container = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -137,7 +141,13 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     fun setCodeBlock(language: String, code: String) {
         codeContent = code
         languageView.text = language.ifBlank { "text" }
+        // 如果与上次完全一致，直接跳过 prism4j 高亮渲染，避免流式期间重复 tokenize
+        if (lastRenderedLanguage == language && lastRenderedCode == code) {
+            return
+        }
         codeView.text = codeSpanRenderer.buildCodeContent(code, language)
+        lastRenderedLanguage = language
+        lastRenderedCode = code
     }
 
     private fun copyCode() {

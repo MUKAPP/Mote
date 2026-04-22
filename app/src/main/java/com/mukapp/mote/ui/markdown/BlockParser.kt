@@ -20,6 +20,23 @@ class BlockParser {
         return parseBlocks(lines, 0, lines.size, isStreaming, externalLinkDefs, tailLineComplete)
     }
 
+    /**
+     * 一次性解析并返回 blocks 与 linkDefs，避免调用方与 BlockParser 重复扫描整篇文本。
+     */
+    fun parseWithLinkDefs(text: String, isStreaming: Boolean): ParseResult {
+        if (text.isBlank()) return ParseResult(emptyList(), emptyMap())
+        val lines = text.lines()
+        val tailLineComplete = isTailLineComplete(text)
+        val linkDefs = collectLinkDefinitions(lines, isStreaming, tailLineComplete)
+        val blocks = parseBlocks(lines, 0, lines.size, isStreaming, linkDefs, tailLineComplete)
+        return ParseResult(blocks, linkDefs)
+    }
+
+    data class ParseResult(
+        val blocks: List<MdBlock>,
+        val linkDefs: Map<String, Pair<String, String>>
+    )
+
     private fun collectLinkDefinitions(
         lines: List<String>,
         isStreaming: Boolean,
@@ -211,10 +228,20 @@ class BlockParser {
         startOffset: Int,
         endOffset: Int
     ): MdBlock.Heading? {
-        val match = HEADING_REGEX.matchEntire(trimmed) ?: return null
-        val level = match.groupValues[1].length
+        // 手写解析：避免正则在每行 # 开头时的开销
+        var level = 0
+        while (level < trimmed.length && trimmed[level] == '#') {
+            level++
+        }
         if (level !in 1..6) return null
-        val text = match.groupValues[2].trim()
+        if (level >= trimmed.length || trimmed[level] != ' ') return null
+        var contentStart = level + 1
+        while (contentStart < trimmed.length && trimmed[contentStart] == ' ') {
+            contentStart++
+        }
+        if (contentStart >= trimmed.length) return null
+        val text = trimmed.substring(contentStart).trimEnd()
+        if (text.isEmpty()) return null
         return MdBlock.Heading(level, text, startOffset, endOffset)
     }
 

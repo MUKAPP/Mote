@@ -55,6 +55,14 @@ class MarkdownView @JvmOverloads constructor(
         val expanded: Boolean
     )
 
+    /** Markdown 文本的解析结果缓存条目，记录文本与对应的 block 列表、链接定义及流式状态 */
+    private data class CachedParseEntry(
+        val text: String,
+        val isStreaming: Boolean,
+        val blocks: List<MdBlock>,
+        val linkDefs: Map<String, Pair<String, String>>
+    )
+
     private val blockParser = BlockParser()
     private val spannedBuilder = SpannedBuilder(context)
     private val codeSpanRenderer: MarkdownCodeSpanRenderer = spannedBuilder.sharedCodeSpanRenderer
@@ -115,6 +123,22 @@ class MarkdownView @JvmOverloads constructor(
     private var lastRenderedBlocks: List<MdBlock> = emptyList()
     /** 缓存上一次渲染时的 isStreaming 状态，用于检测流式→非流式转换时强制全量重建 */
     private var lastRenderedIsStreaming: Boolean = false
+    /** 缓存上一次 setMarkdown 调用的输入文本，用于在文本未变化时直接复用解析结果 */
+    private var lastRenderedMarkdownText: String? = null
+    /** 每个 markdown 片段单独缓存的 (text, isStreaming) -> ParseResult，用于 setParts 路径下避免重复解析 */
+    private val partParseCache = HashMap<String, CachedParseEntry>()
+
+    /**
+     * 为 setParts 路径中每个 markdown part 缓存上一次渲染的 block 列表和 linkDefs，
+     * 以便在内容变化时对其容器 LinearLayout 执行 block 级增量更新而非整体重建。
+     * key = part id
+     */
+    private data class PartBlocksCache(
+        val blocks: List<MdBlock>,
+        val linkDefs: Map<String, Pair<String, String>>,
+        val isStreaming: Boolean
+    )
+    private val partBlocksCache = HashMap<String, PartBlocksCache>()
 
     init {
         orientation = VERTICAL
@@ -144,8 +168,17 @@ class MarkdownView @JvmOverloads constructor(
         }
         isVisible = true
 
-        val linkDefs = collectLinkDefs(text, isStreaming)
-        val blocks = blockParser.parse(text, isStreaming, linkDefs)
+        // 与上一次完全一致时直接跳过解析与视图更新（典型场景：流式停止后又收到一次同状态刷新）
+        if (renderMode == RenderMode.Markdown
+            && lastRenderedMarkdownText == text
+            && lastRenderedIsStreaming == isStreaming
+        ) {
+            return
+        }
+
+        val parseResult = blockParser.parseWithLinkDefs(text, isStreaming)
+        val blocks = parseResult.blocks
+        val linkDefs = parseResult.linkDefs
 
         val canIncremental = renderMode == RenderMode.Markdown
             && lastRenderedLinkDefs == linkDefs
@@ -166,6 +199,7 @@ class MarkdownView @JvmOverloads constructor(
         lastRenderedBlocks = blocks
         lastRenderedLinkDefs = linkDefs
         lastRenderedIsStreaming = isStreaming
+        lastRenderedMarkdownText = text
         renderMode = RenderMode.Markdown
     }
 
@@ -182,25 +216,33 @@ class MarkdownView @JvmOverloads constructor(
         }
         isVisible = true
 
-        val markdownText = visibleParts.asSequence()
-            .mapNotNull { part ->
-                when (part) {
-                    is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
-                    else -> null
-                }
+        // 收集所有当前可见的 markdown 片段文本，用于淘汰已不再使用的解析缓存
+        val activeMarkdownTexts = HashSet<String>()
+        visibleParts.forEach { part ->
+            if (part is AssistantMarkdownPart && part.text.isNotBlank()) {
+                activeMarkdownTexts.add(part.text)
             }
-            .joinToString(separator = "\n\n")
-        val linkDefs = collectLinkDefs(markdownText, isStreaming)
+        }
+        // 当 isStreaming 与缓存不一致或文本不再使用时清理对应条目
+        val cacheKeysToDrop = ArrayList<String>()
+        for ((key, entry) in partParseCache) {
+            if (entry.isStreaming != isStreaming || entry.text !in activeMarkdownTexts) {
+                cacheKeysToDrop.add(key)
+            }
+        }
+        cacheKeysToDrop.forEach { partParseCache.remove(it) }
+
         val partStates = visibleParts.map { part ->
             createRenderedPartState(part, expandedThinkingPartIds, expandedToolPartIds)
         }
 
-        if (canApplyIncrementalPartUpdate(partStates, linkDefs)) {
+        // setParts 模式下不需要全局 linkDefs 比较；每个 markdown 片段内部的 linkDefs 跟随其文本一同进入缓存
+
+        if (canApplyIncrementalPartUpdate(partStates)) {
             renderPartViewsIncrementally(
                 parts = visibleParts,
                 partStates = partStates,
                 isStreaming = isStreaming,
-                linkDefs = linkDefs,
                 expandedThinkingPartIds = expandedThinkingPartIds,
                 expandedToolPartIds = expandedToolPartIds
             )
@@ -212,7 +254,6 @@ class MarkdownView @JvmOverloads constructor(
                     createPartView(
                         part = part,
                         isStreaming = isStreaming,
-                        linkDefs = linkDefs,
                         expandedThinkingPartIds = expandedThinkingPartIds,
                         expandedToolPartIds = expandedToolPartIds
                     )
@@ -222,7 +263,7 @@ class MarkdownView @JvmOverloads constructor(
 
         renderMode = RenderMode.Parts
         lastRenderedPartStates = partStates
-        lastRenderedLinkDefs = linkDefs
+        lastRenderedLinkDefs = emptyMap()
     }
 
     fun clearMarkdown() {
@@ -234,13 +275,14 @@ class MarkdownView @JvmOverloads constructor(
     private fun renderMarkdownTextInto(
         container: ViewGroup,
         text: String,
-        isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        isStreaming: Boolean
     ) {
         if (text.isBlank()) {
             return
         }
-        val blocks = blockParser.parse(text, isStreaming, linkDefs)
+        val parseResult = obtainParseResult(text, isStreaming)
+        val blocks = parseResult.blocks
+        val linkDefs = parseResult.linkDefs
         blocks.forEachIndexed { index, block ->
             container.addView(
                 createBlockView(
@@ -255,6 +297,37 @@ class MarkdownView @JvmOverloads constructor(
     }
 
     /**
+     * 将 markdown part 渲染到容器中，同时缓存 block 列表以便后续增量更新。
+     */
+    private fun renderMarkdownPartInto(
+        container: ViewGroup,
+        part: AssistantMarkdownPart,
+        isStreaming: Boolean
+    ) {
+        if (part.text.isBlank()) return
+        val parseResult = obtainParseResult(part.text, isStreaming)
+        val blocks = parseResult.blocks
+        val linkDefs = parseResult.linkDefs
+        blocks.forEachIndexed { index, block ->
+            container.addView(
+                createBlockView(block, isStreaming, linkDefs, nested = false, isLastInContainer = index == blocks.lastIndex)
+            )
+        }
+        partBlocksCache[part.id] = PartBlocksCache(blocks, linkDefs, isStreaming)
+    }
+
+    /** 优先复用 partParseCache 中的解析结果，避免对相同文本的重复解析 */
+    private fun obtainParseResult(text: String, isStreaming: Boolean): BlockParser.ParseResult {
+        val cached = partParseCache[text]
+        if (cached != null && cached.text == text && cached.isStreaming == isStreaming) {
+            return BlockParser.ParseResult(cached.blocks, cached.linkDefs)
+        }
+        val parsed = blockParser.parseWithLinkDefs(text, isStreaming)
+        partParseCache[text] = CachedParseEntry(text, isStreaming, parsed.blocks, parsed.linkDefs)
+        return parsed
+    }
+
+    /**
      * Block 级别增量更新：对比上一次的 block 列表，
      * 只替换发生变化的尾部 block，避免流式渲染时全量重建视图树。
      */
@@ -262,17 +335,17 @@ class MarkdownView @JvmOverloads constructor(
         container: ViewGroup,
         newBlocks: List<MdBlock>,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>
+        linkDefs: Map<String, Pair<String, String>>,
+        oldBlocks: List<MdBlock> = lastRenderedBlocks
     ) {
-        val oldBlocks = lastRenderedBlocks
         val oldCount = oldBlocks.size
         val newCount = newBlocks.size
 
-        // 找到第一个不同的 block 位置
+        // 找到第一个不同的 block 位置；先做廉价的类型与 offset 比较，再回退到完整 equals
         val sharedCount = minOf(oldCount, newCount)
         var firstDiffIndex = sharedCount
         for (i in 0 until sharedCount) {
-            if (oldBlocks[i] != newBlocks[i]) {
+            if (!areBlocksEquivalent(oldBlocks[i], newBlocks[i])) {
                 firstDiffIndex = i
                 break
             }
@@ -302,6 +375,19 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 廉价快速判等：先比较类型与 offset，只有当 offset 不一致或属于内容易变类型时才回退到完整 equals。
+     * 流式追加场景下，前缀 block 的 offset 必然稳定，绝大多数情况下可以以 O(1) 短路命中。
+     */
+    private fun areBlocksEquivalent(a: MdBlock, b: MdBlock): Boolean {
+        if (a === b) return true
+        if (a.javaClass !== b.javaClass) return false
+        if (a.startOffset != b.startOffset || a.endOffset != b.endOffset) return false
+        // offset 一致但内容仍可能不同：例如 CodeBlock 的 closed 状态、List/Blockquote 的子结构。
+        // 直接走 data class 全字段比较确保正确性；该路径仅在 offset 命中时触发，开销可控。
+        return a == b
+    }
+
     private fun hasVisibleContent(part: AssistantPart): Boolean {
         return when (part) {
             is AssistantMarkdownPart -> part.text.isNotBlank()
@@ -315,7 +401,6 @@ class MarkdownView @JvmOverloads constructor(
     private fun createPartView(
         part: AssistantPart,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>,
         expandedThinkingPartIds: MutableSet<String>,
         expandedToolPartIds: MutableSet<String>
     ): View {
@@ -323,7 +408,7 @@ class MarkdownView @JvmOverloads constructor(
             is AssistantMarkdownPart -> LinearLayout(context).apply {
                 orientation = VERTICAL
                 layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-                renderMarkdownTextInto(this, part.text, isStreaming, linkDefs)
+                renderMarkdownPartInto(this, part, isStreaming)
             }
 
             is AssistantThinkingPart -> createThinkingPartView(part, expandedThinkingPartIds)
@@ -361,13 +446,9 @@ class MarkdownView @JvmOverloads constructor(
     }
 
     private fun canApplyIncrementalPartUpdate(
-        nextPartStates: List<RenderedAssistantPartState>,
-        nextLinkDefs: Map<String, Pair<String, String>>
+        nextPartStates: List<RenderedAssistantPartState>
     ): Boolean {
         if (renderMode != RenderMode.Parts || childCount != lastRenderedPartStates.size) {
-            return false
-        }
-        if (lastRenderedLinkDefs != nextLinkDefs) {
             return false
         }
         val sharedCount = minOf(lastRenderedPartStates.size, nextPartStates.size)
@@ -385,7 +466,6 @@ class MarkdownView @JvmOverloads constructor(
         parts: List<AssistantPart>,
         partStates: List<RenderedAssistantPartState>,
         isStreaming: Boolean,
-        linkDefs: Map<String, Pair<String, String>>,
         expandedThinkingPartIds: MutableSet<String>,
         expandedToolPartIds: MutableSet<String>
     ) {
@@ -394,12 +474,19 @@ class MarkdownView @JvmOverloads constructor(
             if (lastRenderedPartStates[index] == partStates[index]) {
                 continue
             }
+            val part = parts[index]
+            // 对于 markdown 片段，尝试复用已有容器做 block 级增量更新
+            if (part is AssistantMarkdownPart && part.text.isNotBlank()) {
+                val existingView = getChildAt(index)
+                if (existingView is LinearLayout && updateMarkdownPartInPlace(existingView, part, isStreaming)) {
+                    continue
+                }
+            }
             replacePartViewAt(
                 index = index,
                 view = createPartView(
                     part = parts[index],
                     isStreaming = isStreaming,
-                    linkDefs = linkDefs,
                     expandedThinkingPartIds = expandedThinkingPartIds,
                     expandedToolPartIds = expandedToolPartIds
                 )
@@ -415,7 +502,6 @@ class MarkdownView @JvmOverloads constructor(
                 createPartView(
                     part = parts[index],
                     isStreaming = isStreaming,
-                    linkDefs = linkDefs,
                     expandedThinkingPartIds = expandedThinkingPartIds,
                     expandedToolPartIds = expandedToolPartIds
                 )
@@ -428,12 +514,47 @@ class MarkdownView @JvmOverloads constructor(
         addView(view, index)
     }
 
+    /**
+     * 对已有的 markdown part 容器执行 block 级增量更新，避免整体重建视图树。
+     * 返回 true 表示成功原地更新，false 表示需要回退到全量重建。
+     */
+    private fun updateMarkdownPartInPlace(
+        container: LinearLayout,
+        part: AssistantMarkdownPart,
+        isStreaming: Boolean
+    ): Boolean {
+        val parseResult = obtainParseResult(part.text, isStreaming)
+        val newBlocks = parseResult.blocks
+        val newLinkDefs = parseResult.linkDefs
+
+        val cached = partBlocksCache[part.id]
+        if (cached == null || cached.linkDefs != newLinkDefs || (cached.isStreaming && !isStreaming)) {
+            // 没有缓存、linkDefs 变化、或从流式切换到非流式——需要全量重建
+            container.removeAllViews()
+            newBlocks.forEachIndexed { index, block ->
+                container.addView(
+                    createBlockView(block, isStreaming, newLinkDefs, nested = false, isLastInContainer = index == newBlocks.lastIndex)
+                )
+            }
+            partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
+            return true
+        }
+
+        // 执行 block 级增量更新
+        renderBlocksIncrementally(container, newBlocks, isStreaming, newLinkDefs, cached.blocks)
+        partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
+        return true
+    }
+
     private fun resetRenderedPartState() {
         renderMode = RenderMode.None
         lastRenderedPartStates = emptyList()
         lastRenderedLinkDefs = emptyMap()
         lastRenderedBlocks = emptyList()
         lastRenderedIsStreaming = false
+        lastRenderedMarkdownText = null
+        partParseCache.clear()
+        partBlocksCache.clear()
     }
 
     private fun createThinkingPartView(
@@ -970,27 +1091,5 @@ class MarkdownView @JvmOverloads constructor(
             this.topMargin = topMargin
             this.bottomMargin = bottomMargin
         }
-    }
-
-    private fun collectLinkDefs(text: String, isStreaming: Boolean): Map<String, Pair<String, String>> {
-        val defs = mutableMapOf<String, Pair<String, String>>()
-        val lines = text.lines()
-        val skipLastLine = isStreaming && text.isNotEmpty() && !text.endsWith("\n") && !text.endsWith("\r")
-        val lastIndex = lines.lastIndex
-        for ((index, line) in lines.withIndex()) {
-            if (skipLastLine && index == lastIndex) continue
-            val match = LINK_DEF_REGEX.matchEntire(line.trim()) ?: continue
-            val id = match.groupValues[1].lowercase()
-            val url = match.groupValues[2]
-            val title = match.groupValues[3]
-            if (!defs.containsKey(id)) {
-                defs[id] = Pair(url, title)
-            }
-        }
-        return defs
-    }
-
-    companion object {
-        private val LINK_DEF_REGEX = Regex("^\\[([^\\]]+)]:\\s+(\\S+)(?:\\s+[\"'](.+?)[\"'])?\\s*$")
     }
 }
