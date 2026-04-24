@@ -68,4 +68,5 @@
     <string name="dialog_retry_message">将删除最后一条 AI 回复并重新生成。</string>
     <string name="dialog_delete_conversation_title">删除当前对话</string>
     <string name="dialog_delete_conversation_message">将删除当前对话的历史记录文件。</string>
+    <string name="error_delete_conversation_failed">删除对话失败，请稍后重试。</string>
 </resources>

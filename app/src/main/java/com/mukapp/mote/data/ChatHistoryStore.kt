@@ -1,6 +1,7 @@
 package com.mukapp.mote.data
 
 import android.content.Context
+import android.util.Log
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
@@ -28,6 +29,7 @@ object ChatHistoryStore {
     private const val IndexFileName = "index.json"
     private const val LegacyFileName = "history.json"
     private const val LegacyMigrationMarkerFileName = "legacy_migrated.json"
+    private const val CorruptedDirectoryName = "corrupted"
     private const val DefaultConversationTitle = "新对话"
 
     private val summaryCacheLock = Any()
@@ -74,6 +76,13 @@ object ChatHistoryStore {
             put("conversationMessages", serializeMessages(conversationMessages))
         }
         writeJsonAtomically(historyFile, payload)
+        if (loadCurrentConversationId(context) == safeConversationId) {
+            saveCurrentConversationId(
+                context = context,
+                conversationId = safeConversationId,
+                allowMissingConversation = false
+            )
+        }
         parseConversationSummary(historyFile, payload)?.let { summary ->
             upsertCachedSummary(summary)
         }
@@ -90,9 +99,10 @@ object ChatHistoryStore {
                 return current
             }
             val currentFile = conversationFile(ensureConversationsDir(context), currentId)
-            if (!currentFile.exists()) {
+            if (!currentFile.exists() && isMissingCurrentConversationAllowed(context)) {
                 return emptyConversationState(conversationId = currentId)
             }
+            saveCurrentConversationId(context, "")
         }
 
         val latest = listConversations(context).firstOrNull()
@@ -162,13 +172,18 @@ object ChatHistoryStore {
         }
     }
 
-    fun saveCurrentConversationId(context: Context, conversationId: String) {
+    fun saveCurrentConversationId(
+        context: Context,
+        conversationId: String,
+        allowMissingConversation: Boolean = false
+    ) {
         val historyDir = ensureHistoryDir(context)
         val indexFile = File(historyDir, IndexFileName)
         writeJsonAtomically(
             indexFile,
             JSONObject().apply {
                 put("currentConversationId", conversationId)
+                put("allowMissingConversation", allowMissingConversation)
             }
         )
     }
@@ -354,6 +369,11 @@ object ChatHistoryStore {
         return readJsonObjectOrNull(indexFile)?.optString("currentConversationId").orEmpty()
     }
 
+    private fun isMissingCurrentConversationAllowed(context: Context): Boolean {
+        val indexFile = File(ensureHistoryDir(context), IndexFileName)
+        return readJsonObjectOrNull(indexFile)?.optBoolean("allowMissingConversation", false) == true
+    }
+
     private fun ensureHistoryDir(context: Context): File {
         val historyDir = File(context.filesDir, DirectoryName)
         if (!historyDir.exists() && !historyDir.mkdirs()) {
@@ -380,7 +400,35 @@ object ChatHistoryStore {
         }
         return runCatching {
             JSONObject(file.readText(Charsets.UTF_8))
+        }.onFailure { error ->
+            Log.e("Mote", "读取历史记录失败：${file.name}", error)
+            quarantineCorruptedJsonFile(file)
         }.getOrNull()
+    }
+
+    private fun quarantineCorruptedJsonFile(file: File) {
+        if (!file.extension.equals("json", ignoreCase = true)) {
+            return
+        }
+
+        val parent = file.parentFile ?: return
+        if (parent.name == CorruptedDirectoryName || file.name == IndexFileName) {
+            return
+        }
+
+        val corruptedDir = File(parent, CorruptedDirectoryName)
+        if (!corruptedDir.exists() && !corruptedDir.mkdirs()) {
+            Log.e("Mote", "无法创建损坏历史隔离目录：${corruptedDir.path}")
+            return
+        }
+
+        val quarantinedFile = File(
+            corruptedDir,
+            "${file.nameWithoutExtension}.${System.currentTimeMillis()}.corrupt.json"
+        )
+        if (!file.renameTo(quarantinedFile)) {
+            Log.e("Mote", "无法隔离损坏历史记录：${file.path}")
+        }
     }
 
     private fun writeJsonAtomically(file: File, payload: JSONObject) {

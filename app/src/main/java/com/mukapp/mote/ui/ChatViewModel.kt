@@ -58,6 +58,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSending = MutableLiveData(false)
     val isSending: LiveData<Boolean> = _isSending
 
+    private val _userNotice = MutableLiveData<String?>()
+    val userNotice: LiveData<String?> = _userNotice
+
     private var pendingStreamingPublishJob: Job? = null
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
@@ -109,7 +112,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         setCurrentConversationId(newConversationId)
         _draftMessage.value = ""
         publishMessagesImmediately()
-        persistCurrentConversationIdAsync(newConversationId, requestVersion)
+        persistCurrentConversationIdAsync(
+            conversationId = newConversationId,
+            expectedStateVersion = requestVersion,
+            allowMissingConversation = true
+        )
     }
 
     fun clearConversation() {
@@ -163,6 +170,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (deleteResult.isFailure) {
                 unmarkConversationDeleted(conversationId)
+                withContext(Dispatchers.Main) {
+                    _userNotice.value = appContext.getString(R.string.error_delete_conversation_failed)
+                }
                 return@launch
             }
             val replacementId = deleteResult.getOrNull()
@@ -190,7 +200,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     currentConversationTitle = DefaultConversationTitle
                     val newConversationId = ChatHistoryStore.newConversationId()
                     setCurrentConversationId(newConversationId)
-                    persistCurrentConversationIdAsync(newConversationId, requestVersion)
+                    persistCurrentConversationIdAsync(
+                        conversationId = newConversationId,
+                        expectedStateVersion = requestVersion,
+                        allowMissingConversation = true
+                    )
                     _draftMessage.value = ""
                     publishMessagesImmediately()
                 }
@@ -428,6 +442,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         activeSendJob?.cancel(CancellationException("用户已手动停止生成。"))
     }
 
+    fun clearUserNotice() {
+        _userNotice.value = null
+    }
+
     fun editMessage(index: Int) {
         if (_isSending.value == true || index !in uiMessagesInternal.indices) {
             return
@@ -573,16 +591,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val assistantContent = currentContent.ifBlank {
+            buildAssistantContent(currentParts)
+        }
+        val shouldKeepInConversation = assistantContent.isNotBlank()
+
         uiMessagesInternal[assistantIndex] = ChatMessage(
             id = assistantId,
             role = ChatRole.Assistant,
-            content = if (currentContent.isBlank() && currentParts.isEmpty()) {
-                appContext.getString(R.string.status_generation_stopped)
-            } else {
-                currentContent
+            content = when {
+                shouldKeepInConversation -> assistantContent
+                currentParts.isEmpty() -> appContext.getString(R.string.status_generation_stopped)
+                else -> ""
             },
             assistantParts = currentParts,
-            excludeFromConversation = true
+            excludeFromConversation = !shouldKeepInConversation
         )
         rebuildConversationFromUiMessages()
         publishMessagesImmediately()
@@ -856,7 +879,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun persistCurrentConversationIdAsync(conversationId: String, expectedStateVersion: Long) {
+    private fun persistCurrentConversationIdAsync(
+        conversationId: String,
+        expectedStateVersion: Long,
+        allowMissingConversation: Boolean = false
+    ) {
         if (conversationId.isBlank()) {
             return
         }
@@ -867,7 +894,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (stateVersion.get() != expectedStateVersion) {
                         return@withLock
                     }
-                    ChatHistoryStore.saveCurrentConversationId(appContext, conversationId)
+                    ChatHistoryStore.saveCurrentConversationId(
+                        context = appContext,
+                        conversationId = conversationId,
+                        allowMissingConversation = allowMissingConversation
+                    )
                 }
             }.onFailure { error ->
                 Log.e("Mote", "保存当前对话索引失败", error)

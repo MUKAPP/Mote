@@ -19,6 +19,7 @@ import androidx.fragment.app.commit
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
 import com.mukapp.mote.databinding.ActivityMainBinding
 import com.mukapp.mote.ui.ChatFragment
 import com.mukapp.mote.ui.ChatViewModel
@@ -157,6 +158,13 @@ class MainActivity : AppCompatActivity() {
         }
         viewModel.isSending.observe(this) { sending ->
             binding.toolbar.menu.findItem(R.id.action_delete_conversation)?.isEnabled = !sending
+        }
+        viewModel.userNotice.observe(this) { message ->
+            if (message.isNullOrBlank()) {
+                return@observe
+            }
+            Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+            viewModel.clearUserNotice()
         }
     }
 
