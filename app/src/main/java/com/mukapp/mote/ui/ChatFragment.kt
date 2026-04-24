@@ -328,6 +328,13 @@ class ChatFragment : Fragment() {
             }
             renderSendButton()
         }
+
+        viewModel.currentConversationId.observe(viewLifecycleOwner) {
+            followOutput = true
+            binding.recyclerMessages.post {
+                scrollToBottom()
+            }
+        }
     }
 
     private fun renderSendButton() {

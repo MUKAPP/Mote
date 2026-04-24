@@ -9,23 +9,28 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.GravityCompat
+import androidx.core.view.isVisible
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commit
-import androidx.fragment.app.commitNow
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.databinding.ActivityMainBinding
 import com.mukapp.mote.ui.ChatFragment
 import com.mukapp.mote.ui.ChatViewModel
+import com.mukapp.mote.ui.ConversationSummaryAdapter
 import com.mukapp.mote.util.dpInt
 import eightbitlab.com.blurview.BlurTarget
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val viewModel: ChatViewModel by viewModels()
+    private lateinit var conversationAdapter: ConversationSummaryAdapter
+    private var latestConversationId: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,6 +42,7 @@ class MainActivity : AppCompatActivity() {
         setupInsets()
         setupChrome()
         setupNavigation()
+        observeConversations()
         setupBackPressHandler()
 
         supportFragmentManager.registerFragmentLifecycleCallbacks(object :
@@ -88,7 +94,7 @@ class MainActivity : AppCompatActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             binding.blurViewToolbar.updatePadding(top = systemBars.top)
-            binding.navView.updatePadding(top = systemBars.top, bottom = systemBars.bottom)
+            binding.drawerPanel.updatePadding(top = systemBars.top, bottom = systemBars.bottom)
             insets
         }
     }
@@ -99,26 +105,61 @@ class MainActivity : AppCompatActivity() {
         binding.toolbar.setNavigationOnClickListener {
             binding.drawerLayout.openDrawer(GravityCompat.START)
         }
-    }
-
-    private fun setupNavigation() {
-        binding.navView.setNavigationItemSelectedListener { item ->
+        binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
-                R.id.nav_new_chat -> {
-                    viewModel.clearConversation()
-                    binding.drawerLayout.closeDrawer(GravityCompat.START)
-                    true
-                }
-
-                R.id.nav_settings -> {
-                    binding.drawerLayout.closeDrawer(GravityCompat.START)
-                    startActivity(Intent(this, SettingsActivity::class.java))
+                R.id.action_delete_conversation -> {
+                    showDeleteConversationDialog()
                     true
                 }
 
                 else -> false
             }
         }
+    }
+
+    private fun setupNavigation() {
+        conversationAdapter = ConversationSummaryAdapter { summary ->
+            viewModel.switchConversation(summary.id)
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
+        }
+        binding.recyclerConversations.adapter = conversationAdapter
+        binding.recyclerConversations.layoutManager = LinearLayoutManager(this)
+        binding.recyclerConversations.itemAnimator = null
+
+        binding.buttonNewChat.setOnClickListener {
+            viewModel.startNewConversation()
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
+        }
+        binding.buttonSettings.setOnClickListener {
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+    }
+
+    private fun observeConversations() {
+        viewModel.currentConversationId.observe(this) { conversationId ->
+            latestConversationId = conversationId
+            conversationAdapter.submitItems(
+                viewModel.conversationSummaries.value.orEmpty(),
+                latestConversationId
+            )
+        }
+        viewModel.conversationSummaries.observe(this) { summaries ->
+            conversationAdapter.submitItems(summaries, latestConversationId)
+            binding.textHistoryEmpty.isVisible = summaries.isEmpty()
+            binding.recyclerConversations.isVisible = summaries.isNotEmpty()
+        }
+    }
+
+    private fun showDeleteConversationDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.dialog_delete_conversation_title)
+            .setMessage(R.string.dialog_delete_conversation_message)
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.action_delete) { _, _ ->
+                viewModel.deleteCurrentConversation()
+            }
+            .show()
     }
 
     private fun setupBackPressHandler() {

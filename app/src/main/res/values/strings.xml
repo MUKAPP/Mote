@@ -3,6 +3,9 @@
     <string name="title_chat">Mote</string>
     <string name="title_settings">设置</string>
     <string name="nav_new_chat">新对话</string>
+    <string name="nav_history_title">历史对话</string>
+    <string name="nav_history_empty">暂无历史对话</string>
+    <string name="nav_untitled_chat">未命名对话</string>
     <string name="nav_settings">设置</string>
     <string name="action_menu">菜单</string>
     <string name="action_back">返回</string>
@@ -11,6 +14,7 @@
     <string name="action_copy">复制</string>
     <string name="action_edit">编辑</string>
     <string name="action_delete">删除</string>
+    <string name="action_delete_conversation">删除对话</string>
     <string name="action_retry">重试</string>
     <string name="action_expand">展开</string>
     <string name="action_collapse">收起</string>
@@ -20,6 +24,7 @@
     <string name="hint_base_url">https://api.openai.com/v1</string>
     <string name="hint_api_key">sk-...</string>
     <string name="hint_model">gpt-4o-mini</string>
+    <string name="hint_title_model">gpt-4o-mini</string>
     <string name="label_ai">AI</string>
     <string name="status_generating">正在生成...</string>
     <string name="status_generation_stopped">已停止生成。</string>
@@ -43,6 +48,8 @@
     <string name="settings_label_base_url">API 地址</string>
     <string name="settings_label_api_key">API Key</string>
     <string name="settings_label_model">模型</string>
+    <string name="settings_label_title_model">轻量模型</string>
+    <string name="settings_title_model_hint">用于自动生成历史对话标题；留空时使用首条消息作为标题。</string>
     <string name="settings_reasoning_title">思考强度</string>
     <string name="settings_reasoning_hint">控制模型的推理深度；高强度思考更深入，但响应通常更慢。</string>
     <string name="settings_reasoning_low">低</string>
@@ -52,11 +59,13 @@
     <string name="settings_save">保存设置</string>
     <string name="settings_saved">设置已保存</string>
     <string name="settings_contract_title">接口约定</string>
-    <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 请求体会发送 model、messages、stream=true、tools 和 reasoning_effort\n• 若要访问外部存储文件，请先授予文件管理权限</string>
+    <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 聊天请求体会发送 model、messages、stream=true、tools 和 reasoning_effort\n• 轻量模型只用于生成历史对话标题\n• 若要访问外部存储文件，请先授予文件管理权限</string>
     <string name="dialog_edit_title">编辑消息</string>
     <string name="dialog_edit_message">编辑将删除此消息及之后的所有消息，并将内容填入输入框。</string>
     <string name="dialog_delete_title">删除消息</string>
     <string name="dialog_delete_message">将删除此用户消息及对应的 AI 回复。</string>
     <string name="dialog_retry_title">重新生成</string>
     <string name="dialog_retry_message">将删除最后一条 AI 回复并重新生成。</string>
+    <string name="dialog_delete_conversation_title">删除当前对话</string>
+    <string name="dialog_delete_conversation_message">将删除当前对话的历史记录文件。</string>
 </resources>

@@ -47,6 +47,7 @@ data class ApiSettings(
     val baseUrl: String = "",
     val apiKey: String = "",
     val model: String = "",
+    val titleModel: String = "",
     val reasoningEffort: String = "high"
 )
 
@@ -64,7 +65,17 @@ data class ChatCompletionResult(
 
 data class SavedConversationState(
     val uiMessages: List<ChatMessage>,
-    val conversationMessages: List<ChatMessage>
+    val conversationMessages: List<ChatMessage>,
+    val conversationId: String = "",
+    val title: String = ""
+)
+
+data class ConversationSummary(
+    val id: String,
+    val title: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val messageCount: Int
 )
 
 data class ToolCallAccumulator(

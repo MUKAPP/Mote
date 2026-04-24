@@ -87,6 +87,7 @@ class SettingsActivity : AppCompatActivity() {
                 baseUrl = binding.settingsContent.editBaseUrl.text?.toString().orEmpty().trim(),
                 apiKey = binding.settingsContent.editApiKey.text?.toString().orEmpty().trim(),
                 model = binding.settingsContent.editModel.text?.toString().orEmpty().trim(),
+                titleModel = binding.settingsContent.editTitleModel.text?.toString().orEmpty().trim(),
                 reasoningEffort = selectedReasoningEffort
             )
             ApiSettingsStore.save(this, settings)
@@ -112,6 +113,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.settingsContent.editBaseUrl.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editApiKey.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editModel.doAfterTextChanged { hideSavedMessage() }
+        binding.settingsContent.editTitleModel.doAfterTextChanged { hideSavedMessage() }
     }
 
     private fun applySettings(settings: ApiSettings) {
@@ -123,6 +125,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         if (binding.settingsContent.editModel.text?.toString() != settings.model) {
             binding.settingsContent.editModel.setText(settings.model)
+        }
+        if (binding.settingsContent.editTitleModel.text?.toString() != settings.titleModel) {
+            binding.settingsContent.editTitleModel.setText(settings.titleModel)
         }
 
         selectedReasoningEffort = settings.reasoningEffort.ifBlank { "high" }

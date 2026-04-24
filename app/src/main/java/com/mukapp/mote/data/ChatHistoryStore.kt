@@ -9,6 +9,7 @@ import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.util.toChatRoleOrNull
 import org.json.JSONArray
@@ -18,22 +19,34 @@ import java.util.UUID
 
 object ChatHistoryStore {
     private const val DirectoryName = "chat_history"
-    private const val FileName = "history.json"
+    private const val ConversationsDirectoryName = "conversations"
+    private const val IndexFileName = "index.json"
+    private const val LegacyFileName = "history.json"
+    private const val DefaultConversationTitle = "新对话"
+
+    fun newConversationId(): String = UUID.randomUUID().toString()
 
     fun saveConversation(
         context: Context,
         settings: ApiSettings,
+        conversationId: String,
+        title: String,
         uiMessages: List<ChatMessage>,
         conversationMessages: List<ChatMessage>
     ): File {
-        val historyDir = File(context.filesDir, DirectoryName)
-        if (!historyDir.exists() && !historyDir.mkdirs()) {
-            throw IllegalStateException("无法创建聊天记录目录。")
-        }
+        val conversationsDir = ensureConversationsDir(context)
+        val safeConversationId = conversationId.ifBlank { newConversationId() }
+        val historyFile = conversationFile(conversationsDir, safeConversationId)
+        val existingRoot = readJsonObjectOrNull(historyFile)
+        val now = System.currentTimeMillis()
+        val createdAt = existingRoot?.optLong("createdAt", 0L)?.takeIf { it > 0L } ?: now
+        val savedTitle = title.trim().ifBlank { buildFallbackTitle(uiMessages) }
 
-        val historyFile = File(historyDir, FileName)
-        val tempFile = File(historyDir, "$FileName.tmp")
         val payload = JSONObject().apply {
+            put("id", safeConversationId)
+            put("title", savedTitle)
+            put("createdAt", createdAt)
+            put("updatedAt", now)
             put("baseUrl", settings.baseUrl)
             put("model", settings.model)
             put("uiMessageCount", uiMessages.size)
@@ -41,35 +54,147 @@ object ChatHistoryStore {
             put("uiMessages", serializeMessages(uiMessages))
             put("conversationMessages", serializeMessages(conversationMessages))
         }
-        tempFile.writeText(payload.toString(), Charsets.UTF_8)
-        if (historyFile.exists()) {
-            historyFile.delete()
-        }
-        if (!tempFile.renameTo(historyFile)) {
-            tempFile.copyTo(historyFile, overwrite = true)
-            tempFile.delete()
-        }
+        writeJsonAtomically(historyFile, payload)
+        saveCurrentConversationId(context, safeConversationId)
         return historyFile
     }
 
+    fun loadCurrentConversation(context: Context): SavedConversationState {
+        migrateLegacyConversationIfNeeded(context)
+
+        val currentId = loadCurrentConversationId(context)
+        if (currentId.isNotBlank()) {
+            val current = loadConversation(context, currentId)
+            if (current != null) {
+                return current
+            }
+        }
+
+        val latest = listConversations(context).firstOrNull()
+        if (latest != null) {
+            saveCurrentConversationId(context, latest.id)
+            return loadConversation(context, latest.id) ?: emptyConversationState()
+        }
+
+        return emptyConversationState(conversationId = newConversationId())
+    }
+
     fun loadLatestConversation(context: Context): SavedConversationState {
+        return loadCurrentConversation(context)
+    }
+
+    fun loadConversation(context: Context, conversationId: String): SavedConversationState? {
+        migrateLegacyConversationIfNeeded(context)
+
+        val file = conversationFile(ensureConversationsDir(context), conversationId)
+        if (!file.exists() || !file.isFile) {
+            return null
+        }
+
+        return deserializeConversation(file, readJsonObjectOrNull(file) ?: return null)
+    }
+
+    fun listConversations(context: Context): List<ConversationSummary> {
+        migrateLegacyConversationIfNeeded(context)
+
+        val conversationsDir = ensureConversationsDir(context)
+        val files = conversationsDir.listFiles { file ->
+            file.isFile && file.extension.equals("json", ignoreCase = true)
+        }.orEmpty()
+        return files.mapNotNull { file ->
+            val root = readJsonObjectOrNull(file) ?: return@mapNotNull null
+            parseConversationSummary(file, root)
+        }.sortedByDescending { it.updatedAt }
+    }
+
+    fun saveCurrentConversationId(context: Context, conversationId: String) {
+        val historyDir = ensureHistoryDir(context)
+        val indexFile = File(historyDir, IndexFileName)
+        writeJsonAtomically(
+            indexFile,
+            JSONObject().apply {
+                put("currentConversationId", conversationId)
+            }
+        )
+    }
+
+    fun deleteConversation(context: Context, conversationId: String): String? {
+        val conversationsDir = ensureConversationsDir(context)
+        val file = conversationFile(conversationsDir, conversationId)
+        if (file.exists() && !file.delete()) {
+            throw IllegalStateException("无法删除对话记录文件。")
+        }
+
+        val replacementId = listConversations(context).firstOrNull { it.id != conversationId }?.id
+        val currentId = loadCurrentConversationId(context)
+        if (currentId == conversationId || currentId.isBlank()) {
+            saveCurrentConversationId(context, replacementId.orEmpty())
+        }
+        return replacementId
+    }
+
+    fun updateConversationTitle(context: Context, conversationId: String, title: String): Boolean {
+        val normalizedTitle = title.trim().takeIf { it.isNotBlank() } ?: return false
+        val conversationsDir = ensureConversationsDir(context)
+        val file = conversationFile(conversationsDir, conversationId)
+        val root = readJsonObjectOrNull(file) ?: return false
+        root.put("title", normalizeTitle(normalizedTitle))
+        writeJsonAtomically(file, root)
+        return true
+    }
+
+    fun clearConversation(context: Context) {
         val historyDir = File(context.filesDir, DirectoryName)
-        if (!historyDir.exists() || !historyDir.isDirectory) {
-            return SavedConversationState(
-                uiMessages = emptyList(),
-                conversationMessages = emptyList()
-            )
+        if (!historyDir.exists()) {
+            return
+        }
+        if (!historyDir.deleteRecursively()) {
+            throw IllegalStateException("无法删除历史记录目录。")
+        }
+    }
+
+    private fun migrateLegacyConversationIfNeeded(context: Context) {
+        val historyDir = ensureHistoryDir(context)
+        val conversationsDir = ensureConversationsDir(context)
+        val indexFile = File(historyDir, IndexFileName)
+        val hasConversationFiles = conversationsDir.listFiles { file ->
+            file.isFile && file.extension.equals("json", ignoreCase = true)
+        }?.isNotEmpty() == true
+        if (hasConversationFiles || indexFile.exists()) {
+            return
         }
 
-        val historyFile = File(historyDir, FileName)
-        if (!historyFile.exists() || !historyFile.isFile) {
-            return SavedConversationState(
-                uiMessages = emptyList(),
-                conversationMessages = emptyList()
-            )
+        val legacyFile = File(historyDir, LegacyFileName)
+        if (!legacyFile.exists() || !legacyFile.isFile) {
+            return
         }
 
-        val root = JSONObject(historyFile.readText(Charsets.UTF_8))
+        val legacyRoot = readJsonObjectOrNull(legacyFile) ?: return
+        val legacyState = deserializeLegacyConversation(legacyRoot)
+        if (legacyState.uiMessages.isEmpty() && legacyState.conversationMessages.isEmpty()) {
+            return
+        }
+
+        val conversationId = newConversationId()
+        val legacyTitle = buildFallbackTitle(legacyState.uiMessages)
+        val timestamp = legacyFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+        val migratedRoot = JSONObject().apply {
+            put("id", conversationId)
+            put("title", legacyTitle)
+            put("createdAt", timestamp)
+            put("updatedAt", timestamp)
+            put("baseUrl", legacyRoot.optString("baseUrl"))
+            put("model", legacyRoot.optString("model"))
+            put("uiMessageCount", legacyState.uiMessages.size)
+            put("conversationMessageCount", legacyState.conversationMessages.size)
+            put("uiMessages", serializeMessages(legacyState.uiMessages))
+            put("conversationMessages", serializeMessages(legacyState.conversationMessages))
+        }
+        writeJsonAtomically(conversationFile(conversationsDir, conversationId), migratedRoot)
+        saveCurrentConversationId(context, conversationId)
+    }
+
+    private fun deserializeLegacyConversation(root: JSONObject): SavedConversationState {
         val uiMessageArray = root.optJSONArray("uiMessages")
         val conversationMessageArray = root.optJSONArray("conversationMessages")
         val legacyMessages = root.optJSONArray("messages")
@@ -90,18 +215,116 @@ object ChatHistoryStore {
                 )
             }
 
-            else -> SavedConversationState(
-                uiMessages = emptyList(),
-                conversationMessages = emptyList()
-            )
+            else -> emptyConversationState()
         }
     }
 
-    fun clearConversation(context: Context) {
-        val historyFile = File(File(context.filesDir, DirectoryName), FileName)
-        if (historyFile.exists() && !historyFile.delete()) {
-            throw IllegalStateException("无法删除历史记录文件。")
+    private fun deserializeConversation(file: File, root: JSONObject): SavedConversationState {
+        val uiMessages = deserializeMessages(root.optJSONArray("uiMessages"))
+        val conversationMessages = deserializeMessages(root.optJSONArray("conversationMessages"))
+        val conversationId = file.nameWithoutExtension
+        return SavedConversationState(
+            uiMessages = uiMessages,
+            conversationMessages = conversationMessages,
+            conversationId = conversationId,
+            title = root.optString("title").ifBlank { buildFallbackTitle(uiMessages) }
+        )
+    }
+
+    private fun parseConversationSummary(file: File, root: JSONObject): ConversationSummary? {
+        val conversationId = file.nameWithoutExtension
+        if (conversationId.isBlank()) {
+            return null
         }
+        val uiMessages = root.optJSONArray("uiMessages")
+        val messageCount = root.optInt("uiMessageCount", uiMessages?.length() ?: 0)
+        return ConversationSummary(
+            id = conversationId,
+            title = root.optString("title").ifBlank {
+                buildFallbackTitle(deserializeMessages(uiMessages))
+            },
+            createdAt = root.optLong("createdAt", file.lastModified()).takeIf { it > 0L }
+                ?: file.lastModified(),
+            updatedAt = root.optLong("updatedAt", file.lastModified()).takeIf { it > 0L }
+                ?: file.lastModified(),
+            messageCount = messageCount
+        )
+    }
+
+    private fun loadCurrentConversationId(context: Context): String {
+        val indexFile = File(ensureHistoryDir(context), IndexFileName)
+        return readJsonObjectOrNull(indexFile)?.optString("currentConversationId").orEmpty()
+    }
+
+    private fun ensureHistoryDir(context: Context): File {
+        val historyDir = File(context.filesDir, DirectoryName)
+        if (!historyDir.exists() && !historyDir.mkdirs()) {
+            throw IllegalStateException("无法创建聊天记录目录。")
+        }
+        return historyDir
+    }
+
+    private fun ensureConversationsDir(context: Context): File {
+        val conversationsDir = File(ensureHistoryDir(context), ConversationsDirectoryName)
+        if (!conversationsDir.exists() && !conversationsDir.mkdirs()) {
+            throw IllegalStateException("无法创建对话记录目录。")
+        }
+        return conversationsDir
+    }
+
+    private fun conversationFile(conversationsDir: File, conversationId: String): File {
+        return File(conversationsDir, "${conversationId.ifBlank { newConversationId() }}.json")
+    }
+
+    private fun readJsonObjectOrNull(file: File): JSONObject? {
+        if (!file.exists() || !file.isFile) {
+            return null
+        }
+        return runCatching {
+            JSONObject(file.readText(Charsets.UTF_8))
+        }.getOrNull()
+    }
+
+    private fun writeJsonAtomically(file: File, payload: JSONObject) {
+        val parent = file.parentFile ?: throw IllegalStateException("记录文件路径无效。")
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw IllegalStateException("无法创建记录目录。")
+        }
+
+        val tempFile = File(parent, "${file.name}.tmp")
+        tempFile.writeText(payload.toString(), Charsets.UTF_8)
+        if (file.exists() && !file.delete()) {
+            throw IllegalStateException("无法更新记录文件。")
+        }
+        if (!tempFile.renameTo(file)) {
+            tempFile.copyTo(file, overwrite = true)
+            tempFile.delete()
+        }
+    }
+
+    private fun buildFallbackTitle(messages: List<ChatMessage>): String {
+        val firstUserMessage = messages.firstOrNull { it.role == ChatRole.User }
+            ?.content
+            .orEmpty()
+        return normalizeTitle(firstUserMessage).ifBlank { DefaultConversationTitle }
+    }
+
+    private fun normalizeTitle(value: String): String {
+        val compact = value.trim().replace(Regex("\\s+"), " ")
+        return if (compact.length > 24) {
+            compact.take(24).trimEnd() + "..."
+        } else {
+            compact
+        }
+    }
+
+    private fun emptyConversationState(conversationId: String = ""): SavedConversationState {
+        return SavedConversationState(
+            uiMessages = emptyList(),
+            conversationMessages = emptyList(),
+            conversationId = conversationId,
+            title = DefaultConversationTitle
+        )
     }
 
     private fun serializeMessages(messages: List<ChatMessage>): JSONArray {

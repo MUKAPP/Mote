@@ -16,6 +16,7 @@ import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
@@ -45,12 +46,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _draftMessage = MutableLiveData("")
     val draftMessage: LiveData<String> = _draftMessage
 
+    private val _conversationSummaries = MutableLiveData<List<ConversationSummary>>(emptyList())
+    val conversationSummaries: LiveData<List<ConversationSummary>> = _conversationSummaries
+
+    private val _currentConversationId = MutableLiveData("")
+    val currentConversationId: LiveData<String> = _currentConversationId
+
     private val _isSending = MutableLiveData(false)
     val isSending: LiveData<Boolean> = _isSending
 
     private var pendingStreamingPublishJob: Job? = null
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
+    private var currentConversationTitle: String = ""
 
     // 流式阶段用 StringBuilder 累积文本，避免每个 delta 都重新分配 String
     private val streamingBuilders = mutableMapOf<String, StringBuilder>()
@@ -71,22 +79,104 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun saveSettings(settings: ApiSettings) {
         ApiSettingsStore.save(appContext, settings)
         _savedSettings.value = settings
-        persistConversationAsync()
+        if (uiMessagesInternal.isNotEmpty() || conversationMessagesInternal.isNotEmpty()) {
+            persistConversationAsync()
+        }
     }
 
-    fun clearConversation() {
+    fun startNewConversation() {
         if (_isSending.value == true) {
             return
         }
 
         uiMessagesInternal.clear()
         conversationMessagesInternal.clear()
+        currentConversationTitle = DefaultConversationTitle
+        val newConversationId = ChatHistoryStore.newConversationId()
+        _currentConversationId.value = newConversationId
+        _draftMessage.value = ""
         publishMessagesImmediately()
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                ChatHistoryStore.clearConversation(appContext)
+                ChatHistoryStore.saveCurrentConversationId(appContext, newConversationId)
             }.onFailure { error ->
-                Log.e("Mote", "清空聊天记录失败", error)
+                Log.e("Mote", "切换新对话失败", error)
+            }
+        }
+    }
+
+    fun clearConversation() {
+        startNewConversation()
+    }
+
+    fun switchConversation(conversationId: String) {
+        if (_isSending.value == true || conversationId.isBlank() || conversationId == _currentConversationId.value) {
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val historyState = runCatching {
+                ChatHistoryStore.loadConversation(appContext, conversationId)
+            }.onFailure { error ->
+                Log.e("Mote", "加载指定对话失败", error)
+            }.getOrNull() ?: return@launch
+
+            runCatching {
+                ChatHistoryStore.saveCurrentConversationId(appContext, conversationId)
+            }.onFailure { error ->
+                Log.e("Mote", "保存当前对话索引失败", error)
+            }
+
+            withContext(Dispatchers.Main) {
+                applyConversationState(historyState)
+                _draftMessage.value = ""
+            }
+        }
+    }
+
+    fun deleteCurrentConversation() {
+        if (_isSending.value == true) {
+            return
+        }
+
+        val conversationId = _currentConversationId.value.orEmpty()
+        if (conversationId.isBlank()) {
+            startNewConversation()
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val deleteResult = runCatching {
+                ChatHistoryStore.deleteConversation(appContext, conversationId)
+            }.onFailure { error ->
+                Log.e("Mote", "删除当前对话失败", error)
+            }
+            if (deleteResult.isFailure) {
+                return@launch
+            }
+            val replacementId = deleteResult.getOrNull()
+
+            val replacementState = replacementId?.let { id ->
+                runCatching { ChatHistoryStore.loadConversation(appContext, id) }
+                    .onFailure { error -> Log.e("Mote", "加载替换对话失败", error) }
+                    .getOrNull()
+            }
+            val summaries = runCatching {
+                ChatHistoryStore.listConversations(appContext)
+            }.getOrDefault(emptyList())
+
+            withContext(Dispatchers.Main) {
+                if (replacementState != null) {
+                    applyConversationState(replacementState)
+                } else {
+                    uiMessagesInternal.clear()
+                    conversationMessagesInternal.clear()
+                    currentConversationTitle = DefaultConversationTitle
+                    _currentConversationId.value = ChatHistoryStore.newConversationId()
+                    _draftMessage.value = ""
+                    publishMessagesImmediately()
+                }
+                _conversationSummaries.value = summaries
             }
         }
     }
@@ -107,9 +197,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val isFirstUserMessage = uiMessagesInternal.none { it.role == ChatRole.User }
         val userMessage = ChatMessage(role = ChatRole.User, content = content)
         uiMessagesInternal += userMessage
         conversationMessagesInternal += userMessage
+        if (isFirstUserMessage) {
+            currentConversationTitle = buildFallbackTitle(content)
+        }
         _draftMessage.value = ""
 
         val assistantId = UUID.randomUUID().toString()
@@ -193,6 +287,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         publishMessagesImmediately()
                         persistConversationAsync()
+                        if (isFirstUserMessage) {
+                            generateConversationTitleAsync(settings, content)
+                        }
                         return@runCatching finalReply
                     }
 
@@ -289,6 +386,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 rebuildConversationFromUiMessages()
                 publishMessagesImmediately()
                 persistConversationAsync()
+                if (isFirstUserMessage) {
+                    generateConversationTitleAsync(settings, content)
+                }
             }
 
             cancelPendingStreamingPublish()
@@ -375,28 +475,44 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadHistory() {
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
-                ChatHistoryStore.loadLatestConversation(appContext)
+                ChatHistoryStore.loadCurrentConversation(appContext)
             }.onFailure { error ->
                 Log.e("Mote", "加载历史记录失败", error)
             }.getOrDefault(
                 SavedConversationState(
                     uiMessages = emptyList(),
-                    conversationMessages = emptyList()
+                    conversationMessages = emptyList(),
+                    conversationId = ChatHistoryStore.newConversationId(),
+                    title = DefaultConversationTitle
                 )
             )
+            val summaries = runCatching {
+                ChatHistoryStore.listConversations(appContext)
+            }.onFailure { error ->
+                Log.e("Mote", "加载对话列表失败", error)
+            }.getOrDefault(emptyList())
 
             withContext(Dispatchers.Main) {
-                uiMessagesInternal.clear()
-                uiMessagesInternal.addAll(historyState.uiMessages)
-                conversationMessagesInternal.clear()
-                conversationMessagesInternal.addAll(
-                    historyState.conversationMessages.filter { message ->
-                        message.role != ChatRole.System && !message.excludeFromConversation
-                    }
-                )
-                publishMessagesImmediately()
+                applyConversationState(historyState)
+                _conversationSummaries.value = summaries
             }
         }
+    }
+
+    private fun applyConversationState(historyState: SavedConversationState) {
+        uiMessagesInternal.clear()
+        uiMessagesInternal.addAll(historyState.uiMessages)
+        conversationMessagesInternal.clear()
+        conversationMessagesInternal.addAll(
+            historyState.conversationMessages.filter { message ->
+                message.role != ChatRole.System && !message.excludeFromConversation
+            }
+        )
+        currentConversationTitle = historyState.title.ifBlank { DefaultConversationTitle }
+        _currentConversationId.value = historyState.conversationId.ifBlank {
+            ChatHistoryStore.newConversationId()
+        }
+        publishMessagesImmediately()
     }
 
     private suspend fun updateStreamingAssistantMessage(
@@ -538,6 +654,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun persistConversationAsync() {
         val settingsSnapshot = _savedSettings.value ?: return
+        val conversationIdSnapshot = _currentConversationId.value
+            ?.takeIf { it.isNotBlank() }
+            ?: ChatHistoryStore.newConversationId().also { _currentConversationId.value = it }
+        val titleSnapshot = currentConversationTitle.ifBlank {
+            buildFallbackTitle(uiMessagesInternal.firstOrNull { it.role == ChatRole.User }?.content.orEmpty())
+        }
         val uiSnapshot = uiMessagesInternal.toList()
         val conversationSnapshot = conversationMessagesInternal.toList()
 
@@ -546,11 +668,75 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ChatHistoryStore.saveConversation(
                     context = appContext,
                     settings = settingsSnapshot,
+                    conversationId = conversationIdSnapshot,
+                    title = titleSnapshot,
                     uiMessages = uiSnapshot,
                     conversationMessages = conversationSnapshot
                 )
+                ChatHistoryStore.listConversations(appContext)
             }.onFailure { error ->
                 Log.e("Mote", "保存聊天记录失败", error)
+            }.onSuccess { summaries ->
+                withContext(Dispatchers.Main) {
+                    _conversationSummaries.value = summaries
+                }
+            }
+        }
+    }
+
+    private fun generateConversationTitleAsync(settings: ApiSettings, firstUserMessage: String) {
+        if (settings.titleModel.isBlank() || firstUserMessage.isBlank()) {
+            refreshConversationSummariesAsync()
+            return
+        }
+
+        val conversationIdSnapshot = _currentConversationId.value.orEmpty()
+        if (conversationIdSnapshot.isBlank()) {
+            refreshConversationSummariesAsync()
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val generatedTitle = runCatching {
+                ChatApiClient.generateConversationTitle(settings, firstUserMessage)
+            }.onFailure { error ->
+                Log.e("Mote", "生成对话标题失败", error)
+            }.getOrNull()
+
+            val normalizedTitle = generatedTitle
+                ?.let { normalizeTitle(it) }
+                ?.takeIf { it.isNotBlank() }
+                ?: buildFallbackTitle(firstUserMessage)
+            val summaries = runCatching {
+                ChatHistoryStore.updateConversationTitle(
+                    context = appContext,
+                    conversationId = conversationIdSnapshot,
+                    title = normalizedTitle
+                )
+                ChatHistoryStore.listConversations(appContext)
+            }.onFailure { error ->
+                Log.e("Mote", "保存对话标题失败", error)
+            }.getOrDefault(emptyList())
+
+            withContext(Dispatchers.Main) {
+                if (_currentConversationId.value == conversationIdSnapshot) {
+                    currentConversationTitle = normalizedTitle
+                }
+                _conversationSummaries.value = summaries
+            }
+        }
+    }
+
+    private fun refreshConversationSummariesAsync() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val summaries = runCatching {
+                ChatHistoryStore.listConversations(appContext)
+            }.onFailure { error ->
+                Log.e("Mote", "刷新对话列表失败", error)
+            }.getOrDefault(emptyList())
+
+            withContext(Dispatchers.Main) {
+                _conversationSummaries.value = summaries
             }
         }
     }
@@ -582,6 +768,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
+        const val DefaultConversationTitle = "新对话"
+
+        fun buildFallbackTitle(message: String): String {
+            return normalizeTitle(message).ifBlank { DefaultConversationTitle }
+        }
+
+        fun normalizeTitle(value: String): String {
+            val compact = value
+                .replace(Regex("[\\r\\n\\t]+"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .trim('"', '\'', '“', '”', '‘', '’', '。', '，', ',', '.', '、', ':', '：')
+            return if (compact.length > 24) {
+                compact.take(24).trimEnd() + "..."
+            } else {
+                compact
+            }
+        }
+
         fun buildSystemPrompt(): String {
             val currentTime = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
             return """

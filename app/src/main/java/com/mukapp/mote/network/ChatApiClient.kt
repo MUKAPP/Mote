@@ -20,6 +20,81 @@ import java.net.URL
 object ChatApiClient {
     private val mainDispatcher = Dispatchers.Main
 
+    suspend fun generateConversationTitle(
+        settings: ApiSettings,
+        userMessage: String
+    ): String {
+        return withContext(Dispatchers.IO) {
+            require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            require(settings.titleModel.isNotBlank()) { "标题模型不能为空。" }
+
+            val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
+            val coroutineContext = currentCoroutineContext()
+            val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
+                runCatching { connection.disconnect() }
+            }
+            try {
+                coroutineContext.ensureActive()
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 60_000
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                connection.setRequestProperty("Accept", "application/json")
+                if (settings.apiKey.isNotBlank()) {
+                    connection.setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
+                }
+
+                val requestBody = JSONObject().apply {
+                    put("model", settings.titleModel)
+                    put("stream", false)
+                    put("temperature", 0.2)
+                    put("max_tokens", 24)
+                    put(
+                        "messages",
+                        JSONArray().apply {
+                            put(
+                                JSONObject().apply {
+                                    put("role", ChatRole.System.apiValue)
+                                    put(
+                                        "content",
+                                        "你只负责生成对话标题。根据用户首条消息输出一个中文短标题，最多12个字，不要引号、标点或解释。"
+                                    )
+                                }
+                            )
+                            put(
+                                JSONObject().apply {
+                                    put("role", ChatRole.User.apiValue)
+                                    put("content", userMessage)
+                                }
+                            )
+                        }
+                    )
+                }.toString()
+
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(requestBody)
+                }
+
+                coroutineContext.ensureActive()
+                val statusCode = connection.responseCode
+                val responseText = readResponseText(connection, statusCode)
+                if (statusCode !in 200..299) {
+                    val errorMessage = parseErrorMessage(responseText)
+                    throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
+                }
+
+                parseAssistantReply(responseText).content
+            } catch (error: Throwable) {
+                coroutineContext.ensureActive()
+                throw error
+            } finally {
+                cancellationHandle?.dispose()
+                runCatching { connection.disconnect() }
+            }
+        }
+    }
+
     suspend fun streamChat(
         settings: ApiSettings,
         messages: List<ChatMessage>,
