@@ -2,6 +2,7 @@ package com.mukapp.mote
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.Menu
 import android.view.View
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -90,6 +91,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.reloadSettings()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main_toolbar_menu, menu)
+        menu.findItem(R.id.action_delete_conversation)?.isEnabled = viewModel.isSending.value != true
+        return true
     }
 
     private fun setupInsets() {

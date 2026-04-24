@@ -50,7 +50,10 @@ class ChatFragment : Fragment() {
     private var followOutput: Boolean = true
     private var userScrolling: Boolean = false
     private var updatingDraft: Boolean = false
-    private val scrollToBottomRunnable = Runnable { scrollToBottom() }
+    private var pendingImmediateScrollToBottom: Boolean = false
+    private var observedConversationId: String? = null
+    private val smoothScrollToBottomRunnable = Runnable { scrollToBottom(animated = true) }
+    private val immediateScrollToBottomRunnable = Runnable { scrollToBottom(animated = false) }
 
     private var systemBottomInset = 0
     private var imeBottomInset = 0
@@ -197,7 +200,8 @@ class ChatFragment : Fragment() {
     }
 
     override fun onDestroyView() {
-        binding.recyclerMessages.removeCallbacks(scrollToBottomRunnable)
+        binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
+        binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
         binding.recyclerMessages.adapter = null
         _binding = null
         super.onDestroyView()
@@ -331,9 +335,18 @@ class ChatFragment : Fragment() {
             renderSendButton()
         }
 
-        viewModel.currentConversationId.observe(viewLifecycleOwner) {
+        viewModel.currentConversationId.observe(viewLifecycleOwner) { conversationId ->
+            val previousConversationId = observedConversationId
+            observedConversationId = conversationId
+            if (conversationId.isBlank() || conversationId == previousConversationId) {
+                return@observe
+            }
+
             followOutput = true
-            binding.recyclerMessages.post(scrollToBottomRunnable)
+            if (previousConversationId != null || latestMessages.isNotEmpty()) {
+                pendingImmediateScrollToBottom = true
+                postScrollToBottom(animated = false)
+            }
         }
     }
 
@@ -358,18 +371,72 @@ class ChatFragment : Fragment() {
 
     private fun renderMessages() {
         adapter.submitMessages(latestMessages, latestIsSending)
-        if (adapter.itemCount > 0 && followOutput) {
-            binding.recyclerMessages.post(scrollToBottomRunnable)
+        if (adapter.itemCount <= 0) {
+            pendingImmediateScrollToBottom = false
+            return
+        }
+
+        if (followOutput) {
+            val animated = !pendingImmediateScrollToBottom
+            pendingImmediateScrollToBottom = false
+            postScrollToBottom(animated)
         }
     }
 
-    private fun scrollToBottom() {
+    private fun postScrollToBottom(animated: Boolean) {
+        val binding = _binding ?: return
+        binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
+        binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
+        binding.recyclerMessages.post(
+            if (animated) {
+                smoothScrollToBottomRunnable
+            } else {
+                immediateScrollToBottomRunnable
+            }
+        )
+    }
+
+    private fun scrollToBottom(animated: Boolean) {
         val binding = _binding ?: return
         val lastPosition = adapter.itemCount - 1
         if (lastPosition < 0) {
             return
         }
-        binding.recyclerMessages.smoothScrollToPosition(lastPosition)
+        val recyclerView = binding.recyclerMessages
+        if (animated) {
+            recyclerView.smoothScrollToPosition(lastPosition)
+            return
+        }
+
+        recyclerView.stopScroll()
+        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
+        if (layoutManager == null) {
+            recyclerView.scrollToPosition(lastPosition)
+            return
+        }
+
+        layoutManager.scrollToPosition(lastPosition)
+        recyclerView.post {
+            if (_binding == null || adapter.itemCount - 1 != lastPosition) {
+                return@post
+            }
+            snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
+        }
+    }
+
+    private fun snapPositionEndToRecyclerBottom(
+        layoutManager: LinearLayoutManager,
+        position: Int
+    ) {
+        val binding = _binding ?: return
+        val targetView = layoutManager.findViewByPosition(position) ?: return
+        val recyclerView = binding.recyclerMessages
+        val viewportBottom = recyclerView.height - recyclerView.paddingBottom
+        val targetBottom = layoutManager.getDecoratedBottom(targetView)
+        val delta = targetBottom - viewportBottom
+        if (delta != 0) {
+            recyclerView.scrollBy(0, delta)
+        }
     }
 
     private fun renderEmptyState() {
