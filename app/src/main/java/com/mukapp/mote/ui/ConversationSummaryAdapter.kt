@@ -7,6 +7,7 @@ import com.google.android.material.color.MaterialColors
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.databinding.ItemConversationSummaryBinding
+import java.util.UUID
 
 class ConversationSummaryAdapter(
     private val onConversationClick: (ConversationSummary) -> Unit
@@ -19,7 +20,7 @@ class ConversationSummaryAdapter(
     }
 
     override fun getItemId(position: Int): Long {
-        return items[position].id.hashCode().toLong()
+        return stableItemId(items[position].id)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -87,6 +88,17 @@ class ConversationSummaryAdapter(
             binding.textTitle.text = item.title.ifBlank { context.getString(R.string.nav_untitled_chat) }
             binding.root.isSelected = selected
             binding.root.setOnClickListener { onConversationClick(item) }
+        }
+    }
+
+    private companion object {
+        fun stableItemId(id: String): Long {
+            return runCatching {
+                val uuid = UUID.fromString(id)
+                uuid.mostSignificantBits xor uuid.leastSignificantBits
+            }.getOrElse {
+                id.fold(1125899906842597L) { hash, char -> hash * 31 + char.code }
+            }
         }
     }
 }

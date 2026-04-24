@@ -42,7 +42,7 @@
 
     <LinearLayout
         android:id="@+id/drawer_panel"
-        android:layout_width="320dp"
+        android:layout_width="wrap_content"
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:background="?attr/colorSurfaceContainerLow"

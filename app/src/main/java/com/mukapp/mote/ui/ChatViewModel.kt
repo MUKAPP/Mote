@@ -32,6 +32,7 @@ import org.json.JSONObject
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
@@ -61,8 +62,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
     private var currentConversationTitle: String = ""
-    @Volatile
-    private var stateVersion: Long = 0L
+    private val stateVersion = AtomicLong(0L)
+
+    // IO 操作先获取 persistenceMutex；内存标记只在很短的同步块内读取或修改。
     private val persistenceMutex = Mutex()
     private val persistenceStateLock = Any()
     private val latestSaveVersions = mutableMapOf<String, Long>()
@@ -128,7 +130,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrNull() ?: return@launch
 
             withContext(Dispatchers.Main) {
-                if (stateVersion != requestVersion) {
+                if (stateVersion.get() != requestVersion) {
                     return@withContext
                 }
                 applyConversationState(historyState)
@@ -173,9 +175,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val summaries = runCatching {
                 ChatHistoryStore.listConversations(appContext)
             }.getOrDefault(emptyList())
+            clearDeletedConversation(conversationId)
 
             withContext(Dispatchers.Main) {
-                if (stateVersion != requestVersion) {
+                if (stateVersion.get() != requestVersion) {
                     _conversationSummaries.value = summaries
                     return@withContext
                 }
@@ -492,7 +495,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun loadHistory() {
-        val loadVersion = stateVersion
+        val loadVersion = stateVersion.get()
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
                 ChatHistoryStore.loadCurrentConversation(appContext)
@@ -513,7 +516,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrDefault(emptyList())
 
             withContext(Dispatchers.Main) {
-                if (stateVersion != loadVersion) {
+                if (stateVersion.get() != loadVersion) {
                     return@withContext
                 }
                 applyConversationState(historyState)
@@ -710,7 +713,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onFailure { error ->
                 Log.e("Mote", "保存聊天记录失败", error)
+                clearSaveSnapshot(conversationIdSnapshot, saveVersion)
             }.onSuccess { summaries ->
+                clearSaveSnapshot(conversationIdSnapshot, saveVersion)
                 withContext(Dispatchers.Main) {
                     _conversationSummaries.value = summaries
                 }
@@ -757,6 +762,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         conversationId = conversationIdSnapshot,
                         title = normalizedTitle
                     )
+                    clearGeneratedConversationTitle(conversationIdSnapshot, normalizedTitle)
                     ChatHistoryStore.listConversations(appContext)
                 }
             }.onFailure { error ->
@@ -787,8 +793,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun markStateChanged(): Long {
-        stateVersion += 1
-        return stateVersion
+        return stateVersion.incrementAndGet()
     }
 
     private fun setCurrentConversationId(conversationId: String) {
@@ -812,6 +817,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun clearDeletedConversation(conversationId: String) {
+        synchronized(persistenceStateLock) {
+            deletedConversationIds.remove(conversationId)
+            latestSaveVersions.remove(conversationId)
+            generatedConversationTitles.remove(conversationId)
+        }
+    }
+
     private fun registerSaveSnapshot(conversationId: String): Long {
         synchronized(persistenceStateLock) {
             nextSaveVersion += 1
@@ -827,6 +840,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun clearSaveSnapshot(conversationId: String, saveVersion: Long) {
+        synchronized(persistenceStateLock) {
+            if (latestSaveVersions[conversationId] == saveVersion) {
+                latestSaveVersions.remove(conversationId)
+            }
+        }
+    }
+
+    private fun clearGeneratedConversationTitle(conversationId: String, title: String) {
+        synchronized(persistenceStateLock) {
+            if (generatedConversationTitles[conversationId] == title) {
+                generatedConversationTitles.remove(conversationId)
+            }
+        }
+    }
+
     private fun persistCurrentConversationIdAsync(conversationId: String, expectedStateVersion: Long) {
         if (conversationId.isBlank()) {
             return
@@ -835,7 +864,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 persistenceMutex.withLock {
-                    if (stateVersion != expectedStateVersion) {
+                    if (stateVersion.get() != expectedStateVersion) {
                         return@withLock
                     }
                     ChatHistoryStore.saveCurrentConversationId(appContext, conversationId)

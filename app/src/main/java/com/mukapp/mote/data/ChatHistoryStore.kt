@@ -30,6 +30,12 @@ object ChatHistoryStore {
     private const val LegacyMigrationMarkerFileName = "legacy_migrated.json"
     private const val DefaultConversationTitle = "新对话"
 
+    private val summaryCacheLock = Any()
+    @Volatile
+    private var legacyMigrationChecked: Boolean = false
+    @Volatile
+    private var cachedConversationSummaries: List<ConversationSummary>? = null
+
     fun newConversationId(): String = UUID.randomUUID().toString()
 
     fun saveConversation(
@@ -68,6 +74,9 @@ object ChatHistoryStore {
             put("conversationMessages", serializeMessages(conversationMessages))
         }
         writeJsonAtomically(historyFile, payload)
+        parseConversationSummary(historyFile, payload)?.let { summary ->
+            upsertCachedSummary(summary)
+        }
         return historyFile
     }
 
@@ -113,6 +122,14 @@ object ChatHistoryStore {
     fun listConversations(context: Context): List<ConversationSummary> {
         migrateLegacyConversationIfNeeded(context)
 
+        cachedSummaries()?.let { summaries ->
+            return summaries
+        }
+
+        return cacheSummaries(scanConversationSummaries(context))
+    }
+
+    private fun scanConversationSummaries(context: Context): List<ConversationSummary> {
         val conversationsDir = ensureConversationsDir(context)
         val files = conversationsDir.listFiles { file ->
             file.isFile && file.extension.equals("json", ignoreCase = true)
@@ -121,6 +138,40 @@ object ChatHistoryStore {
             val root = readJsonObjectOrNull(file) ?: return@mapNotNull null
             parseConversationSummary(file, root)
         }.sortedByDescending { it.updatedAt }
+    }
+
+    private fun cachedSummaries(): List<ConversationSummary>? {
+        return synchronized(summaryCacheLock) {
+            cachedConversationSummaries
+        }
+    }
+
+    private fun cacheSummaries(summaries: List<ConversationSummary>): List<ConversationSummary> {
+        return synchronized(summaryCacheLock) {
+            cachedConversationSummaries ?: summaries.also { cachedConversationSummaries = it }
+        }
+    }
+
+    private fun upsertCachedSummary(summary: ConversationSummary) {
+        synchronized(summaryCacheLock) {
+            val summaries = cachedConversationSummaries ?: return
+            cachedConversationSummaries = (summaries.filterNot { it.id == summary.id } + summary)
+                .sortedByDescending { it.updatedAt }
+        }
+    }
+
+    private fun removeCachedSummary(conversationId: String) {
+        synchronized(summaryCacheLock) {
+            val summaries = cachedConversationSummaries ?: return
+            cachedConversationSummaries = summaries.filterNot { it.id == conversationId }
+        }
+    }
+
+    private fun resetCaches() {
+        synchronized(summaryCacheLock) {
+            legacyMigrationChecked = false
+            cachedConversationSummaries = null
+        }
     }
 
     fun saveCurrentConversationId(context: Context, conversationId: String) {
@@ -140,6 +191,7 @@ object ChatHistoryStore {
         if (file.exists() && !file.delete()) {
             throw IllegalStateException("无法删除对话记录文件。")
         }
+        removeCachedSummary(conversationId)
 
         val replacementId = listConversations(context).firstOrNull { it.id != conversationId }?.id
         val currentId = loadCurrentConversationId(context)
@@ -156,74 +208,100 @@ object ChatHistoryStore {
         val root = readJsonObjectOrNull(file) ?: return false
         root.put("title", normalizeTitle(normalizedTitle))
         writeJsonAtomically(file, root)
+        parseConversationSummary(file, root)?.let { summary ->
+            upsertCachedSummary(summary)
+        }
         return true
     }
 
     fun clearConversation(context: Context) {
         val historyDir = File(context.filesDir, DirectoryName)
         if (!historyDir.exists()) {
+            resetCaches()
             return
         }
         if (!historyDir.deleteRecursively()) {
             throw IllegalStateException("无法删除历史记录目录。")
         }
+        resetCaches()
     }
 
     private fun migrateLegacyConversationIfNeeded(context: Context) {
-        val historyDir = ensureHistoryDir(context)
-        val conversationsDir = ensureConversationsDir(context)
-        val migrationMarkerFile = File(historyDir, LegacyMigrationMarkerFileName)
-        val hasConversationFiles = conversationsDir.listFiles { file ->
-            file.isFile && file.extension.equals("json", ignoreCase = true)
-        }?.isNotEmpty() == true
-        if (hasConversationFiles || migrationMarkerFile.exists()) {
+        if (legacyMigrationChecked) {
             return
         }
 
-        val legacyFile = File(historyDir, LegacyFileName)
-        if (!legacyFile.exists() || !legacyFile.isFile) {
-            return
-        }
+        synchronized(summaryCacheLock) {
+            if (legacyMigrationChecked) {
+                return
+            }
 
-        val legacyRoot = readJsonObjectOrNull(legacyFile) ?: return
-        val legacyState = deserializeLegacyConversation(legacyRoot)
-        if (legacyState.uiMessages.isEmpty() && legacyState.conversationMessages.isEmpty()) {
+            val historyDir = ensureHistoryDir(context)
+            val conversationsDir = ensureConversationsDir(context)
+            val migrationMarkerFile = File(historyDir, LegacyMigrationMarkerFileName)
+            val hasConversationFiles = conversationsDir.listFiles { file ->
+                file.isFile && file.extension.equals("json", ignoreCase = true)
+            }?.isNotEmpty() == true
+            if (hasConversationFiles || migrationMarkerFile.exists()) {
+                legacyMigrationChecked = true
+                return
+            }
+
+            val legacyFile = File(historyDir, LegacyFileName)
+            if (!legacyFile.exists() || !legacyFile.isFile) {
+                legacyMigrationChecked = true
+                return
+            }
+
+            val legacyRoot = readJsonObjectOrNull(legacyFile)
+            if (legacyRoot == null) {
+                legacyMigrationChecked = true
+                return
+            }
+
+            val legacyState = deserializeLegacyConversation(legacyRoot)
+            if (legacyState.uiMessages.isEmpty() && legacyState.conversationMessages.isEmpty()) {
+                writeJsonAtomically(
+                    migrationMarkerFile,
+                    JSONObject().apply {
+                        put("migratedAt", System.currentTimeMillis())
+                        put("empty", true)
+                    }
+                )
+                legacyMigrationChecked = true
+                cachedConversationSummaries = null
+                return
+            }
+
+            val conversationId = newConversationId()
+            val legacyTitle = buildFallbackTitle(legacyState.uiMessages)
+            val timestamp = legacyFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+            val migratedRoot = JSONObject().apply {
+                put("id", conversationId)
+                put("title", legacyTitle)
+                put("createdAt", timestamp)
+                put("updatedAt", timestamp)
+                put("baseUrl", legacyRoot.optString("baseUrl"))
+                put("model", legacyRoot.optString("model"))
+                put("uiMessageCount", legacyState.uiMessages.size)
+                put("conversationMessageCount", legacyState.conversationMessages.size)
+                put("uiMessages", serializeMessages(legacyState.uiMessages))
+                put("conversationMessages", serializeMessages(legacyState.conversationMessages))
+            }
+            writeJsonAtomically(conversationFile(conversationsDir, conversationId), migratedRoot)
+            if (loadCurrentConversationId(context).isBlank()) {
+                saveCurrentConversationId(context, conversationId)
+            }
             writeJsonAtomically(
                 migrationMarkerFile,
                 JSONObject().apply {
                     put("migratedAt", System.currentTimeMillis())
-                    put("empty", true)
+                    put("conversationId", conversationId)
                 }
             )
-            return
+            legacyMigrationChecked = true
+            cachedConversationSummaries = null
         }
-
-        val conversationId = newConversationId()
-        val legacyTitle = buildFallbackTitle(legacyState.uiMessages)
-        val timestamp = legacyFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
-        val migratedRoot = JSONObject().apply {
-            put("id", conversationId)
-            put("title", legacyTitle)
-            put("createdAt", timestamp)
-            put("updatedAt", timestamp)
-            put("baseUrl", legacyRoot.optString("baseUrl"))
-            put("model", legacyRoot.optString("model"))
-            put("uiMessageCount", legacyState.uiMessages.size)
-            put("conversationMessageCount", legacyState.conversationMessages.size)
-            put("uiMessages", serializeMessages(legacyState.uiMessages))
-            put("conversationMessages", serializeMessages(legacyState.conversationMessages))
-        }
-        writeJsonAtomically(conversationFile(conversationsDir, conversationId), migratedRoot)
-        if (loadCurrentConversationId(context).isBlank()) {
-            saveCurrentConversationId(context, conversationId)
-        }
-        writeJsonAtomically(
-            migrationMarkerFile,
-            JSONObject().apply {
-                put("migratedAt", System.currentTimeMillis())
-                put("conversationId", conversationId)
-            }
-        )
     }
 
     private fun deserializeLegacyConversation(root: JSONObject): SavedConversationState {

@@ -25,13 +25,13 @@ import com.mukapp.mote.ui.ChatViewModel
 import com.mukapp.mote.ui.ConversationSummaryAdapter
 import com.mukapp.mote.util.dpInt
 import eightbitlab.com.blurview.BlurTarget
+import kotlin.math.min
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val viewModel: ChatViewModel by viewModels()
     private lateinit var conversationAdapter: ConversationSummaryAdapter
     private var latestConversationId: String = ""
-    private var latestIsSending: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,7 +109,7 @@ class MainActivity : AppCompatActivity() {
         binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.action_delete_conversation -> {
-                    if (!latestIsSending) {
+                    if (viewModel.isSending.value != true) {
                         showDeleteConversationDialog()
                     }
                     true
@@ -121,6 +121,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupNavigation() {
+        binding.drawerPanel.layoutParams = binding.drawerPanel.layoutParams.apply {
+            width = min(resources.displayMetrics.widthPixels - 56.dpInt, 320.dpInt)
+        }
         conversationAdapter = ConversationSummaryAdapter { summary ->
             viewModel.switchConversation(summary.id)
             binding.drawerLayout.closeDrawer(GravityCompat.START)
@@ -153,7 +156,6 @@ class MainActivity : AppCompatActivity() {
             binding.recyclerConversations.isVisible = summaries.isNotEmpty()
         }
         viewModel.isSending.observe(this) { sending ->
-            latestIsSending = sending
             binding.toolbar.menu.findItem(R.id.action_delete_conversation)?.isEnabled = !sending
         }
     }

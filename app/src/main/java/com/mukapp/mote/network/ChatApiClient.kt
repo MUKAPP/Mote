@@ -49,7 +49,7 @@ object ChatApiClient {
                     put("model", settings.titleModel)
                     put("stream", false)
                     put("temperature", 0.2)
-                    put("max_tokens", 24)
+                    put("max_tokens", 48)
                     put(
                         "messages",
                         JSONArray().apply {
@@ -58,7 +58,7 @@ object ChatApiClient {
                                     put("role", ChatRole.System.apiValue)
                                     put(
                                         "content",
-                                        "你只负责生成对话标题。根据用户首条消息输出一个中文短标题，最多12个字，不要引号、标点或解释。"
+                                        "你只负责生成对话标题。根据用户首条消息输出一个简短标题，使用与用户消息一致的语言，不要引号、标点或解释；中文最多12个字，其他语言最多6个词。"
                                     )
                                 }
                             )
