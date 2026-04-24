@@ -122,11 +122,11 @@ object ChatHistoryStore {
     fun listConversations(context: Context): List<ConversationSummary> {
         migrateLegacyConversationIfNeeded(context)
 
-        cachedSummaries()?.let { summaries ->
-            return summaries
+        return synchronized(summaryCacheLock) {
+            cachedConversationSummaries ?: scanConversationSummaries(context).also { summaries ->
+                cachedConversationSummaries = summaries
+            }
         }
-
-        return cacheSummaries(scanConversationSummaries(context))
     }
 
     private fun scanConversationSummaries(context: Context): List<ConversationSummary> {
@@ -138,18 +138,6 @@ object ChatHistoryStore {
             val root = readJsonObjectOrNull(file) ?: return@mapNotNull null
             parseConversationSummary(file, root)
         }.sortedByDescending { it.updatedAt }
-    }
-
-    private fun cachedSummaries(): List<ConversationSummary>? {
-        return synchronized(summaryCacheLock) {
-            cachedConversationSummaries
-        }
-    }
-
-    private fun cacheSummaries(summaries: List<ConversationSummary>): List<ConversationSummary> {
-        return synchronized(summaryCacheLock) {
-            cachedConversationSummaries ?: summaries.also { cachedConversationSummaries = it }
-        }
     }
 
     private fun upsertCachedSummary(summary: ConversationSummary) {

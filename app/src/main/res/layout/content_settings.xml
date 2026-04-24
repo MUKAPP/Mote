@@ -128,13 +128,15 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:hint="@string/settings_label_api_key"
-                    app:boxBackgroundMode="outline">
+                    app:boxBackgroundMode="outline"
+                    app:endIconMode="password_toggle">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_api_key"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:hint="@string/hint_api_key"
+                        android:inputType="textPassword|textNoSuggestions"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
 

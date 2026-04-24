@@ -50,6 +50,7 @@ class ChatFragment : Fragment() {
     private var followOutput: Boolean = true
     private var userScrolling: Boolean = false
     private var updatingDraft: Boolean = false
+    private val scrollToBottomRunnable = Runnable { scrollToBottom() }
 
     private var systemBottomInset = 0
     private var imeBottomInset = 0
@@ -196,6 +197,7 @@ class ChatFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        binding.recyclerMessages.removeCallbacks(scrollToBottomRunnable)
         binding.recyclerMessages.adapter = null
         _binding = null
         super.onDestroyView()
@@ -331,9 +333,7 @@ class ChatFragment : Fragment() {
 
         viewModel.currentConversationId.observe(viewLifecycleOwner) {
             followOutput = true
-            binding.recyclerMessages.post {
-                scrollToBottom()
-            }
+            binding.recyclerMessages.post(scrollToBottomRunnable)
         }
     }
 
@@ -359,13 +359,12 @@ class ChatFragment : Fragment() {
     private fun renderMessages() {
         adapter.submitMessages(latestMessages, latestIsSending)
         if (adapter.itemCount > 0 && followOutput) {
-            binding.recyclerMessages.post {
-                scrollToBottom()
-            }
+            binding.recyclerMessages.post(scrollToBottomRunnable)
         }
     }
 
     private fun scrollToBottom() {
+        val binding = _binding ?: return
         val lastPosition = adapter.itemCount - 1
         if (lastPosition < 0) {
             return

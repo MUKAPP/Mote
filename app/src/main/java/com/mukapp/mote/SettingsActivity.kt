@@ -38,7 +38,6 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshPermissionState()
-        applySettings(ApiSettingsStore.load(this))
     }
 
     private fun setupChrome() {

@@ -249,7 +249,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 val assistantParts = mutableListOf<AssistantPart>()
 
-                repeat(200) { roundIndex ->
+                repeat(MaxToolRounds) { roundIndex ->
                     val accumulatedReply = StringBuilder()
                     val accumulatedThinking = StringBuilder()
                     val response = ChatApiClient.streamChat(
@@ -360,7 +360,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     uiMessagesInternal[assistantIndex] = ChatMessage(
                         id = assistantId,
                         role = ChatRole.Assistant,
-                        content = if (waitSeconds == null && roundIndex == 49) {
+                        content = if (waitSeconds == null && roundIndex == MaxToolRounds - 1) {
                             "工具调用次数过多，已经停止。"
                         } else {
                             buildAssistantContent(assistantParts)
@@ -903,6 +903,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val DefaultConversationTitle = "新对话"
+        const val MaxToolRounds = 200
 
         fun buildFallbackTitle(message: String): String {
             return normalizeTitle(message).ifBlank { DefaultConversationTitle }
