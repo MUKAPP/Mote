@@ -15,6 +15,11 @@ import com.mukapp.mote.util.toChatRoleOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStreamWriter
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 object ChatHistoryStore {
@@ -22,6 +27,7 @@ object ChatHistoryStore {
     private const val ConversationsDirectoryName = "conversations"
     private const val IndexFileName = "index.json"
     private const val LegacyFileName = "history.json"
+    private const val LegacyMigrationMarkerFileName = "legacy_migrated.json"
     private const val DefaultConversationTitle = "新对话"
 
     fun newConversationId(): String = UUID.randomUUID().toString()
@@ -40,7 +46,14 @@ object ChatHistoryStore {
         val existingRoot = readJsonObjectOrNull(historyFile)
         val now = System.currentTimeMillis()
         val createdAt = existingRoot?.optLong("createdAt", 0L)?.takeIf { it > 0L } ?: now
-        val savedTitle = title.trim().ifBlank { buildFallbackTitle(uiMessages) }
+        val fallbackTitle = buildFallbackTitle(uiMessages)
+        val existingTitle = existingRoot?.optString("title").orEmpty()
+        val incomingTitle = title.trim()
+        val savedTitle = when {
+            incomingTitle.isBlank() -> fallbackTitle
+            existingTitle.isNotBlank() && existingTitle != fallbackTitle && incomingTitle == fallbackTitle -> existingTitle
+            else -> incomingTitle
+        }.ifBlank { fallbackTitle }
 
         val payload = JSONObject().apply {
             put("id", safeConversationId)
@@ -55,7 +68,6 @@ object ChatHistoryStore {
             put("conversationMessages", serializeMessages(conversationMessages))
         }
         writeJsonAtomically(historyFile, payload)
-        saveCurrentConversationId(context, safeConversationId)
         return historyFile
     }
 
@@ -67,6 +79,10 @@ object ChatHistoryStore {
             val current = loadConversation(context, currentId)
             if (current != null) {
                 return current
+            }
+            val currentFile = conversationFile(ensureConversationsDir(context), currentId)
+            if (!currentFile.exists()) {
+                return emptyConversationState(conversationId = currentId)
             }
         }
 
@@ -156,11 +172,11 @@ object ChatHistoryStore {
     private fun migrateLegacyConversationIfNeeded(context: Context) {
         val historyDir = ensureHistoryDir(context)
         val conversationsDir = ensureConversationsDir(context)
-        val indexFile = File(historyDir, IndexFileName)
+        val migrationMarkerFile = File(historyDir, LegacyMigrationMarkerFileName)
         val hasConversationFiles = conversationsDir.listFiles { file ->
             file.isFile && file.extension.equals("json", ignoreCase = true)
         }?.isNotEmpty() == true
-        if (hasConversationFiles || indexFile.exists()) {
+        if (hasConversationFiles || migrationMarkerFile.exists()) {
             return
         }
 
@@ -172,6 +188,13 @@ object ChatHistoryStore {
         val legacyRoot = readJsonObjectOrNull(legacyFile) ?: return
         val legacyState = deserializeLegacyConversation(legacyRoot)
         if (legacyState.uiMessages.isEmpty() && legacyState.conversationMessages.isEmpty()) {
+            writeJsonAtomically(
+                migrationMarkerFile,
+                JSONObject().apply {
+                    put("migratedAt", System.currentTimeMillis())
+                    put("empty", true)
+                }
+            )
             return
         }
 
@@ -191,7 +214,16 @@ object ChatHistoryStore {
             put("conversationMessages", serializeMessages(legacyState.conversationMessages))
         }
         writeJsonAtomically(conversationFile(conversationsDir, conversationId), migratedRoot)
-        saveCurrentConversationId(context, conversationId)
+        if (loadCurrentConversationId(context).isBlank()) {
+            saveCurrentConversationId(context, conversationId)
+        }
+        writeJsonAtomically(
+            migrationMarkerFile,
+            JSONObject().apply {
+                put("migratedAt", System.currentTimeMillis())
+                put("conversationId", conversationId)
+            }
+        )
     }
 
     private fun deserializeLegacyConversation(root: JSONObject): SavedConversationState {
@@ -291,14 +323,36 @@ object ChatHistoryStore {
             throw IllegalStateException("无法创建记录目录。")
         }
 
-        val tempFile = File(parent, "${file.name}.tmp")
-        tempFile.writeText(payload.toString(), Charsets.UTF_8)
-        if (file.exists() && !file.delete()) {
-            throw IllegalStateException("无法更新记录文件。")
-        }
-        if (!tempFile.renameTo(file)) {
-            tempFile.copyTo(file, overwrite = true)
+        val tempFile = File(parent, "${file.name}.${UUID.randomUUID()}.tmp")
+        runCatching {
+            FileOutputStream(tempFile).use { output ->
+                OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
+                    writer.write(payload.toString())
+                    writer.flush()
+                    output.fd.sync()
+                }
+            }
+            moveReplacing(tempFile, file)
+        }.onFailure { error ->
             tempFile.delete()
+            throw error
+        }
+    }
+
+    private fun moveReplacing(source: File, target: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING
+            )
         }
     }
 

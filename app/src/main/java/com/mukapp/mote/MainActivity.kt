@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private val viewModel: ChatViewModel by viewModels()
     private lateinit var conversationAdapter: ConversationSummaryAdapter
     private var latestConversationId: String = ""
+    private var latestIsSending: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,7 +109,9 @@ class MainActivity : AppCompatActivity() {
         binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.action_delete_conversation -> {
-                    showDeleteConversationDialog()
+                    if (!latestIsSending) {
+                        showDeleteConversationDialog()
+                    }
                     true
                 }
 
@@ -148,6 +151,10 @@ class MainActivity : AppCompatActivity() {
             conversationAdapter.submitItems(summaries, latestConversationId)
             binding.textHistoryEmpty.isVisible = summaries.isEmpty()
             binding.recyclerConversations.isVisible = summaries.isNotEmpty()
+        }
+        viewModel.isSending.observe(this) { sending ->
+            latestIsSending = sending
+            binding.toolbar.menu.findItem(R.id.action_delete_conversation)?.isEnabled = !sending
         }
     }
 

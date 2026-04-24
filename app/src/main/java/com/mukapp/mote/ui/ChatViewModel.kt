@@ -25,6 +25,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.time.OffsetDateTime
@@ -59,6 +61,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
     private var currentConversationTitle: String = ""
+    @Volatile
+    private var stateVersion: Long = 0L
+    private val persistenceMutex = Mutex()
+    private val persistenceStateLock = Any()
+    private val latestSaveVersions = mutableMapOf<String, Long>()
+    private val deletedConversationIds = mutableSetOf<String>()
+    private val generatedConversationTitles = mutableMapOf<String, String>()
+    private var nextSaveVersion: Long = 0L
 
     // 流式阶段用 StringBuilder 累积文本，避免每个 delta 都重新分配 String
     private val streamingBuilders = mutableMapOf<String, StringBuilder>()
@@ -89,20 +99,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val requestVersion = markStateChanged()
         uiMessagesInternal.clear()
         conversationMessagesInternal.clear()
         currentConversationTitle = DefaultConversationTitle
         val newConversationId = ChatHistoryStore.newConversationId()
-        _currentConversationId.value = newConversationId
+        setCurrentConversationId(newConversationId)
         _draftMessage.value = ""
         publishMessagesImmediately()
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                ChatHistoryStore.saveCurrentConversationId(appContext, newConversationId)
-            }.onFailure { error ->
-                Log.e("Mote", "切换新对话失败", error)
-            }
-        }
+        persistCurrentConversationIdAsync(newConversationId, requestVersion)
     }
 
     fun clearConversation() {
@@ -114,6 +119,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val requestVersion = markStateChanged()
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
                 ChatHistoryStore.loadConversation(appContext, conversationId)
@@ -121,15 +127,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 Log.e("Mote", "加载指定对话失败", error)
             }.getOrNull() ?: return@launch
 
-            runCatching {
-                ChatHistoryStore.saveCurrentConversationId(appContext, conversationId)
-            }.onFailure { error ->
-                Log.e("Mote", "保存当前对话索引失败", error)
-            }
-
             withContext(Dispatchers.Main) {
+                if (stateVersion != requestVersion) {
+                    return@withContext
+                }
                 applyConversationState(historyState)
                 _draftMessage.value = ""
+                persistCurrentConversationIdAsync(conversationId, requestVersion)
             }
         }
     }
@@ -145,13 +149,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val requestVersion = markStateChanged()
+        markConversationDeleted(conversationId)
         viewModelScope.launch(Dispatchers.IO) {
             val deleteResult = runCatching {
-                ChatHistoryStore.deleteConversation(appContext, conversationId)
+                persistenceMutex.withLock {
+                    ChatHistoryStore.deleteConversation(appContext, conversationId)
+                }
             }.onFailure { error ->
                 Log.e("Mote", "删除当前对话失败", error)
             }
             if (deleteResult.isFailure) {
+                unmarkConversationDeleted(conversationId)
                 return@launch
             }
             val replacementId = deleteResult.getOrNull()
@@ -166,13 +175,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrDefault(emptyList())
 
             withContext(Dispatchers.Main) {
+                if (stateVersion != requestVersion) {
+                    _conversationSummaries.value = summaries
+                    return@withContext
+                }
                 if (replacementState != null) {
                     applyConversationState(replacementState)
                 } else {
                     uiMessagesInternal.clear()
                     conversationMessagesInternal.clear()
                     currentConversationTitle = DefaultConversationTitle
-                    _currentConversationId.value = ChatHistoryStore.newConversationId()
+                    val newConversationId = ChatHistoryStore.newConversationId()
+                    setCurrentConversationId(newConversationId)
+                    persistCurrentConversationIdAsync(newConversationId, requestVersion)
                     _draftMessage.value = ""
                     publishMessagesImmediately()
                 }
@@ -197,6 +212,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        markStateChanged()
         val isFirstUserMessage = uiMessagesInternal.none { it.role == ChatRole.User }
         val userMessage = ChatMessage(role = ChatRole.User, content = content)
         uiMessagesInternal += userMessage
@@ -419,6 +435,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        markStateChanged()
         _draftMessage.value = message.content
         repeat(uiMessagesInternal.size - index) {
             uiMessagesInternal.removeAt(uiMessagesInternal.lastIndex)
@@ -438,6 +455,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        markStateChanged()
         uiMessagesInternal.removeAt(index)
         if (index < uiMessagesInternal.size && uiMessagesInternal[index].role == ChatRole.Assistant) {
             uiMessagesInternal.removeAt(index)
@@ -457,6 +475,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        markStateChanged()
         uiMessagesInternal.removeAt(index)
         rebuildConversationFromUiMessages()
         val userIndex = uiMessagesInternal.lastIndex
@@ -473,6 +492,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun loadHistory() {
+        val loadVersion = stateVersion
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
                 ChatHistoryStore.loadCurrentConversation(appContext)
@@ -493,6 +513,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrDefault(emptyList())
 
             withContext(Dispatchers.Main) {
+                if (stateVersion != loadVersion) {
+                    return@withContext
+                }
                 applyConversationState(historyState)
                 _conversationSummaries.value = summaries
             }
@@ -509,9 +532,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         )
         currentConversationTitle = historyState.title.ifBlank { DefaultConversationTitle }
-        _currentConversationId.value = historyState.conversationId.ifBlank {
-            ChatHistoryStore.newConversationId()
-        }
+        setCurrentConversationId(
+            historyState.conversationId.ifBlank {
+                ChatHistoryStore.newConversationId()
+            }
+        )
         publishMessagesImmediately()
     }
 
@@ -656,24 +681,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val settingsSnapshot = _savedSettings.value ?: return
         val conversationIdSnapshot = _currentConversationId.value
             ?.takeIf { it.isNotBlank() }
-            ?: ChatHistoryStore.newConversationId().also { _currentConversationId.value = it }
+            ?: ChatHistoryStore.newConversationId().also { setCurrentConversationId(it) }
         val titleSnapshot = currentConversationTitle.ifBlank {
             buildFallbackTitle(uiMessagesInternal.firstOrNull { it.role == ChatRole.User }?.content.orEmpty())
         }
         val uiSnapshot = uiMessagesInternal.toList()
         val conversationSnapshot = conversationMessagesInternal.toList()
+        val saveVersion = registerSaveSnapshot(conversationIdSnapshot)
 
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                ChatHistoryStore.saveConversation(
-                    context = appContext,
-                    settings = settingsSnapshot,
-                    conversationId = conversationIdSnapshot,
-                    title = titleSnapshot,
-                    uiMessages = uiSnapshot,
-                    conversationMessages = conversationSnapshot
-                )
-                ChatHistoryStore.listConversations(appContext)
+                persistenceMutex.withLock {
+                    if (shouldSkipSave(conversationIdSnapshot, saveVersion)) {
+                        return@runCatching ChatHistoryStore.listConversations(appContext)
+                    }
+                    val effectiveTitle = synchronized(persistenceStateLock) {
+                        generatedConversationTitles[conversationIdSnapshot] ?: titleSnapshot
+                    }
+                    ChatHistoryStore.saveConversation(
+                        context = appContext,
+                        settings = settingsSnapshot,
+                        conversationId = conversationIdSnapshot,
+                        title = effectiveTitle,
+                        uiMessages = uiSnapshot,
+                        conversationMessages = conversationSnapshot
+                    )
+                    ChatHistoryStore.listConversations(appContext)
+                }
             }.onFailure { error ->
                 Log.e("Mote", "保存聊天记录失败", error)
             }.onSuccess { summaries ->
@@ -708,12 +742,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ?.takeIf { it.isNotBlank() }
                 ?: buildFallbackTitle(firstUserMessage)
             val summaries = runCatching {
-                ChatHistoryStore.updateConversationTitle(
-                    context = appContext,
-                    conversationId = conversationIdSnapshot,
-                    title = normalizedTitle
-                )
-                ChatHistoryStore.listConversations(appContext)
+                persistenceMutex.withLock {
+                    val deleted = synchronized(persistenceStateLock) {
+                        conversationIdSnapshot in deletedConversationIds
+                    }
+                    if (deleted) {
+                        return@withLock ChatHistoryStore.listConversations(appContext)
+                    }
+                    synchronized(persistenceStateLock) {
+                        generatedConversationTitles[conversationIdSnapshot] = normalizedTitle
+                    }
+                    ChatHistoryStore.updateConversationTitle(
+                        context = appContext,
+                        conversationId = conversationIdSnapshot,
+                        title = normalizedTitle
+                    )
+                    ChatHistoryStore.listConversations(appContext)
+                }
             }.onFailure { error ->
                 Log.e("Mote", "保存对话标题失败", error)
             }.getOrDefault(emptyList())
@@ -737,6 +782,66 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             withContext(Dispatchers.Main) {
                 _conversationSummaries.value = summaries
+            }
+        }
+    }
+
+    private fun markStateChanged(): Long {
+        stateVersion += 1
+        return stateVersion
+    }
+
+    private fun setCurrentConversationId(conversationId: String) {
+        _currentConversationId.value = conversationId
+        synchronized(persistenceStateLock) {
+            deletedConversationIds.remove(conversationId)
+        }
+    }
+
+    private fun markConversationDeleted(conversationId: String) {
+        synchronized(persistenceStateLock) {
+            deletedConversationIds += conversationId
+            latestSaveVersions.remove(conversationId)
+            generatedConversationTitles.remove(conversationId)
+        }
+    }
+
+    private fun unmarkConversationDeleted(conversationId: String) {
+        synchronized(persistenceStateLock) {
+            deletedConversationIds.remove(conversationId)
+        }
+    }
+
+    private fun registerSaveSnapshot(conversationId: String): Long {
+        synchronized(persistenceStateLock) {
+            nextSaveVersion += 1
+            latestSaveVersions[conversationId] = nextSaveVersion
+            return nextSaveVersion
+        }
+    }
+
+    private fun shouldSkipSave(conversationId: String, saveVersion: Long): Boolean {
+        synchronized(persistenceStateLock) {
+            return conversationId in deletedConversationIds ||
+                    latestSaveVersions[conversationId] != saveVersion
+        }
+    }
+
+    private fun persistCurrentConversationIdAsync(conversationId: String, expectedStateVersion: Long) {
+        if (conversationId.isBlank()) {
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                persistenceMutex.withLock {
+                    if (stateVersion != expectedStateVersion) {
+                        return@withLock
+                    }
+                    ChatHistoryStore.saveCurrentConversationId(appContext, conversationId)
+                }
+            }.onFailure { error ->
+                Log.e("Mote", "保存当前对话索引失败", error)
             }
         }
     }
