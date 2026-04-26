@@ -8,9 +8,58 @@ internal object ShellRiskDetector {
 
     private val shellInterpreters = setOf("sh", "bash", "mksh", "ash", "dash", "zsh", "ksh")
     private val packageManagers = setOf("apt", "apt-get", "yum", "dnf", "pacman", "apk")
+    private val sudoOptionsWithValue = setOf(
+        "--auth-type",
+        "--close-from",
+        "--chdir",
+        "--group",
+        "--host",
+        "--login-class",
+        "--prompt",
+        "--role",
+        "--type",
+        "--command-timeout",
+        "--other-user",
+        "--user"
+    )
+    private val sudoShortOptionsWithValue = setOf('a', 'C', 'c', 'D', 'g', 'h', 'p', 'R', 'r', 'T', 't', 'U', 'u')
+    private val doasOptionsWithValue = setOf("-C")
+    private val doasShortOptionsWithValue = setOf('C', 'u')
+    private val sensitivePathPrefixes = setOf(
+        "/sdcard",
+        "/storage",
+        "/data",
+        "/system",
+        "/vendor",
+        "/product",
+        "/odm",
+        "/mnt",
+        "/apex",
+        "/dev/block",
+        "/sys/fs/selinux"
+    )
+    private val shellControlPrefixes = setOf(
+        "!",
+        "{",
+        "}",
+        "if",
+        "then",
+        "else",
+        "elif",
+        "fi",
+        "while",
+        "until",
+        "for",
+        "do",
+        "done",
+        "case",
+        "esac",
+        "in"
+    )
     private val dangerousXargsCommands = setOf(
         "rm",
         "rmdir",
+        "unlink",
         "mv",
         "dd",
         "truncate",
@@ -50,8 +99,11 @@ internal object ShellRiskDetector {
 
     private fun detectTokens(tokens: List<Token>, nestedDepth: Int): String? {
         var index = 0
+        var hasPipeBeforeSegment = false
         while (index < tokens.size) {
             while (index < tokens.size && tokens[index].type == TokenType.SEPARATOR) {
+                val separator = (tokens[index] as Token.Separator).text
+                hasPipeBeforeSegment = hasPipeBeforeSegment || separator == "|" || separator == "|&"
                 index += 1
             }
             if (index >= tokens.size) {
@@ -63,16 +115,18 @@ internal object ShellRiskDetector {
                 index += 1
             }
 
-            detectSegment(tokens.subList(segmentStart, index), nestedDepth)?.let { risk ->
+            detectSegment(tokens.subList(segmentStart, index), nestedDepth, hasPipeBeforeSegment)?.let { risk ->
                 return risk
             }
+            hasPipeBeforeSegment = false
         }
         return null
     }
 
-    private fun detectSegment(tokens: List<Token>, nestedDepth: Int): String? {
+    private fun detectSegment(tokens: List<Token>, nestedDepth: Int, hasPipeInput: Boolean): String? {
         val words = mutableListOf<String>()
         var redirectionRisk: String? = null
+        var hasInputRedirect = false
         var index = 0
 
         while (index < tokens.size) {
@@ -83,19 +137,22 @@ internal object ShellRiskDetector {
                 }
                 is Token.Redirect -> {
                     val target = tokens.getOrNull(index + 1) as? Token.Word
+                    if (isInputRedirect(token.text)) {
+                        hasInputRedirect = true
+                    }
                     if (isOutputRedirect(token.text) && target != null && isFileRedirectTarget(target.text)) {
                         redirectionRisk = redirectionRisk ?: "重定向覆盖或追加文件"
                     }
                     index += if (target == null) 1 else 2
                 }
-                Token.Separator -> index += 1
+                is Token.Separator -> index += 1
             }
         }
 
-        return detectWords(words, nestedDepth) ?: redirectionRisk
+        return detectWords(words, nestedDepth, hasExternalStdin = hasPipeInput || hasInputRedirect) ?: redirectionRisk
     }
 
-    private fun detectWords(rawWords: List<String>, nestedDepth: Int): String? {
+    private fun detectWords(rawWords: List<String>, nestedDepth: Int, hasExternalStdin: Boolean = false): String? {
         if (nestedDepth > MaxNestedDetectionDepth) {
             return null
         }
@@ -122,18 +179,28 @@ internal object ShellRiskDetector {
         }
 
         return when {
-            command == "env" -> detectEnv(args, nestedDepth)
-            command == "command" -> detectCommandBuiltin(args, nestedDepth)
-            command == "exec" || command == "nohup" || command == "builtin" -> detectWords(args, nestedDepth + 1)
-            command == "time" -> detectWords(args.dropWhile { it.startsWith("-") }, nestedDepth + 1)
-            command == "toybox" || command == "busybox" -> detectWords(args, nestedDepth + 1)
+            command in shellControlPrefixes -> detectWords(args, nestedDepth, hasExternalStdin)
+            command == "env" -> detectEnv(args, nestedDepth, hasExternalStdin)
+            command == "command" -> detectCommandBuiltin(args, nestedDepth, hasExternalStdin)
+            command == "exec" -> detectExec(args, nestedDepth, hasExternalStdin)
+            command == "nohup" || command == "builtin" -> detectWords(args, nestedDepth + 1, hasExternalStdin)
+            command == "sudo" -> detectSudo(args, nestedDepth, hasExternalStdin)
+            command == "doas" -> detectDoas(args, nestedDepth, hasExternalStdin)
+            command == "timeout" -> detectTimeout(args, nestedDepth, hasExternalStdin)
+            command == "nice" -> detectNice(args, nestedDepth, hasExternalStdin)
+            command == "ionice" -> detectIonice(args, nestedDepth, hasExternalStdin)
+            command == "setsid" -> detectSetsid(args, nestedDepth, hasExternalStdin)
+            command == "time" -> detectWords(args.dropWhile { it.startsWith("-") }, nestedDepth + 1, hasExternalStdin)
+            command == "toybox" || command == "busybox" -> detectWords(args, nestedDepth + 1, hasExternalStdin)
             command == "eval" -> detectCommandString(args.joinToString(" "), nestedDepth + 1)
             command in shellInterpreters -> detectShellScriptArgument(args, nestedDepth)
-            command == "su" -> detectShellScriptArgument(args, nestedDepth)
+            command == "su" -> detectSu(args, nestedDepth, hasExternalStdin)
+            command == "run-as" -> detectRunAs(args, nestedDepth)
             command == "xargs" -> detectXargs(args, nestedDepth)
             command == "find" -> detectFind(args, nestedDepth)
             command == "rm" -> detectRm(args)
             command == "rmdir" -> detectCommandWithTargets(args, "删除目录")
+            command == "unlink" -> detectSingleDelete(args)
             command == "mv" -> detectMove(args)
             command == "dd" -> detectDd(args)
             command == "truncate" -> detectCommandWithTargets(args, "截断文件")
@@ -157,13 +224,13 @@ internal object ShellRiskDetector {
         }
     }
 
-    private fun detectEnv(args: List<String>, nestedDepth: Int): String? {
+    private fun detectEnv(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
             when {
                 isVariableAssignment(arg) -> index += 1
-                arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1)
+                arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
                 arg == "-S" && index + 1 < args.size -> {
                     return detectCommandString(args.drop(index + 1).joinToString(" "), nestedDepth + 1)
                 }
@@ -171,22 +238,112 @@ internal object ShellRiskDetector {
                 arg == "-i" || arg == "-" || arg == "--ignore-environment" -> index += 1
                 arg.startsWith("--unset=") || arg.startsWith("--chdir=") -> index += 1
                 arg.startsWith("-") -> index += 1
-                else -> return detectWords(args.drop(index), nestedDepth + 1)
+                else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
             }
         }
         return null
     }
 
-    private fun detectCommandBuiltin(args: List<String>, nestedDepth: Int): String? {
+    private fun detectCommandBuiltin(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
         if (args.any { it == "-v" || it == "-V" }) {
             return null
         }
-        return detectWords(args.filterNot { it == "-p" || it == "--" }, nestedDepth + 1)
+        return detectWords(args.filterNot { it == "-p" || it == "--" }, nestedDepth + 1, hasExternalStdin)
+    }
+
+    private fun detectExec(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
+                arg == "-a" -> index += 2
+                arg.startsWith("-") -> index += 1
+                else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
+            }
+        }
+        return null
+    }
+
+    private fun detectSudo(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        return detectWords(skipWrapperOptions(args, sudoOptionsWithValue, sudoShortOptionsWithValue), nestedDepth + 1, hasExternalStdin)
+    }
+
+    private fun detectDoas(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        return detectWords(skipWrapperOptions(args, doasOptionsWithValue, doasShortOptionsWithValue), nestedDepth + 1, hasExternalStdin)
+    }
+
+    private fun detectTimeout(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> {
+                    index += 1
+                    break
+                }
+                arg == "-s" || arg == "--signal" || arg == "-k" || arg == "--kill-after" -> index += 2
+                arg.startsWith("--signal=") || arg.startsWith("--kill-after=") -> index += 1
+                arg == "-v" || arg == "--verbose" || arg == "--foreground" || arg == "--preserve-status" -> index += 1
+                arg.startsWith("-") && !isLikelyDuration(arg) -> index += 1
+                else -> break
+            }
+        }
+
+        if (index < args.size && isLikelyDuration(args[index])) {
+            index += 1
+        }
+        return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
+    }
+
+    private fun detectNice(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
+                arg == "-n" || arg == "--adjustment" -> index += 2
+                arg.startsWith("--adjustment=") -> index += 1
+                isNicePriorityShortcut(arg) -> index += 1
+                arg.startsWith("-") -> index += 1
+                else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
+            }
+        }
+        return null
+    }
+
+    private fun detectIonice(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
+                arg == "-c" || arg == "--class" || arg == "-n" || arg == "--classdata" || arg == "-p" || arg == "--pid" -> index += 2
+                arg.startsWith("--class=") || arg.startsWith("--classdata=") || arg.startsWith("--pid=") -> index += 1
+                isIoniceAttachedOption(arg) -> index += 1
+                arg.startsWith("-") -> index += 1
+                else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
+            }
+        }
+        return null
+    }
+
+    private fun detectSetsid(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
+                arg.startsWith("-") -> index += 1
+                else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
+            }
+        }
+        return null
     }
 
     private fun detectShellScriptArgument(args: List<String>, nestedDepth: Int): String? {
         args.forEachIndexed { index, arg ->
-            val isCommandOption = arg == "-c" || (arg.startsWith("-") && !arg.startsWith("--") && arg.contains('c'))
+            val isCommandOption = isSuCommandOption(arg)
             if (isCommandOption && index + 1 < args.size) {
                 return detectCommandString(args[index + 1], nestedDepth + 1)
             }
@@ -194,12 +351,86 @@ internal object ShellRiskDetector {
         return null
     }
 
-    private fun detectXargs(args: List<String>, nestedDepth: Int): String? {
+    private fun suCommandStringArgument(args: List<String>): String? {
         args.forEachIndexed { index, arg ->
-            val command = normalizeCommandName(arg)
-            if (command in dangerousXargsCommands || command in shellInterpreters || command.startsWith("mkfs.")) {
-                detectWords(args.drop(index), nestedDepth + 1)?.let { risk -> return risk }
+            val isCommandOption = isSuCommandOption(arg)
+            if (isCommandOption && index + 1 < args.size) {
+                return args[index + 1]
             }
+        }
+        return null
+    }
+
+    private fun isSuCommandOption(arg: String): Boolean {
+        return arg == "-c" || (arg.startsWith("-") && !arg.startsWith("--") && arg.drop(1).contains('c'))
+    }
+
+    private fun detectSu(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
+        val commandString = suCommandStringArgument(args)
+        commandString?.let { detectCommandString(it, nestedDepth + 1) }?.let { risk -> return risk }
+
+        if (commandString?.let { hasDynamicCommandPosition(it) } == true) {
+            return "通过 su 执行动态 Shell 命令"
+        }
+        if (commandString != null) {
+            return null
+        }
+
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> {
+                    index += 1
+                    break
+                }
+                isSuCommandOption(arg) || arg == "-s" || arg == "--shell" || arg == "-g" || arg == "-G" -> index += 2
+                arg.startsWith("--shell=") -> index += 1
+                arg.startsWith("-") -> index += 1
+                else -> break
+            }
+        }
+
+        if (index >= args.size) {
+            return if (hasExternalStdin) "通过 su 从输入流执行命令" else null
+        }
+
+        val commandArgs = args.drop(index)
+        if (hasExternalStdin && commandArgs.size == 1 && isLikelySuUser(commandArgs.first())) {
+            return "通过 su 从输入流执行命令"
+        }
+        val executableArgs = if (commandArgs.size >= 2 && isLikelySuUser(commandArgs.first())) {
+            commandArgs.drop(1)
+        } else {
+            commandArgs
+        }
+        return detectWords(executableArgs, nestedDepth + 1, hasExternalStdin) ?: if (hasExternalStdin) {
+            "通过 su 从输入流执行命令"
+        } else {
+            null
+        }
+    }
+
+    private fun detectRunAs(args: List<String>, nestedDepth: Int): String? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--user" -> index += 2
+                arg.startsWith("--user=") -> index += 1
+                arg.startsWith("-") -> index += 1
+                else -> break
+            }
+        }
+        return detectWords(args.drop(index + 1), nestedDepth + 1)
+    }
+
+    private fun detectXargs(args: List<String>, nestedDepth: Int): String? {
+        val commandArgs = parseXargsCommandArgs(args) ?: return null
+        val command = normalizeCommandName(commandArgs.firstOrNull().orEmpty())
+        if (command in dangerousXargsCommands || command in shellInterpreters || command == "mkfs" || command.startsWith("mkfs.")) {
+            detectWords(commandArgs, nestedDepth + 1)?.let { risk -> return risk }
+            return detectXargsImplicitTargetRisk(command, commandArgs.drop(1))
         }
         return null
     }
@@ -239,17 +470,29 @@ internal object ShellRiskDetector {
         }
     }
 
+    private fun detectSingleDelete(args: List<String>): String? {
+        val targets = commandTargets(args)
+        if (targets.isEmpty()) {
+            return null
+        }
+        return if (targets.any { isSensitiveOrWildcardTarget(it) }) "删除敏感路径或通配文件" else "删除文件或目录"
+    }
+
     private fun detectMove(args: List<String>): String? {
         val targets = commandTargets(args)
         return if (targets.size >= 2) "移动或覆盖文件" else null
     }
 
     private fun detectDd(args: List<String>): String? {
-        val writesOutput = args.any { arg ->
+        val outputTarget = args.firstNotNullOfOrNull { arg ->
             val normalized = arg.lowercase(Locale.ROOT)
-            normalized.startsWith("of=") || normalized.startsWith("conv=")
+            if (normalized.startsWith("of=")) arg.substringAfter('=') else null
         }
-        return if (writesOutput) "低级块设备或文件写入" else null
+        return when {
+            outputTarget != null && isCriticalSystemPath(outputTarget) -> "低级块设备或敏感路径写入"
+            outputTarget != null && isFileRedirectTarget(outputTarget) -> "低级块设备或文件写入"
+            else -> null
+        }
     }
 
     private fun detectPermissionChange(args: List<String>, recursiveRisk: String, sensitiveRisk: String): String? {
@@ -263,28 +506,25 @@ internal object ShellRiskDetector {
     }
 
     private fun detectPm(args: List<String>): String? {
-        return when (firstCommandArgument(args)) {
+        return when (commandArgumentsSkippingOptionValues(args, setOf("--user")).firstOrNull()?.lowercase(Locale.ROOT)) {
             "install", "install-existing", "install-create", "install-write", "install-commit" -> "安装或替换应用包"
+            "uninstall-system-updates" -> "卸载系统应用更新"
             "uninstall" -> "卸载应用包"
             "clear" -> "清除应用数据"
             "disable", "disable-user", "hide", "suspend" -> "禁用或隐藏应用包"
+            "enable", "unhide", "unsuspend", "default-state" -> "修改应用启用状态"
             "grant", "revoke", "reset-permissions" -> "修改应用权限"
             else -> null
         }
     }
 
     private fun detectCmd(args: List<String>): String? {
-        val commandArgs = commandArgumentsSkippingOptionValues(args, setOf("--user")).map { it.lowercase(Locale.ROOT) }
-        if (commandArgs.firstOrNull() != "package") {
-            return null
-        }
-
-        return when (commandArgs.getOrNull(1)) {
-            "install", "install-existing", "install-create", "install-write", "install-commit" -> "安装或替换应用包"
-            "uninstall" -> "卸载应用包"
-            "clear" -> "清除应用数据"
-            "disable-user", "disable", "hide", "suspend" -> "禁用或隐藏应用包"
-            "grant", "revoke", "reset-permissions" -> "修改应用权限"
+        val commandArgs = commandArgumentsSkippingOptionValues(args, setOf("--user"))
+        return when (commandArgs.firstOrNull()?.lowercase(Locale.ROOT)) {
+            "package" -> detectPm(commandArgs.drop(1))
+            "appops" -> detectAppOps(commandArgs.drop(1))
+            "settings" -> detectSettings(commandArgs.drop(1))
+            "content" -> detectContent(commandArgs.drop(1))
             else -> null
         }
     }
@@ -297,24 +537,23 @@ internal object ShellRiskDetector {
     }
 
     private fun detectContent(args: List<String>): String? {
-        return when (firstCommandArgument(args)) {
+        return when (commandArgumentsSkippingOptionValues(args, setOf("--user")).firstOrNull()?.lowercase(Locale.ROOT)) {
             "delete", "update", "insert" -> "修改 Android 内容提供者数据"
             else -> null
         }
     }
 
     private fun detectAppOps(args: List<String>): String? {
-        return when (firstCommandArgument(args)) {
+        return when (commandArgumentsSkippingOptionValues(args, setOf("--user")).firstOrNull()?.lowercase(Locale.ROOT)) {
             "set", "reset" -> "修改应用权限策略"
             else -> null
         }
     }
 
     private fun detectMount(args: List<String>): String? {
-        val normalizedArgs = args.map { it.lowercase(Locale.ROOT) }
-        val remountsWritable = normalizedArgs.any { arg ->
-            arg.contains("remount") || arg.split(',').any { it == "rw" }
-        }
+        val mountOptions = extractMountOptions(args)
+        val hasRw = mountOptions.any { it == "rw" }
+        val remountsWritable = hasRw || (mountOptions.any { it == "remount" } && !mountOptions.any { it == "ro" })
         return if (remountsWritable) "重新挂载文件系统为可写" else null
     }
 
@@ -357,7 +596,7 @@ internal object ShellRiskDetector {
     }
 
     private fun detectTee(args: List<String>): String? {
-        val targets = commandTargets(args)
+        val targets = commandTargets(args).filter { isFileRedirectTarget(it) }
         return if (targets.isNotEmpty()) "通过 tee 写入文件" else null
     }
 
@@ -406,6 +645,67 @@ internal object ShellRiskDetector {
         return result
     }
 
+    private fun skipWrapperOptions(
+        args: List<String>,
+        longOptionsWithValue: Set<String>,
+        shortOptionsWithValue: Set<Char>
+    ): List<String> {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> return args.drop(index + 1)
+                arg in longOptionsWithValue -> index += 2
+                longOptionsWithValue.any { option -> arg.startsWith("$option=") } -> index += 1
+                isShortOptionWithSeparatedValue(arg, shortOptionsWithValue) -> index += 2
+                isShortOptionWithAttachedValue(arg, shortOptionsWithValue) -> index += 1
+                arg.startsWith("-") -> index += 1
+                else -> return args.drop(index)
+            }
+        }
+        return emptyList()
+    }
+
+    private fun isShortOptionWithSeparatedValue(arg: String, optionsWithValue: Set<Char>): Boolean {
+        return arg.length == 2 && arg[0] == '-' && arg[1] in optionsWithValue
+    }
+
+    private fun isShortOptionWithAttachedValue(arg: String, optionsWithValue: Set<Char>): Boolean {
+        return arg.length > 2 && arg[0] == '-' && !arg.startsWith("--") && arg[1] in optionsWithValue
+    }
+
+    private fun extractMountOptions(args: List<String>): Set<String> {
+        val options = mutableSetOf<String>()
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index].lowercase(Locale.ROOT)
+            when {
+                arg == "-o" || arg == "--options" -> {
+                    addMountOptions(args.getOrNull(index + 1), options)
+                    index += 2
+                }
+                arg.startsWith("-o") && arg.length > 2 -> {
+                    addMountOptions(arg.drop(2), options)
+                    index += 1
+                }
+                arg.startsWith("--options=") -> {
+                    addMountOptions(arg.substringAfter('='), options)
+                    index += 1
+                }
+                else -> index += 1
+            }
+        }
+        return options
+    }
+
+    private fun addMountOptions(raw: String?, options: MutableSet<String>) {
+        raw.orEmpty()
+            .lowercase(Locale.ROOT)
+            .split(',')
+            .map { it.substringBefore('=').trim() }
+            .filterTo(options) { it.isNotEmpty() }
+    }
+
     private fun parseGitCommandArgs(args: List<String>): List<String> {
         val result = mutableListOf<String>()
         var index = 0
@@ -433,6 +733,79 @@ internal object ShellRiskDetector {
         return result
     }
 
+    private fun parseXargsCommandArgs(args: List<String>): List<String>? {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> return args.drop(index + 1).takeIf { it.isNotEmpty() }
+                !arg.startsWith("-") || arg == "-" -> return args.drop(index)
+                xargsOptionConsumesNextValue(arg) -> index += 2
+                xargsOptionHasAttachedValue(arg) -> index += 1
+                else -> index += 1
+            }
+        }
+        return null
+    }
+
+    private fun xargsOptionConsumesNextValue(arg: String): Boolean {
+        return arg in setOf(
+            "-a",
+            "-E",
+            "-I",
+            "-L",
+            "-n",
+            "-P",
+            "-s",
+            "-d",
+            "--arg-file",
+            "--delimiter",
+            "--eof",
+            "--max-args",
+            "--max-lines",
+            "--max-procs",
+            "--max-chars",
+            "--replace"
+        )
+    }
+
+    private fun xargsOptionHasAttachedValue(arg: String): Boolean {
+        if (arg.startsWith("--")) {
+            return arg.startsWith("--arg-file=") ||
+                    arg.startsWith("--delimiter=") ||
+                    arg.startsWith("--eof=") ||
+                    arg.startsWith("--max-args=") ||
+                    arg.startsWith("--max-lines=") ||
+                    arg.startsWith("--max-procs=") ||
+                    arg.startsWith("--max-chars=") ||
+                    arg.startsWith("--replace=")
+        }
+        return arg.length > 2 && arg[0] == '-' && arg[1] in setOf('a', 'E', 'I', 'L', 'n', 'P', 's', 'd', 'e', 'i', 'l')
+    }
+
+    private fun detectXargsImplicitTargetRisk(command: String, args: List<String>): String? {
+        return when (command) {
+            "rm" -> {
+                val recursive = args.any { isRecursiveOption(it) || isShortOptionEnabled(it, 'r') || isShortOptionEnabled(it, 'R') }
+                if (recursive) "递归删除文件或目录" else "删除文件或目录"
+            }
+            "rmdir" -> "删除目录"
+            "mv" -> "移动或覆盖文件"
+            "truncate" -> "截断文件"
+            "chmod" -> if (args.any { isRecursiveOption(it) || isShortOptionEnabled(it, 'r') || isShortOptionEnabled(it, 'R') }) {
+                "递归修改文件权限"
+            } else {
+                null
+            }
+            "chown" -> if (args.any { isRecursiveOption(it) || isShortOptionEnabled(it, 'r') || isShortOptionEnabled(it, 'R') }) {
+                "递归修改文件所有者"
+            } else {
+                null
+            }
+            else -> if (command.startsWith("mkfs.")) "格式化文件系统" else null
+        }
+    }
+
     private fun firstCommandArgument(args: List<String>): String? {
         return commandTargets(args).firstOrNull()?.lowercase(Locale.ROOT)
     }
@@ -446,6 +819,63 @@ internal object ShellRiskDetector {
         return Regex("[A-Za-z_][A-Za-z0-9_]*(\\+)?=.*").matches(word)
     }
 
+    private fun isLikelySuUser(word: String): Boolean {
+        val normalized = word.lowercase(Locale.ROOT)
+        return normalized == "root" ||
+                normalized == "shell" ||
+                normalized == "system" ||
+                normalized == "nobody" ||
+                normalized.all { it.isDigit() } ||
+                Regex("u\\d+_a\\d+").matches(normalized)
+    }
+
+    private fun hasDynamicCommandPosition(command: String): Boolean {
+        val trimmed = command.trim()
+        if (trimmed.isEmpty()) {
+            return false
+        }
+
+        val tokens = tokenize(trimmed)
+        var index = 0
+        while (index < tokens.size) {
+            while (index < tokens.size && tokens[index].type == TokenType.SEPARATOR) {
+                index += 1
+            }
+            if (index >= tokens.size) {
+                break
+            }
+
+            val words = mutableListOf<String>()
+            while (index < tokens.size && tokens[index].type != TokenType.SEPARATOR) {
+                val token = tokens[index]
+                if (token is Token.Word) {
+                    words += token.text
+                }
+                index += 1
+            }
+
+            var commandIndex = 0
+            while (commandIndex < words.size && isVariableAssignment(words[commandIndex])) {
+                commandIndex += 1
+            }
+            if (commandIndex >= words.size) {
+                continue
+            }
+
+            while (commandIndex < words.size && normalizeCommandName(words[commandIndex]) in shellControlPrefixes) {
+                commandIndex += 1
+            }
+            if (commandIndex >= words.size) {
+                continue
+            }
+            val firstWord = words[commandIndex]
+            if (firstWord.startsWith('$') || firstWord.startsWith('`')) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun isHelpOrVersionOnly(args: List<String>): Boolean {
         val normalizedArgs = args
             .filter { it.isNotBlank() }
@@ -454,6 +884,18 @@ internal object ShellRiskDetector {
             arg == "-h" || arg == "-?" || arg == "--help" || arg == "help" ||
                     arg == "--version" || arg == "version"
         }
+    }
+
+    private fun isLikelyDuration(arg: String): Boolean {
+        return Regex("[0-9]+(\\.[0-9]+)?[smhd]?").matches(arg.lowercase(Locale.ROOT))
+    }
+
+    private fun isNicePriorityShortcut(arg: String): Boolean {
+        return Regex("-[0-9]+").matches(arg) || Regex("--?[+]?[0-9]+").matches(arg)
+    }
+
+    private fun isIoniceAttachedOption(arg: String): Boolean {
+        return arg.length > 2 && arg[0] == '-' && !arg.startsWith("--") && arg[1] in setOf('c', 'n', 'p')
     }
 
     private fun isRecursiveOption(arg: String): Boolean {
@@ -470,10 +912,22 @@ internal object ShellRiskDetector {
 
     private fun isSensitivePath(target: String): Boolean {
         val value = target.lowercase(Locale.ROOT)
-        return value == "/" || value.startsWith("/sdcard") || value.startsWith("/storage") ||
-                value.startsWith("/data") || value.startsWith("/system") || value.startsWith("/vendor") ||
-                value.startsWith("/product") || value.startsWith("/odm") || value.startsWith("/mnt") ||
-                value.startsWith("/apex")
+        return value == "/" || value == "/proc/sysrq-trigger" ||
+                value.startsWithAnyPathPrefix(sensitivePathPrefixes)
+    }
+
+    private fun String.startsWithAnyPathPrefix(prefixes: Set<String>): Boolean {
+        return prefixes.any { prefix -> this == prefix || startsWith("$prefix/") }
+    }
+
+    private fun isCriticalSystemPath(target: String): Boolean {
+        val value = target.lowercase(Locale.ROOT)
+        return value == "/" || value == "/proc/sysrq-trigger" ||
+                value.startsWithAnyPathPrefix(setOf("/dev/block", "/sys/fs/selinux"))
+    }
+
+    private fun isInputRedirect(redirect: String): Boolean {
+        return redirect.contains('<')
     }
 
     private fun isOutputRedirect(redirect: String): Boolean {
@@ -651,7 +1105,7 @@ internal object ShellRiskDetector {
                     index += 1
                 }
                 if (index < command.length && command[index] == '\n') {
-                    tokens += Token.Separator
+                    tokens += Token.Separator("\n")
                     index += 1
                 }
                 canStartComment = true
@@ -661,7 +1115,7 @@ internal object ShellRiskDetector {
             if (char.isWhitespace()) {
                 flushWord()
                 if (char == '\n') {
-                    tokens += Token.Separator
+                    tokens += Token.Separator("\n")
                 }
                 canStartComment = true
                 index += 1
@@ -677,6 +1131,14 @@ internal object ShellRiskDetector {
                 if (index < command.length) {
                     index += 1
                 }
+                canStartComment = false
+                continue
+            }
+
+            if (char == '$' && command.getOrNull(index + 1) == '\'') {
+                val quoted = readAnsiCString(command, index + 2)
+                current.append(quoted.text)
+                index = quoted.endIndex
                 canStartComment = false
                 continue
             }
@@ -740,8 +1202,14 @@ internal object ShellRiskDetector {
             if (isSeparator(char)) {
                 flushWord()
                 val next = command.getOrNull(index + 1)
-                index += if ((char == '&' && next == '&') || (char == '|' && next == '|') || (char == '|' && next == '&')) 2 else 1
-                tokens += Token.Separator
+                val separator = when {
+                    char == '&' && next == '&' -> "&&"
+                    char == '|' && next == '|' -> "||"
+                    char == '|' && next == '&' -> "|&"
+                    else -> char.toString()
+                }
+                index += separator.length
+                tokens += Token.Separator(separator)
                 canStartComment = true
                 continue
             }
@@ -753,6 +1221,97 @@ internal object ShellRiskDetector {
 
         flushWord()
         return tokens
+    }
+
+    private fun readAnsiCString(command: String, startIndex: Int): QuotedString {
+        val text = StringBuilder()
+        var index = startIndex
+        while (index < command.length && command[index] != '\'') {
+            val char = command[index]
+            if (char == '\\' && index + 1 < command.length) {
+                val escaped = readAnsiEscape(command, index + 1)
+                text.append(escaped.text)
+                index = escaped.endIndex
+            } else {
+                text.append(char)
+                index += 1
+            }
+        }
+        if (index < command.length && command[index] == '\'') {
+            index += 1
+        }
+        return QuotedString(text.toString(), index)
+    }
+
+    private fun readAnsiEscape(command: String, escapedIndex: Int): QuotedString {
+        val escaped = command[escapedIndex]
+        return when (escaped) {
+            'a' -> QuotedString("\u0007", escapedIndex + 1)
+            'b' -> QuotedString("\b", escapedIndex + 1)
+            'e', 'E' -> QuotedString("\u001B", escapedIndex + 1)
+            'f' -> QuotedString("\u000C", escapedIndex + 1)
+            'n' -> QuotedString("\n", escapedIndex + 1)
+            'r' -> QuotedString("\r", escapedIndex + 1)
+            't' -> QuotedString("\t", escapedIndex + 1)
+            'u' -> readUnicodeEscape(command, escapedIndex + 1, maxDigits = 4, fallback = "u")
+            'U' -> readUnicodeEscape(command, escapedIndex + 1, maxDigits = 8, fallback = "U")
+            'v' -> QuotedString("\u000B", escapedIndex + 1)
+            '\\', '\'', '"' -> QuotedString(escaped.toString(), escapedIndex + 1)
+            'x' -> readHexEscape(command, escapedIndex + 1, maxDigits = 2)
+            in '0'..'7' -> readOctalEscape(command, escapedIndex)
+            else -> QuotedString(escaped.toString(), escapedIndex + 1)
+        }
+    }
+
+    private fun readHexEscape(command: String, startIndex: Int, maxDigits: Int): QuotedString {
+        var index = startIndex
+        var value = 0
+        var digits = 0
+        while (index < command.length && digits < maxDigits) {
+            val digit = hexDigitValue(command[index]) ?: break
+            value = value * 16 + digit
+            digits += 1
+            index += 1
+        }
+        return if (digits == 0) QuotedString("x", startIndex) else QuotedString(value.toChar().toString(), index)
+    }
+
+    private fun readUnicodeEscape(command: String, startIndex: Int, maxDigits: Int, fallback: String): QuotedString {
+        var index = startIndex
+        var value = 0
+        var digits = 0
+        while (index < command.length && digits < maxDigits) {
+            val digit = hexDigitValue(command[index]) ?: break
+            value = value * 16 + digit
+            digits += 1
+            index += 1
+        }
+        return if (digits == 0 || !Character.isValidCodePoint(value)) {
+            QuotedString(fallback, startIndex)
+        } else {
+            QuotedString(String(Character.toChars(value)), index)
+        }
+    }
+
+    private fun readOctalEscape(command: String, startIndex: Int): QuotedString {
+        var index = startIndex
+        var value = 0
+        var digits = 0
+        while (index < command.length && digits < 3 && command[index] in '0'..'7') {
+            value = value * 8 + (command[index] - '0')
+            digits += 1
+            index += 1
+        }
+        return QuotedString(value.toChar().toString(), index)
+    }
+
+    private fun hexDigitValue(char: Char): Int? {
+        return when (char) {
+            in '0'..'9' -> char - '0'
+            in 'a'..'f' -> char - 'a' + 10
+            in 'A'..'F' -> char - 'A' + 10
+            else -> null
+        }
     }
 
     private fun readRedirect(command: String, startIndex: Int): RedirectToken? {
@@ -830,6 +1389,8 @@ internal object ShellRiskDetector {
 
     private data class RedirectToken(val text: String, val endIndex: Int)
 
+    private data class QuotedString(val text: String, val endIndex: Int)
+
     private sealed class Token {
         data class Word(val text: String) : Token() {
             override val type: TokenType = TokenType.WORD
@@ -839,7 +1400,7 @@ internal object ShellRiskDetector {
             override val type: TokenType = TokenType.REDIRECT
         }
 
-        data object Separator : Token() {
+        data class Separator(val text: String) : Token() {
             override val type: TokenType = TokenType.SEPARATOR
         }
 
