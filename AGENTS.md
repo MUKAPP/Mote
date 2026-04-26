@@ -39,11 +39,12 @@ app/src/main/java/com/mukapp/mote/
 │   └── ChatApiClient.kt         # OpenAI 兼容 API 客户端（流式 SSE + 非流式回退 + 标题生成）
 ├── tools/
 │   ├── LocalAiTools.kt          # AI 工具定义与执行调度（read_file, list_path, shell 等）
+│   ├── ShellRiskDetector.kt     # Shell 高风险命令静态检测（删除/覆盖/权限/系统设置等）
 │   └── ShellProcessManager.kt   # Shell 进程生命周期管理（前台/后台、输出缓冲）
 ├── ui/
 │   ├── BottomFadeRecyclerView.kt # 自定义 RecyclerView，只在底部物理边缘处显示虚化渐变效果
-│   ├── ChatFragment.kt          # 聊天界面 Fragment
-│   ├── ChatViewModel.kt         # 聊天业务逻辑（消息收发、工具调用循环、历史管理、编辑/删除/重试）
+│   ├── ChatFragment.kt          # 聊天界面 Fragment（输入区、消息列表、Shell 高风险确认条）
+│   ├── ChatViewModel.kt         # 聊天业务逻辑（消息收发、工具调用循环、Shell 确认、历史管理、编辑/删除/重试）
 │   ├── ChatMessageAdapter.kt    # 聊天消息列表适配器（流式更新、assistant 片段渲染、工具结果折叠）
 │   ├── ConversationSummaryAdapter.kt # 侧边栏对话摘要列表适配器（当前对话高亮、删除回调）
 │   ├── IntermediateStepsHelper.kt # 工具调用摘要文本生成
@@ -84,6 +85,7 @@ app/src/main/java/com/mukapp/mote/
   → ChatApiClient.streamChat()（SSE 流式请求，支持非流式回退）
   → 流式接收 content / reasoning_content / tool_calls，并按顺序追加 assistantParts
   → 若返回 toolCalls → 将 assistant tool_calls 消息与 tool 结果追加到 workingConversation → 再次请求
+  → 若 shell 工具命中高风险命令 → 暂停工具链路并显示确认条；确认后携带 confirmation_id 继续执行工具，取消则写入取消结果并结束本轮回复
   → 若无 toolCalls → 最终回复 → 将 workingConversation（去除 System 消息）回写到 conversationMessagesInternal → 更新 uiMessages 并持久化
   → 首轮对话完成后，如配置 titleModel，则异步调用标题模型更新对话标题
 ```
@@ -138,7 +140,7 @@ app/src/main/java/com/mukapp/mote/
 - **编辑消息**：`editMessage(index)` 将指定用户消息及之后的所有消息移除，并把内容回填到输入框
 - **删除消息**：`deleteMessage(index)` 删除指定用户消息及其对应的助手回复
 - **重试消息**：`retryMessage(index)` 仅对最后一条助手消息生效；删除该助手消息后，将其前一条用户消息内容放回草稿并移除原用户消息，再调用 `sendMessage()` 重新发送
-- **停止生成**：`stopGenerating()` 取消当前请求；若已有可保留的 assistant 内容或工具结果，会按当前状态回写 UI 与会话上下文
+- **停止生成**：`stopGenerating()` 取消当前请求，清理待确认 Shell 命令，并停止正在运行的前台 Shell 进程；若已有可保留的 assistant 内容或工具结果，会按当前状态回写 UI 与会话上下文
 
 ## AI 工具体系
 
@@ -148,16 +150,27 @@ Mote 向模型注册了以下工具，定义在 `LocalAiTools.kt`：
 | -------------- | ------------------ | ----------------------------------------------- |
 | `read_file`    | 读取设备上的文本文件         | `description`, `path`, `first_lines` 或 `start_line`/`end_line` |
 | `list_path`    | 列出目录内容或文件信息        | `description`, `path`, `limit`                                 |
-| `shell`        | 执行 Shell 命令        | `description`, `command`, `work_dir`, `background`             |
+| `shell`        | 执行 Shell 命令        | `description`, `command`, `work_dir`, `background`, `confirmation_id`（内部确认用） |
 | `shell_status` | 查询后台 Shell 进程状态    | `description`, `id`                                            |
 | `shell_stop`   | 停止后台 Shell 进程      | `description`, `id`                                            |
 | `wait`         | 等待指定秒数（配合后台 Shell） | `description`, `seconds`                                       |
 
 其中 `description` 为必填参数，需要用一句简短中文说明本次工具执行的目的；该文本会直接展示给用户作为工具标题。
 
+`confirmation_id` 仅由应用在用户确认高风险 Shell 命令后写入，模型不得自行生成或猜测该字段。
+
 工具调用最多循环 200 轮。Shell 命令超过 30 秒自动转为后台运行。
 
 工具执行期间会先插入 `AssistantToolPart(isLoading=true)` 作为加载中片段，工具返回后替换为最终结果。`wait` 工具由 `ChatViewModel` 延迟指定秒数后继续下一轮请求。
+
+### Shell 高风险确认
+
+- `ShellRiskDetector.detect(command)` 会在 `LocalAiTools.runShell()` 真正启动进程前进行静态检测，命中风险时先返回 `ok=false`、`needs_confirmation=true`、`confirmation_id`、`risk`、`command`、`work_dir`、`background` 的 JSON 工具结果。
+- `ChatViewModel.executeToolCallsWithConfirmation()` 识别确认请求后，通过 `shellConfirmation: LiveData<ShellConfirmationUiState?>` 驱动 `ChatFragment` 显示底部确认条；用户点击确认后调用 `LocalAiTools.activatePendingShellConfirmation()` 激活令牌，再把 `confirmation_id` 注入原始工具参数并重新执行同一条 Shell 命令。
+- 用户取消、切换/新建/删除对话或停止生成时，会丢弃待确认令牌；取消确认会向模型返回 `cancelled=true` 的 Tool 结果，并在 assistant 消息中追加“已取消执行高风险 shell 命令。”。
+- 待确认令牌保存在 `LocalAiTools.pendingShellConfirmations`，有效期为 10 分钟；令牌必须匹配原始 `command`、`work_dir`、`background` 且只可消费一次。
+- 风险检测覆盖常见破坏性或写入型操作，包括删除/移动/截断文件、文件输出重定向、`tee` 写入、`dd of=`、递归 `chmod/chown`、`pm/cmd package` 安装卸载/清数据/改权限、`settings/content/appops/setprop` 修改系统状态、`mount` 可写重挂载、`git clean -f`、`git reset --hard`、`sed/perl -i`、`rsync --delete`、包管理器卸载、`mkfs*` 格式化等。
+- 检测器会解析引号、注释、here-document、重定向、命令分隔符、`sh -c`/`su -c`、`env`、`eval`、`xargs`、`find -exec`、命令替换 `$()` 和反引号等常见嵌套形态；普通只读命令和单纯 `--help`/`--version` 查询应尽量不触发确认。
 
 ## 网络请求与响应解析
 
@@ -262,13 +275,14 @@ Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规
 2. **不使用 Room**：聊天记录直接以 JSON 文件存储在应用私有目录
 3. **多对话历史**：每个对话独立 JSON 文件存储，索引文件记录当前对话，侧边栏通过摘要列表切换对话
 4. **双消息列表**：UI 消息和 API 消息分离，避免中间步骤污染 API 上下文
-5. **Shell 进程管理**：前台/后台双模式，后台进程支持状态查询和手动停止，最多保留 20 个进程
-6. **流式渲染优化**：50ms 防抖 + 差异化 RecyclerView 更新 + 流式 payload 部分绑定 + Markdown block 级增量更新
-7. **自研 Markdown 渲染**：采用原生视图树架构（MarkdownView 将 AST 映射为原生 View 树），代码语法高亮使用 prism4j 库（MarkdownCodeSpanRenderer + MarkdownGrammarLocator），支持流式渲染和 10 种语言语法高亮
-8. **对话标题生成**：首轮对话后可使用独立 `titleModel` 生成标题；未配置时使用本地备用标题
-9. **IME 动画跟随**：ChatFragment 实现 WindowInsetsAnimationCompat.Callback，输入法弹出/收起时列表内容像素级跟随滚动
-10. **动态主题色**：MyApplication 应用 DynamicColors，支持 Material You 动态取色
-11. **Material Symbols Rounded 图标**：项目统一使用 Material Symbols Rounded 风格图标，从 Google 官方 `material-design-icons` 仓库下载（主题路径 `materialsymbolsrounded`），保存为 `ic_{icon_name}.xml` 格式到 `res/drawable/` 目录，不使用 `_24px` 后缀命名
+5. **Shell 高风险确认**：Shell 工具执行前通过 `ShellRiskDetector` 静态拦截破坏性或写入型命令，必须由用户在 UI 确认后才会消费一次性 `confirmation_id` 并继续执行
+6. **Shell 进程管理**：前台/后台双模式，后台进程支持状态查询和手动停止，最多保留 20 个进程
+7. **流式渲染优化**：50ms 防抖 + 差异化 RecyclerView 更新 + 流式 payload 部分绑定 + Markdown block 级增量更新
+8. **自研 Markdown 渲染**：采用原生视图树架构（MarkdownView 将 AST 映射为原生 View 树），代码语法高亮使用 prism4j 库（MarkdownCodeSpanRenderer + MarkdownGrammarLocator），支持流式渲染和 10 种语言语法高亮
+9. **对话标题生成**：首轮对话后可使用独立 `titleModel` 生成标题；未配置时使用本地备用标题
+10. **IME 动画跟随**：ChatFragment 实现 WindowInsetsAnimationCompat.Callback，输入法弹出/收起时列表内容像素级跟随滚动
+11. **动态主题色**：MyApplication 应用 DynamicColors，支持 Material You 动态取色
+12. **Material Symbols Rounded 图标**：项目统一使用 Material Symbols Rounded 风格图标，从 Google 官方 `material-design-icons` 仓库下载（主题路径 `materialsymbolsrounded`），保存为 `ic_{icon_name}.xml` 格式到 `res/drawable/` 目录，不使用 `_24px` 后缀命名
 
 ## 注意事项
 
@@ -276,6 +290,7 @@ Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规
 - 修改 `ConversationSummary`、`SavedConversationState` 或历史文件根字段时，需要同步多对话索引、旧版历史迁移和侧边栏列表刷新逻辑
 - 修改 `AssistantPart` 字段时，需要同步 `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter` 和工具结果展开状态逻辑
 - 新增 AI 工具时需在 `LocalAiTools` 中同时添加工具定义和执行逻辑，并在 `IntermediateStepsHelper.parseToolSummary` 中添加摘要解析
+- 修改 Shell 高风险检测规则时需同步更新 `ShellRiskDetectorTest`，覆盖误杀和漏检场景；不要把 `confirmation_id` 暴露为可由模型自行构造的可信输入
 - API 主聊天请求体包含 `stream=true` 和 `tools`，`reasoning_effort` 为条件包含（仅当 `settings.reasoningEffort` 非空时添加），修改时注意兼容性
 - 标题生成请求不携带 tools，固定 `stream=false`、低温度、短输出；修改标题生成逻辑时需保持对空 `titleModel` 的本地备用标题兼容
 - `MANAGE_EXTERNAL_STORAGE` 权限需用户手动授予，相关逻辑在 `Utils.kt` 和 `SettingsActivity.kt`

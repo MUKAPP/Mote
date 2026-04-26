@@ -261,7 +261,7 @@ object LocalAiTools {
         val workDir = payload.optString("work_dir").trim().takeIf { it.isNotEmpty() }
         val background = payload.optBoolean("background", false)
         val confirmationId = payload.optString("confirmation_id").trim().takeIf { it.isNotEmpty() }
-        val risk = detectShellRisk(command)
+        val risk = ShellRiskDetector.detect(command)
         if (risk != null && !consumeShellConfirmation(confirmationId, command, workDir, background)) {
             val id = "confirm_${UUID.randomUUID().toString().take(8)}"
             pendingShellConfirmations[id] = PendingShellConfirmation(
@@ -354,27 +354,6 @@ object LocalAiTools {
         }
         pendingShellConfirmations.remove(id)
         return true
-    }
-
-    private fun detectShellRisk(command: String): String? {
-        val normalized = command.lowercase(Locale.ROOT)
-        val checks = listOf(
-            Regex("(^|[;&|()\\s])rm\\b") to "删除文件或目录",
-            Regex("(^|[;&|()\\s])rm\\s+[^\n]*(^|\\s)-[a-z-]*r[fia-]*\\b") to "递归删除文件或目录",
-            Regex("(^|[;&|()\\s])rm\\s+[^\n]*(/sdcard|/storage|/data|/system|\\*)") to "删除敏感路径或通配文件",
-            Regex("(^|[;&|()\\s])rmdir\\b") to "删除目录",
-            Regex("(^|[;&|()\\s])mv\\b") to "移动或覆盖文件",
-            Regex("(^|[;&|()\\s])dd\\b") to "低级块设备或文件写入",
-            Regex("(^|[;&|()\\s])mkfs(\\.|\\b)") to "格式化文件系统",
-            Regex("(^|[;&|()\\s])truncate\\b") to "截断文件",
-            Regex("(^|[;&|()\\s])chmod\\s+[^\n]*\\s-r\\b|(^|[;&|()\\s])chmod\\s+-[a-z]*r[a-z]*\\b") to "递归修改文件权限",
-            Regex("(^|[;&|()\\s])chown\\s+[^\n]*\\s-r\\b|(^|[;&|()\\s])chown\\s+-[a-z]*r[a-z]*\\b") to "递归修改文件所有者",
-            Regex("(^|[;&|()\\s])pm\\s+uninstall\\b") to "卸载应用包",
-            Regex("(^|[;&|()\\s])(apt|apt-get|yum|dnf|pacman|apk)\\s+[^\n]*(remove|purge|erase|del)\\b") to "卸载系统软件包",
-            Regex("(^|[^>])>>?\\s*[^&\\s]") to "重定向覆盖或追加文件",
-            Regex("(^|[;&|()\\s])tee\\s+(-a\\s+)?[^\n]*") to "通过 tee 写入文件"
-        )
-        return checks.firstOrNull { (pattern, _) -> pattern.containsMatchIn(normalized) }?.second
     }
 
     private fun checkShellStatus(arguments: String): String {
