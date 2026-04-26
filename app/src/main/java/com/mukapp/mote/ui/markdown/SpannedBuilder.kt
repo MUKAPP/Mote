@@ -43,7 +43,7 @@ class SpannedBuilder(private val context: Context) {
     }
 
     private val linkColor: Int by lazy {
-        resolveThemeColor(com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+        resolveThemeColor(androidx.appcompat.R.attr.colorPrimary, 0xFF6750A4.toInt())
     }
 
     private val bulletGapWidth: Int by lazy {

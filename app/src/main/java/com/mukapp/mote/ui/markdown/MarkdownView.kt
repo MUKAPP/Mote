@@ -76,7 +76,7 @@ class MarkdownView @JvmOverloads constructor(
     private val baseTextSizePx: Float
     private val bodyTextColor: Int
     private val primaryColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+        resolveThemeColor(context, androidx.appcompat.R.attr.colorPrimary, 0xFF6750A4.toInt())
     }
     private val secondaryTextColor: Int by lazy {
         resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF49454F.toInt())
@@ -100,7 +100,7 @@ class MarkdownView @JvmOverloads constructor(
         outlineVariantColor
     }
     private val taskMarkerCheckedColor: Int by lazy {
-        resolveThemeColor(context, com.google.android.material.R.attr.colorPrimary, 0xFF6750A4.toInt())
+        resolveThemeColor(context, androidx.appcompat.R.attr.colorPrimary, 0xFF6750A4.toInt())
     }
     private val taskMarkerCheckedBgColor: Int by lazy {
         blendWithAlpha(taskMarkerCheckedColor, 0x18)
@@ -145,19 +145,19 @@ class MarkdownView @JvmOverloads constructor(
         val fallbackTextColor = resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
         val typedArray = context.obtainStyledAttributes(
             attrs,
-            intArrayOf(android.R.attr.textAppearance, android.R.attr.textColor, android.R.attr.textSize),
+            MARKDOWN_VIEW_TEXT_ATTRS,
             defStyleAttr,
             0
         )
-        inlineTextAppearanceRes = typedArray.getResourceId(0, defaultTextAppearanceRes)
-        baseTextColor = typedArray.getColorStateList(1)
+        inlineTextAppearanceRes = typedArray.getResourceId(INDEX_TEXT_APPEARANCE, defaultTextAppearanceRes)
+        baseTextColor = typedArray.getColorStateList(INDEX_TEXT_COLOR)
         bodyTextColor = baseTextColor?.defaultColor ?: fallbackTextColor
         val defaultTextSize = TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_SP,
             16f,
             resources.displayMetrics
         )
-        baseTextSizePx = typedArray.getDimension(2, defaultTextSize)
+        baseTextSizePx = typedArray.getDimension(INDEX_TEXT_SIZE, defaultTextSize)
         typedArray.recycle()
     }
 
@@ -1104,5 +1104,17 @@ class MarkdownView @JvmOverloads constructor(
             this.topMargin = topMargin
             this.bottomMargin = bottomMargin
         }
+    }
+
+    companion object {
+        private const val INDEX_TEXT_APPEARANCE = 0
+        private const val INDEX_TEXT_COLOR = 1
+        private const val INDEX_TEXT_SIZE = 2
+
+        private val MARKDOWN_VIEW_TEXT_ATTRS = intArrayOf(
+            android.R.attr.textAppearance,
+            android.R.attr.textColor,
+            android.R.attr.textSize
+        )
     }
 }
