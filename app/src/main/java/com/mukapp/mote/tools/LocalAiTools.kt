@@ -87,16 +87,19 @@ object LocalAiTools {
         )
     }
 
-    fun activatePendingShellConfirmations() {
+    fun activatePendingShellConfirmation(confirmationId: String): Boolean {
         val now = System.currentTimeMillis()
-        pendingShellConfirmations.entries.forEach { entry ->
-            val confirmation = entry.value
-            if (now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
-                pendingShellConfirmations.remove(entry.key)
-            } else {
-                confirmation.active = true
-            }
+        val confirmation = pendingShellConfirmations[confirmationId] ?: return false
+        if (now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
+            pendingShellConfirmations.remove(confirmationId)
+            return false
         }
+        confirmation.active = true
+        return true
+    }
+
+    fun discardPendingShellConfirmation(confirmationId: String) {
+        pendingShellConfirmations.remove(confirmationId)
     }
 
     fun isShellConfirmationRequest(message: ChatMessage): Boolean {
@@ -531,7 +534,7 @@ object LocalAiTools {
                                         "confirmation_id",
                                         JSONObject().apply {
                                             put("type", "string")
-                                            put("description", "执行高风险命令前由工具返回的确认 ID。只有用户确认后的下一轮对话才可使用。")
+                                            put("description", "执行高风险命令前由应用内部填充的确认 ID。模型不要自行生成此字段。")
                                         }
                                     )
                                     put(

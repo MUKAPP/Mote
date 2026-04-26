@@ -13,6 +13,7 @@ import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
+import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
@@ -22,6 +23,7 @@ import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.tools.ShellProcessManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -34,6 +36,27 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+
+data class ShellConfirmationUiState(
+    val confirmationId: String,
+    val command: String,
+    val workDir: String?,
+    val background: Boolean,
+    val risk: String
+)
+
+private data class ShellConfirmationRequest(
+    val confirmationId: String,
+    val command: String,
+    val workDir: String?,
+    val background: Boolean,
+    val risk: String
+)
+
+private data class ToolExecutionBatch(
+    val results: List<ChatMessage>,
+    val cancelled: Boolean
+)
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
@@ -59,6 +82,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSending = MutableLiveData(false)
     val isSending: LiveData<Boolean> = _isSending
 
+    private val _shellConfirmation = MutableLiveData<ShellConfirmationUiState?>()
+    val shellConfirmation: LiveData<ShellConfirmationUiState?> = _shellConfirmation
+
     private val _userNotice = MutableLiveData<String?>()
     val userNotice: LiveData<String?> = _userNotice
 
@@ -67,6 +93,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var stopGenerationRequested: Boolean = false
     @Volatile
     private var activeForegroundShellProcessId: String? = null
+    private var pendingShellConfirmationDecision: CompletableDeferred<Boolean>? = null
+    private var pendingShellConfirmationId: String? = null
     private var currentConversationTitle: String = ""
     private val stateVersion = AtomicLong(0L)
 
@@ -107,6 +135,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        clearPendingShellConfirmation(discardToken = true)
         val requestVersion = markStateChanged()
         uiMessagesInternal.clear()
         conversationMessagesInternal.clear()
@@ -131,6 +160,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        clearPendingShellConfirmation(discardToken = true)
         val requestVersion = markStateChanged()
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
@@ -155,6 +185,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        clearPendingShellConfirmation(discardToken = true)
         val conversationId = _currentConversationId.value.orEmpty()
         if (conversationId.isBlank()) {
             startNewConversation()
@@ -354,34 +385,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantParts = assistantParts
                     )
 
-                    val toolResults = try {
-                        withContext(Dispatchers.IO) {
-                            response.toolCalls.map { toolCall ->
-                                LocalAiTools.executeToolCall(
-                                    context = appContext,
-                                    toolCall = toolCall,
-                                    onShellProcessStarted = { id, background ->
-                                        if (!background) {
-                                            activeForegroundShellProcessId = id
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    } finally {
-                        activeForegroundShellProcessId = null
-                    }
+                    val toolBatch = executeToolCallsWithConfirmation(
+                        toolCalls = response.toolCalls,
+                        assistantParts = assistantParts,
+                        assistantIndex = assistantIndex,
+                        assistantId = assistantId
+                    )
+                    val toolResults = toolBatch.results
                     workingConversation.addAll(toolResults)
 
                     // 用实际结果替换 loading 占位
                     replaceLoadingToolParts(assistantParts, toolResults)
 
-                    val confirmationRequest = toolResults.firstOrNull { result ->
-                        LocalAiTools.isShellConfirmationRequest(result)
-                    }
-                    if (confirmationRequest != null) {
-                        val prompt = buildShellConfirmationPrompt(confirmationRequest.content)
-                        assistantParts += AssistantMarkdownPart(text = prompt)
+                    if (toolBatch.cancelled) {
+                        appendAssistantMarkdown(assistantParts, "已取消执行高风险 shell 命令。")
                         val finalContent = buildAssistantContent(assistantParts)
                         uiMessagesInternal[assistantIndex] = ChatMessage(
                             id = assistantId,
@@ -391,7 +408,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         workingConversation += ChatMessage(
                             role = ChatRole.Assistant,
-                            content = prompt
+                            content = finalContent
                         )
                         conversationMessagesInternal.clear()
                         conversationMessagesInternal.addAll(
@@ -399,11 +416,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         publishMessagesImmediately()
                         persistConversationAsync()
-                        LocalAiTools.activatePendingShellConfirmations()
                         if (isFirstUserMessage) {
                             generateConversationTitleAsync(settings, content)
                         }
-                        return@runCatching prompt
+                        return@runCatching finalContent
                     }
 
                     val waitSeconds = response.toolCalls.maxOfOrNull { toolCall ->
@@ -484,6 +500,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         stopGenerationRequested = true
+        clearPendingShellConfirmation(discardToken = true, cancelDecision = true)
         activeForegroundShellProcessId?.let { id ->
             activeForegroundShellProcessId = null
             viewModelScope.launch(Dispatchers.IO) {
@@ -491,6 +508,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         activeSendJob?.cancel(CancellationException("用户已手动停止生成。"))
+    }
+
+    fun confirmPendingShellCommand() {
+        val confirmationId = pendingShellConfirmationId ?: return
+        val decision = pendingShellConfirmationDecision ?: return
+        if (LocalAiTools.activatePendingShellConfirmation(confirmationId)) {
+            pendingShellConfirmationId = null
+            pendingShellConfirmationDecision = null
+            _shellConfirmation.value = null
+            decision.complete(true)
+        } else {
+            pendingShellConfirmationId = null
+            pendingShellConfirmationDecision = null
+            _shellConfirmation.value = null
+            _userNotice.value = "Shell 命令确认已过期，请重新发起请求。"
+            decision.complete(false)
+        }
+    }
+
+    fun cancelPendingShellCommand() {
+        clearPendingShellConfirmation(discardToken = true, cancelDecision = false)
     }
 
     fun clearUserNotice() {
@@ -743,23 +781,152 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    private fun buildShellConfirmationPrompt(toolResult: String): String {
-        val payload = runCatching { JSONObject(toolResult) }.getOrNull()
-        val confirmationId = payload?.optString("confirmation_id").orEmpty()
-        val command = payload?.optString("command").orEmpty()
-        val workDir = payload?.optString("work_dir").orEmpty().ifBlank { "默认目录" }
-        val risk = payload?.optString("risk").orEmpty().ifBlank { "可能修改设备数据" }
-        return buildString {
-            appendLine("检测到高风险 shell 命令，已暂停执行。")
-            appendLine()
-            appendLine("风险：$risk")
-            appendLine("工作目录：$workDir")
-            appendLine("命令：")
-            appendLine("```sh")
-            appendLine(command)
-            appendLine("```")
-            appendLine("如确认要执行，请在下一条消息中明确要求继续，并带上确认 ID：`$confirmationId`。")
-        }.trim()
+    private suspend fun executeToolCallsWithConfirmation(
+        toolCalls: List<AiToolCall>,
+        assistantParts: MutableList<AssistantPart>,
+        assistantIndex: Int,
+        assistantId: String
+    ): ToolExecutionBatch {
+        val results = mutableListOf<ChatMessage>()
+        for (toolCall in toolCalls) {
+            var result = executeLocalToolCall(toolCall)
+            val confirmation = parseShellConfirmationRequest(result.content)
+            if (confirmation != null) {
+                val approved = awaitShellConfirmation(
+                    confirmation = confirmation,
+                    assistantParts = assistantParts,
+                    assistantIndex = assistantIndex,
+                    assistantId = assistantId
+                )
+                if (!approved) {
+                    LocalAiTools.discardPendingShellConfirmation(confirmation.confirmationId)
+                    results += buildCancelledShellToolResult(toolCall, confirmation)
+                    return ToolExecutionBatch(results = results, cancelled = true)
+                }
+
+                result = executeLocalToolCall(
+                    toolCall.copy(arguments = addShellConfirmationId(toolCall.arguments, confirmation.confirmationId))
+                )
+            }
+            results += result
+        }
+        return ToolExecutionBatch(results = results, cancelled = false)
+    }
+
+    private suspend fun executeLocalToolCall(toolCall: AiToolCall): ChatMessage {
+        return try {
+            withContext(Dispatchers.IO) {
+                LocalAiTools.executeToolCall(
+                    context = appContext,
+                    toolCall = toolCall,
+                    onShellProcessStarted = { id, background ->
+                        if (!background) {
+                            activeForegroundShellProcessId = id
+                        }
+                    }
+                )
+            }
+        } finally {
+            activeForegroundShellProcessId = null
+        }
+    }
+
+    private suspend fun awaitShellConfirmation(
+        confirmation: ShellConfirmationRequest,
+        assistantParts: List<AssistantPart>,
+        assistantIndex: Int,
+        assistantId: String
+    ): Boolean {
+        val decision = CompletableDeferred<Boolean>()
+        withContext(Dispatchers.Main) {
+            clearPendingShellConfirmation(discardToken = true, cancelDecision = false)
+            pendingShellConfirmationId = confirmation.confirmationId
+            pendingShellConfirmationDecision = decision
+            _shellConfirmation.value = ShellConfirmationUiState(
+                confirmationId = confirmation.confirmationId,
+                command = confirmation.command,
+                workDir = confirmation.workDir,
+                background = confirmation.background,
+                risk = confirmation.risk
+            )
+            updateStreamingAssistantMessage(
+                assistantIndex = assistantIndex,
+                assistantId = assistantId,
+                content = buildAssistantContent(assistantParts),
+                assistantParts = assistantParts
+            )
+        }
+
+        return try {
+            decision.await()
+        } finally {
+            withContext(Dispatchers.Main) {
+                if (pendingShellConfirmationDecision == decision) {
+                    clearPendingShellConfirmation(discardToken = true, cancelDecision = true)
+                }
+            }
+        }
+    }
+
+    private fun parseShellConfirmationRequest(toolResult: String): ShellConfirmationRequest? {
+        if (!LocalAiTools.isShellConfirmationRequest(toolResult)) {
+            return null
+        }
+        val payload = runCatching { JSONObject(toolResult) }.getOrNull() ?: return null
+        val rawWorkDir = payload.opt("work_dir")
+        return ShellConfirmationRequest(
+            confirmationId = payload.optString("confirmation_id"),
+            command = payload.optString("command"),
+            workDir = rawWorkDir?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() },
+            background = payload.optBoolean("background", false),
+            risk = payload.optString("risk").ifBlank { "可能修改设备数据" }
+        ).takeIf { it.confirmationId.isNotBlank() && it.command.isNotBlank() }
+    }
+
+    private fun addShellConfirmationId(arguments: String, confirmationId: String): String {
+        val payload = runCatching { JSONObject(arguments) }.getOrDefault(JSONObject())
+        payload.put("confirmation_id", confirmationId)
+        return payload.toString()
+    }
+
+    private fun buildCancelledShellToolResult(
+        toolCall: AiToolCall,
+        confirmation: ShellConfirmationRequest
+    ): ChatMessage {
+        val output = JSONObject().apply {
+            put("ok", false)
+            put("cancelled", true)
+            put("confirmation_id", confirmation.confirmationId)
+            put("command", confirmation.command)
+            put("risk", confirmation.risk)
+            put("message", "用户已取消执行该高风险 shell 命令。")
+        }.toString(2)
+        return ChatMessage(
+            role = ChatRole.Tool,
+            content = output,
+            toolCallId = toolCall.id,
+            toolName = toolCall.name,
+            toolArguments = toolCall.arguments
+        )
+    }
+
+    private fun clearPendingShellConfirmation(
+        discardToken: Boolean,
+        cancelDecision: Boolean = false
+    ) {
+        val confirmationId = pendingShellConfirmationId
+        if (discardToken && confirmationId != null) {
+            LocalAiTools.discardPendingShellConfirmation(confirmationId)
+        }
+        pendingShellConfirmationId = null
+        _shellConfirmation.value = null
+        val decision = pendingShellConfirmationDecision
+        pendingShellConfirmationDecision = null
+        if (cancelDecision) {
+            decision?.cancel(CancellationException("Shell 命令确认已取消。"))
+        } else {
+            decision?.complete(false)
+        }
     }
 
     private fun rebuildConversationFromUiMessages() {
@@ -1031,7 +1198,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 当前时间：$currentTime
                 
                 # 安全与权限控制（最高优先级）
-                执行任何高风险 Shell 命令（如 `rm` 删除文件/目录、移动或修改敏感数据等破坏性操作）前，严禁直接调用工具。必须先向用户展示将要执行的完整命令并说明风险，仅在获得用户明确同意后方可执行。
+                执行任何高风险 Shell 命令（如 `rm` 删除文件/目录、移动或修改敏感数据等破坏性操作）时，可以正常调用工具；应用会自动拦截并通过界面确认条要求用户确认。严禁自行编造 `confirmation_id`。
                 
                 # 环境
                 - 路径规范：以安卓标准的 `/sdcard/` 或应用私有目录为主。外部存储需注意是否有读写权限。

@@ -49,6 +49,7 @@ class ChatFragment : Fragment() {
     private var latestMessages: List<ChatMessage> = emptyList()
     private var latestSettings: ApiSettings = ApiSettings()
     private var latestIsSending: Boolean = false
+    private var latestShellConfirmation: ShellConfirmationUiState? = null
     private var followOutput: Boolean = true
     private var userScrolling: Boolean = false
     private var updatingDraft: Boolean = false
@@ -69,6 +70,7 @@ class ChatFragment : Fragment() {
     private val topOffset = (56 + 16).dpInt
     private val cardMarginBottom = 16.dpInt
     private val bottomOffset = cardMarginBottom + 8.dpInt
+    private val confirmationCardGap = 8.dpInt
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -94,6 +96,15 @@ class ChatFragment : Fragment() {
             binding.emptyPlaceholder.root.updatePadding(top = top, bottom = bottom)
         }
 
+        fun inputStackHeight(): Int {
+            val confirmationHeight = if (binding.cardShellConfirmation.visibility == View.VISIBLE) {
+                binding.cardShellConfirmation.height + confirmationCardGap
+            } else {
+                0
+            }
+            return binding.cardInput.height + confirmationHeight
+        }
+
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -106,7 +117,7 @@ class ChatFragment : Fragment() {
 
                 updateContentPadding(
                     top = systemBars.top + topOffset,
-                    bottom = currentBottom + binding.cardInput.height + bottomOffset
+                    bottom = currentBottom + inputStackHeight() + bottomOffset
                 )
 
                 binding.cardInput.updateLayoutParams<ViewGroup.MarginLayoutParams> {
@@ -116,14 +127,15 @@ class ChatFragment : Fragment() {
             insets
         }
 
-        binding.cardInput.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            val newHeight = bottom - top
-            if (newHeight != (oldBottom - oldTop)) {
+        val inputStackLayoutChangeListener = View.OnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if ((bottom - top) != (oldBottom - oldTop)) {
                 updateContentPadding(
-                    bottom = max(systemBottomInset, imeBottomInset) + newHeight + bottomOffset
+                    bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset
                 )
             }
         }
+        binding.cardInput.addOnLayoutChangeListener(inputStackLayoutChangeListener)
+        binding.cardShellConfirmation.addOnLayoutChangeListener(inputStackLayoutChangeListener)
 
         val animationCallback = object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
             private var previousBottom = 0
@@ -156,7 +168,7 @@ class ChatFragment : Fragment() {
                 }
 
                 updateContentPadding(
-                    bottom = currentBottom + binding.cardInput.height + bottomOffset
+                    bottom = currentBottom + inputStackHeight() + bottomOffset
                 )
 
                 // 核心2：让列表内容严格跟随输入法的位移量进行像素级滚动
@@ -313,6 +325,12 @@ class ChatFragment : Fragment() {
                 viewModel.sendMessage()
             }
         }
+        binding.btnConfirmShellConfirmation.setOnClickListener {
+            viewModel.confirmPendingShellCommand()
+        }
+        binding.btnCancelShellConfirmation.setOnClickListener {
+            viewModel.cancelPendingShellCommand()
+        }
         renderSendButton()
     }
 
@@ -332,6 +350,11 @@ class ChatFragment : Fragment() {
             latestIsSending = sending
             renderMessages()
             renderSendButton()
+        }
+
+        viewModel.shellConfirmation.observe(viewLifecycleOwner) { confirmation ->
+            latestShellConfirmation = confirmation
+            renderShellConfirmation()
         }
 
         viewModel.draftMessage.observe(viewLifecycleOwner) { draft ->
@@ -377,6 +400,26 @@ class ChatFragment : Fragment() {
                 R.drawable.ic_send
             }
         )
+    }
+
+    private fun renderShellConfirmation() {
+        val confirmation = latestShellConfirmation
+        if (confirmation == null) {
+            binding.cardShellConfirmation.visibility = View.GONE
+            return
+        }
+
+        binding.textShellConfirmationRisk.text = getString(
+            R.string.shell_confirmation_risk,
+            confirmation.risk
+        )
+        binding.textShellConfirmationCommand.text = buildString {
+            val workDir = confirmation.workDir?.takeIf { it.isNotBlank() } ?: "默认目录"
+            append(getString(R.string.shell_confirmation_work_dir, workDir))
+            append('\n')
+            append(confirmation.command)
+        }
+        binding.cardShellConfirmation.visibility = View.VISIBLE
     }
 
     private fun renderMessages() {
