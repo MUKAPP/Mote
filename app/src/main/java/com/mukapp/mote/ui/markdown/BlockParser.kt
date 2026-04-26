@@ -359,7 +359,55 @@ class BlockParser {
         var content = line.trim()
         if (content.startsWith("|")) content = content.substring(1)
         if (content.endsWith("|")) content = content.substring(0, content.length - 1)
-        return content.split("|").map { it.trim() }
+        val cells = mutableListOf<String>()
+        val current = StringBuilder()
+        var inCode = false
+        var backtickRunLength = 0
+        var i = 0
+        while (i < content.length) {
+            val char = content[i]
+            if (char == '\\' && i + 1 < content.length) {
+                val next = content[i + 1]
+                if (next == '|') {
+                    current.append(next)
+                } else {
+                    current.append(char)
+                    current.append(next)
+                }
+                i += 2
+                continue
+            }
+            if (char == '`') {
+                val runLength = leadingCharCount(content, i, '`')
+                if (!inCode) {
+                    inCode = true
+                    backtickRunLength = runLength
+                } else if (runLength == backtickRunLength) {
+                    inCode = false
+                    backtickRunLength = 0
+                }
+                repeat(runLength) { current.append('`') }
+                i += runLength
+                continue
+            }
+            if (char == '|' && !inCode) {
+                cells.add(current.toString().trim())
+                current.clear()
+            } else {
+                current.append(char)
+            }
+            i++
+        }
+        cells.add(current.toString().trim())
+        return cells
+    }
+
+    private fun leadingCharCount(text: String, start: Int, char: Char): Int {
+        var count = 0
+        while (start + count < text.length && text[start + count] == char) {
+            count++
+        }
+        return count
     }
 
     private fun parseBlockquote(
@@ -497,6 +545,7 @@ class BlockParser {
     ): OrderedListResult? {
         val firstLine = lines[startIndex].trimStart()
         val match = ORDERED_LIST_REGEX.matchEntire(firstLine) ?: return null
+        val startNumber = match.groupValues[1].toIntOrNull() ?: 1
 
         val items = mutableListOf<List<MdBlock>>()
         val baseIndent = leadingIndentWidth(lines[startIndex])
@@ -526,7 +575,7 @@ class BlockParser {
         }
 
         val endOffset = offset - 1
-        return OrderedListResult(MdBlock.OrderedList(items, startOffset, endOffset), i, offset)
+        return OrderedListResult(MdBlock.OrderedList(items, startNumber, startOffset, endOffset), i, offset)
     }
 
     private fun parseParagraph(

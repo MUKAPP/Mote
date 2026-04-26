@@ -26,11 +26,17 @@ object ShellProcessManager {
     }
 
     fun start(command: String, workDir: String? = null): String {
+        val workingDirectory = workDir?.takeIf { it.isNotBlank() }?.let { File(it).canonicalFile }
+        require(workingDirectory == null || workingDirectory.exists()) { "工作目录不存在。" }
+        require(workingDirectory == null || workingDirectory.isDirectory) { "工作目录不是目录。" }
+
+        evictCompletedProcesses()
+        require(processes.size < MaxProcesses) { "后台进程数量已达上限，请先停止或查询已有进程。" }
+
         val id = generateId()
         val builder = ProcessBuilder("sh", "-c", command)
-        workDir?.let { builder.directory(File(it)) }
+        workingDirectory?.let { builder.directory(it) }
         val process = builder.start()
-        evictCompletedProcesses()
         registerProcess(id, command, process)
         return id
     }
@@ -46,14 +52,6 @@ object ShellProcessManager {
     private fun evictCompletedProcesses() {
         val completed = processes.entries.filter { it.value.isComplete }
         completed.forEach { processes.remove(it.key) }
-        if (processes.size >= MaxProcesses) {
-            val oldest = processes.entries.sortedBy { it.value.startTimeMs }
-            for (i in 0 until minOf(oldest.size, processes.size - MaxProcesses + 1)) {
-                val entry = oldest[i]
-                entry.value.process.destroyForcibly()
-                processes.remove(entry.key)
-            }
-        }
     }
 
     fun getStatus(id: String, maxOutputChars: Int = 8000): JSONObject {

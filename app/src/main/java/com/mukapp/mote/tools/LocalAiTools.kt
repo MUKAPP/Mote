@@ -11,6 +11,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object LocalAiTools {
@@ -25,6 +27,19 @@ object LocalAiTools {
     private const val MaxListEntries = 200
     private const val ShellShortTimeoutMs = 30_000L
     private const val MaxShellOutputChars = 8000
+    private const val ShellConfirmationTtlMs = 10 * 60 * 1000L
+
+    private data class PendingShellConfirmation(
+        val id: String,
+        val command: String,
+        val workDir: String?,
+        val background: Boolean,
+        val risk: String,
+        val createdAtMs: Long = System.currentTimeMillis(),
+        @Volatile var active: Boolean = false
+    )
+
+    private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
 
     private val cachedToolDefinitions: JSONArray by lazy {
         JSONArray()
@@ -38,12 +53,16 @@ object LocalAiTools {
 
     fun toolDefinitions(): JSONArray = cachedToolDefinitions
 
-    fun executeToolCall(context: Context, toolCall: AiToolCall): ChatMessage {
+    fun executeToolCall(
+        context: Context,
+        toolCall: AiToolCall,
+        onShellProcessStarted: ((String, Boolean) -> Unit)? = null
+    ): ChatMessage {
         val output = runCatching {
             when (toolCall.name) {
                 ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
                 ListPathToolName -> listPath(toolCall.arguments)
-                ShellToolName -> runShell(toolCall.arguments)
+                ShellToolName -> runShell(toolCall.arguments, onShellProcessStarted)
                 ShellStatusToolName -> checkShellStatus(toolCall.arguments)
                 ShellStopToolName -> stopShell(toolCall.arguments)
                 WaitToolName -> scheduleWait(toolCall.arguments)
@@ -66,6 +85,27 @@ object LocalAiTools {
             toolName = toolCall.name,
             toolArguments = toolCall.arguments
         )
+    }
+
+    fun activatePendingShellConfirmations() {
+        val now = System.currentTimeMillis()
+        pendingShellConfirmations.entries.forEach { entry ->
+            val confirmation = entry.value
+            if (now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
+                pendingShellConfirmations.remove(entry.key)
+            } else {
+                confirmation.active = true
+            }
+        }
+    }
+
+    fun isShellConfirmationRequest(message: ChatMessage): Boolean {
+        return message.toolName == ShellToolName && isShellConfirmationRequest(message.content)
+    }
+
+    fun isShellConfirmationRequest(content: String): Boolean {
+        val payload = runCatching { JSONObject(content) }.getOrNull() ?: return false
+        return !payload.optBoolean("ok", true) && payload.optBoolean("needs_confirmation", false)
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -106,16 +146,23 @@ object LocalAiTools {
         val fileSize = targetFile.length()
 
         val selectedLines = mutableListOf<String>()
-        var totalLines = 0
+        var lastSeenLine = 0
+        var hasMore = false
         targetFile.bufferedReader(Charsets.UTF_8).useLines { sequence ->
-            sequence.forEachIndexed { index, line ->
+            for ((index, line) in sequence.withIndex()) {
                 val lineNumber = index + 1
-                totalLines = lineNumber
+                lastSeenLine = lineNumber
                 if (lineNumber in actualStartLine..actualEndLine) {
                     selectedLines += "$lineNumber: $line"
                 }
+                if (lineNumber > actualEndLine) {
+                    hasMore = true
+                    break
+                }
             }
         }
+
+        val totalLinesKnown = !hasMore
 
         val returnedEnd = if (selectedLines.isEmpty()) {
             actualStartLine - 1
@@ -127,7 +174,9 @@ object LocalAiTools {
             put("ok", true)
             put("path", targetFile.path.replace('\\', '/'))
             put("size", fileSize)
-            put("total_lines", totalLines)
+            put("total_lines", if (totalLinesKnown) lastSeenLine else JSONObject.NULL)
+            put("total_lines_known", totalLinesKnown)
+            put("has_more", hasMore)
             put("start", if (selectedLines.isEmpty()) JSONObject.NULL else actualStartLine)
             put("end", if (selectedLines.isEmpty()) JSONObject.NULL else returnedEnd)
             put("lines", selectedLines.size)
@@ -201,14 +250,38 @@ object LocalAiTools {
         return text.take(half) + "\n... [输出已截断，共 ${text.length} 字符] ...\n" + text.takeLast(half)
     }
 
-    private fun runShell(arguments: String): String {
+    private fun runShell(arguments: String, onShellProcessStarted: ((String, Boolean) -> Unit)?): String {
         val payload = JSONObject(arguments)
         val command = payload.optString("command").trim()
         require(command.isNotEmpty()) { "command 不能为空。" }
 
         val workDir = payload.optString("work_dir").trim().takeIf { it.isNotEmpty() }
         val background = payload.optBoolean("background", false)
+        val confirmationId = payload.optString("confirmation_id").trim().takeIf { it.isNotEmpty() }
+        val risk = detectShellRisk(command)
+        if (risk != null && !consumeShellConfirmation(confirmationId, command, workDir, background)) {
+            val id = "confirm_${UUID.randomUUID().toString().take(8)}"
+            pendingShellConfirmations[id] = PendingShellConfirmation(
+                id = id,
+                command = command,
+                workDir = workDir,
+                background = background,
+                risk = risk
+            )
+            return JSONObject().apply {
+                put("ok", false)
+                put("needs_confirmation", true)
+                put("confirmation_id", id)
+                put("command", command)
+                put("work_dir", workDir ?: JSONObject.NULL)
+                put("background", background)
+                put("risk", risk)
+                put("message", "该 shell 命令可能修改或删除数据。请确认后再继续执行。")
+            }.toString(2)
+        }
+
         val id = ShellProcessManager.start(command, workDir)
+        onShellProcessStarted?.invoke(id, background)
 
         if (background) {
             return JSONObject().apply {
@@ -258,6 +331,47 @@ object LocalAiTools {
             put("stdout_so_far", truncateOutput(stdoutSoFar))
             put("stderr_so_far", truncateOutput(stderrSoFar))
         }.toString(2)
+    }
+
+    private fun consumeShellConfirmation(
+        confirmationId: String?,
+        command: String,
+        workDir: String?,
+        background: Boolean
+    ): Boolean {
+        val id = confirmationId ?: return false
+        val confirmation = pendingShellConfirmations[id] ?: return false
+        val now = System.currentTimeMillis()
+        if (!confirmation.active || now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
+            pendingShellConfirmations.remove(id)
+            return false
+        }
+        if (confirmation.command != command || confirmation.workDir != workDir || confirmation.background != background) {
+            return false
+        }
+        pendingShellConfirmations.remove(id)
+        return true
+    }
+
+    private fun detectShellRisk(command: String): String? {
+        val normalized = command.lowercase(Locale.ROOT)
+        val checks = listOf(
+            Regex("(^|[;&|()\\s])rm\\b") to "删除文件或目录",
+            Regex("(^|[;&|()\\s])rm\\s+[^\n]*(^|\\s)-[a-z-]*r[fia-]*\\b") to "递归删除文件或目录",
+            Regex("(^|[;&|()\\s])rm\\s+[^\n]*(/sdcard|/storage|/data|/system|\\*)") to "删除敏感路径或通配文件",
+            Regex("(^|[;&|()\\s])rmdir\\b") to "删除目录",
+            Regex("(^|[;&|()\\s])mv\\b") to "移动或覆盖文件",
+            Regex("(^|[;&|()\\s])dd\\b") to "低级块设备或文件写入",
+            Regex("(^|[;&|()\\s])mkfs(\\.|\\b)") to "格式化文件系统",
+            Regex("(^|[;&|()\\s])truncate\\b") to "截断文件",
+            Regex("(^|[;&|()\\s])chmod\\s+[^\n]*\\s-r\\b|(^|[;&|()\\s])chmod\\s+-[a-z]*r[a-z]*\\b") to "递归修改文件权限",
+            Regex("(^|[;&|()\\s])chown\\s+[^\n]*\\s-r\\b|(^|[;&|()\\s])chown\\s+-[a-z]*r[a-z]*\\b") to "递归修改文件所有者",
+            Regex("(^|[;&|()\\s])pm\\s+uninstall\\b") to "卸载应用包",
+            Regex("(^|[;&|()\\s])(apt|apt-get|yum|dnf|pacman|apk)\\s+[^\n]*(remove|purge|erase|del)\\b") to "卸载系统软件包",
+            Regex("(^|[^>])>>?\\s*[^&\\s]") to "重定向覆盖或追加文件",
+            Regex("(^|[;&|()\\s])tee\\s+(-a\\s+)?[^\n]*") to "通过 tee 写入文件"
+        )
+        return checks.firstOrNull { (pattern, _) -> pattern.containsMatchIn(normalized) }?.second
     }
 
     private fun checkShellStatus(arguments: String): String {
@@ -411,6 +525,13 @@ object LocalAiTools {
                                         JSONObject().apply {
                                             put("type", "string")
                                             put("description", "工作目录，不提供则使用默认目录")
+                                        }
+                                    )
+                                    put(
+                                        "confirmation_id",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "执行高风险命令前由工具返回的确认 ID。只有用户确认后的下一轮对话才可使用。")
                                         }
                                     )
                                     put(

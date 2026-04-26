@@ -709,7 +709,14 @@ class MarkdownView @JvmOverloads constructor(
             is MdBlock.Table -> createTableView(block, isStreaming, linkDefs, nested, isLastInContainer)
             is MdBlock.CodeBlock -> createCodeBlockView(block, nested, isLastInContainer)
             is MdBlock.Blockquote -> createBlockquoteView(block, isStreaming, linkDefs, nested, isLastInContainer)
-            is MdBlock.UnorderedList -> createListView(block.items, false, isStreaming, linkDefs, nested, isLastInContainer)
+            is MdBlock.UnorderedList -> createListView(
+                items = block.items,
+                numbered = false,
+                isStreaming = isStreaming,
+                linkDefs = linkDefs,
+                nested = nested,
+                isLastInContainer = isLastInContainer
+            )
             is MdBlock.OrderedList -> createOrderedListView(block, isStreaming, linkDefs, nested, isLastInContainer)
             is MdBlock.TaskList -> createTaskListView(block, isStreaming, linkDefs, nested, isLastInContainer)
             is MdBlock.HorizontalRule -> createHorizontalRuleView(nested, isLastInContainer)
@@ -836,6 +843,7 @@ class MarkdownView @JvmOverloads constructor(
     private fun createListView(
         items: List<List<MdBlock>>,
         numbered: Boolean,
+        startNumber: Int = 1,
         isStreaming: Boolean,
         linkDefs: Map<String, Pair<String, String>>,
         nested: Boolean,
@@ -848,7 +856,7 @@ class MarkdownView @JvmOverloads constructor(
         items.forEachIndexed { index, childBlocks ->
             container.addView(
                 createListItemView(
-                    if (numbered) "${index + 1}." else "•",
+                    if (numbered) "${startNumber + index}." else "•",
                     childBlocks,
                     isStreaming,
                     linkDefs,
@@ -870,6 +878,7 @@ class MarkdownView @JvmOverloads constructor(
         return createListView(
             list.items,
             numbered = true,
+            startNumber = list.startNumber,
             isStreaming = isStreaming,
             linkDefs = linkDefs,
             nested = nested,

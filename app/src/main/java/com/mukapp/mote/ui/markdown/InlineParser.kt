@@ -218,12 +218,37 @@ class InlineParser {
 
     private fun matchLinkAt(text: String, pos: Int): Triple<String, String, Int>? {
         if (text[pos] != '[') return null
-        val rest = text.substring(pos)
-        val match = LINK_REGEX.find(rest) ?: return null
-        if (match.range.first != 0) return null
-        val linkText = match.groupValues[1]
-        val linkUrl = match.groupValues[2]
-        return Triple(linkText, linkUrl, match.range.last + 1)
+        val closeBracket = findUnescapedChar(text, ']', pos + 1)
+        if (closeBracket < 0 || closeBracket + 1 >= text.length || text[closeBracket + 1] != '(') {
+            return null
+        }
+        val closeParen = findInlineLinkUrlEnd(text, closeBracket + 2) ?: return null
+        val linkText = text.substring(pos + 1, closeBracket)
+        val linkUrl = unescapeBasic(text.substring(closeBracket + 2, closeParen).trim())
+        if (linkText.isEmpty() || linkUrl.isEmpty() || linkUrl.any { it.isWhitespace() }) {
+            return null
+        }
+        return Triple(linkText, linkUrl, closeParen - pos + 1)
+    }
+
+    private fun findInlineLinkUrlEnd(text: String, start: Int): Int? {
+        var depth = 0
+        var index = start
+        while (index < text.length) {
+            when (text[index]) {
+                '\\' -> {
+                    index += 2
+                    continue
+                }
+                '(' -> depth++
+                ')' -> {
+                    if (depth == 0) return index
+                    depth--
+                }
+            }
+            index++
+        }
+        return null
     }
 
     private fun matchRefLinkAt(text: String, pos: Int): Triple<String, String, Int>? {
@@ -297,6 +322,23 @@ class InlineParser {
         return -1
     }
 
+    private fun unescapeBasic(text: String): String {
+        if ('\\' !in text) return text
+        val builder = StringBuilder(text.length)
+        var index = 0
+        while (index < text.length) {
+            val char = text[index]
+            if (char == '\\' && index + 1 < text.length && text[index + 1] in ESCAPABLE_CHARS) {
+                builder.append(text[index + 1])
+                index += 2
+            } else {
+                builder.append(char)
+                index++
+            }
+        }
+        return builder.toString()
+    }
+
     private fun isEscaped(text: String, index: Int): Boolean {
         var backslashCount = 0
         var cursor = index - 1
@@ -323,7 +365,6 @@ class InlineParser {
     }
 
     companion object {
-        private val LINK_REGEX = Regex("\\[([^\\]]+)\\]\\(([^)]+)\\)")
         private val REF_LINK_REGEX = Regex("\\[([^\\]]+)\\](?:\\[([^\\]]*)\\])")
         private val ESCAPABLE_CHARS = setOf('\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|', '~', '>', '^')
     }

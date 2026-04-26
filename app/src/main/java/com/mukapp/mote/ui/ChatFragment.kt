@@ -8,6 +8,7 @@ import android.graphics.Outline
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -30,6 +31,7 @@ import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
+import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.FragmentChatBinding
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
@@ -52,8 +54,15 @@ class ChatFragment : Fragment() {
     private var updatingDraft: Boolean = false
     private var pendingImmediateScrollToBottom: Boolean = false
     private var observedConversationId: String? = null
+    private var lastRenderedMessageCount: Int = 0
+    private var lastStreamingMessageSignature: String? = null
+    private var lastStreamingScrollUptime: Long = 0L
     private val smoothScrollToBottomRunnable = Runnable { scrollToBottom(animated = true) }
     private val immediateScrollToBottomRunnable = Runnable { scrollToBottom(animated = false) }
+    private val throttledSmoothScrollToBottomRunnable = Runnable {
+        lastStreamingScrollUptime = SystemClock.uptimeMillis()
+        scrollToBottom(animated = true)
+    }
 
     private var systemBottomInset = 0
     private var imeBottomInset = 0
@@ -202,6 +211,7 @@ class ChatFragment : Fragment() {
     override fun onDestroyView() {
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
+        binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
         binding.recyclerMessages.adapter = null
         _binding = null
         super.onDestroyView()
@@ -370,7 +380,17 @@ class ChatFragment : Fragment() {
     }
 
     private fun renderMessages() {
+        val previousMessageCount = lastRenderedMessageCount
+        val previousStreamingSignature = lastStreamingMessageSignature
         adapter.submitMessages(latestMessages, latestIsSending)
+        val currentStreamingSignature = currentStreamingMessageSignature()
+        val isStreamingContentUpdate = latestIsSending &&
+            latestMessages.size == previousMessageCount &&
+            currentStreamingSignature != null &&
+            currentStreamingSignature == previousStreamingSignature
+        lastRenderedMessageCount = latestMessages.size
+        lastStreamingMessageSignature = currentStreamingSignature
+
         if (adapter.itemCount <= 0) {
             pendingImmediateScrollToBottom = false
             return
@@ -379,14 +399,25 @@ class ChatFragment : Fragment() {
         if (followOutput) {
             val animated = !pendingImmediateScrollToBottom
             pendingImmediateScrollToBottom = false
-            postScrollToBottom(animated)
+            postScrollToBottom(animated, throttle = animated && isStreamingContentUpdate)
         }
     }
 
-    private fun postScrollToBottom(animated: Boolean) {
+    private fun postScrollToBottom(animated: Boolean, throttle: Boolean = false) {
         val binding = _binding ?: return
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
+        if (!throttle) {
+            binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
+        }
+        if (throttle) {
+            val now = SystemClock.uptimeMillis()
+            val delay = (StreamingScrollThrottleMs - (now - lastStreamingScrollUptime))
+                .coerceAtLeast(0L)
+            binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
+            binding.recyclerMessages.postDelayed(throttledSmoothScrollToBottomRunnable, delay)
+            return
+        }
         binding.recyclerMessages.post(
             if (animated) {
                 smoothScrollToBottomRunnable
@@ -422,6 +453,14 @@ class ChatFragment : Fragment() {
             }
             snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
         }
+    }
+
+    private fun currentStreamingMessageSignature(): String? {
+        val message = latestMessages.lastOrNull {
+            it.role == ChatRole.Assistant && (it.assistantParts.isNotEmpty() || it.content.isNotBlank())
+        }
+            ?: return null
+        return message.id
     }
 
     private fun snapPositionEndToRecyclerBottom(
@@ -487,5 +526,9 @@ class ChatFragment : Fragment() {
             .setPositiveButton(R.string.action_confirm) { _, _ -> onConfirm() }
             .setNegativeButton(R.string.action_cancel, null)
             .show()
+    }
+
+    private companion object {
+        const val StreamingScrollThrottleMs = 80L
     }
 }

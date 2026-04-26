@@ -20,6 +20,7 @@ import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
+import com.mukapp.mote.tools.ShellProcessManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -64,6 +65,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingStreamingPublishJob: Job? = null
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
+    @Volatile
+    private var activeForegroundShellProcessId: String? = null
     private var currentConversationTitle: String = ""
     private val stateVersion = AtomicLong(0L)
 
@@ -351,15 +354,57 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantParts = assistantParts
                     )
 
-                    val toolResults = withContext(Dispatchers.IO) {
-                        response.toolCalls.map { toolCall ->
-                            LocalAiTools.executeToolCall(appContext, toolCall)
+                    val toolResults = try {
+                        withContext(Dispatchers.IO) {
+                            response.toolCalls.map { toolCall ->
+                                LocalAiTools.executeToolCall(
+                                    context = appContext,
+                                    toolCall = toolCall,
+                                    onShellProcessStarted = { id, background ->
+                                        if (!background) {
+                                            activeForegroundShellProcessId = id
+                                        }
+                                    }
+                                )
+                            }
                         }
+                    } finally {
+                        activeForegroundShellProcessId = null
                     }
                     workingConversation.addAll(toolResults)
 
                     // 用实际结果替换 loading 占位
                     replaceLoadingToolParts(assistantParts, toolResults)
+
+                    val confirmationRequest = toolResults.firstOrNull { result ->
+                        LocalAiTools.isShellConfirmationRequest(result)
+                    }
+                    if (confirmationRequest != null) {
+                        val prompt = buildShellConfirmationPrompt(confirmationRequest.content)
+                        assistantParts += AssistantMarkdownPart(text = prompt)
+                        val finalContent = buildAssistantContent(assistantParts)
+                        uiMessagesInternal[assistantIndex] = ChatMessage(
+                            id = assistantId,
+                            role = ChatRole.Assistant,
+                            content = finalContent,
+                            assistantParts = assistantParts.toList()
+                        )
+                        workingConversation += ChatMessage(
+                            role = ChatRole.Assistant,
+                            content = prompt
+                        )
+                        conversationMessagesInternal.clear()
+                        conversationMessagesInternal.addAll(
+                            workingConversation.filter { it.role != ChatRole.System }
+                        )
+                        publishMessagesImmediately()
+                        persistConversationAsync()
+                        LocalAiTools.activatePendingShellConfirmations()
+                        if (isFirstUserMessage) {
+                            generateConversationTitleAsync(settings, content)
+                        }
+                        return@runCatching prompt
+                    }
 
                     val waitSeconds = response.toolCalls.maxOfOrNull { toolCall ->
                         if (toolCall.name == LocalAiTools.WaitToolName) {
@@ -439,6 +484,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         stopGenerationRequested = true
+        activeForegroundShellProcessId?.let { id ->
+            activeForegroundShellProcessId = null
+            viewModelScope.launch(Dispatchers.IO) {
+                ShellProcessManager.stop(id)
+            }
+        }
         activeSendJob?.cancel(CancellationException("用户已手动停止生成。"))
     }
 
@@ -690,6 +741,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .joinToString(separator = "\n\n")
         cachedAssistantContent = result
         return result
+    }
+
+    private fun buildShellConfirmationPrompt(toolResult: String): String {
+        val payload = runCatching { JSONObject(toolResult) }.getOrNull()
+        val confirmationId = payload?.optString("confirmation_id").orEmpty()
+        val command = payload?.optString("command").orEmpty()
+        val workDir = payload?.optString("work_dir").orEmpty().ifBlank { "默认目录" }
+        val risk = payload?.optString("risk").orEmpty().ifBlank { "可能修改设备数据" }
+        return buildString {
+            appendLine("检测到高风险 shell 命令，已暂停执行。")
+            appendLine()
+            appendLine("风险：$risk")
+            appendLine("工作目录：$workDir")
+            appendLine("命令：")
+            appendLine("```sh")
+            appendLine(command)
+            appendLine("```")
+            appendLine("如确认要执行，请在下一条消息中明确要求继续，并带上确认 ID：`$confirmationId`。")
+        }.trim()
     }
 
     private fun rebuildConversationFromUiMessages() {

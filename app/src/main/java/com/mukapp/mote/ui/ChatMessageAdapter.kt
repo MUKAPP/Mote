@@ -6,6 +6,7 @@ import androidx.recyclerview.widget.RecyclerView
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import com.mukapp.mote.R
+import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
@@ -168,6 +169,7 @@ class ChatMessageAdapter(
             val isStreamingMessage = isSending && message.id == streamingMessageId
             val hasContent = message.content.isNotBlank()
             val hasParts = message.assistantParts.isNotEmpty()
+            val hasCopyableContent = hasContent || hasCopyableMarkdownParts(message)
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
             val showGeneratingStatus = isStreamingMessage && !hasContent && !hasParts
             syncThinkingPartExpansion(message, isStreamingMessage)
@@ -196,12 +198,30 @@ class ChatMessageAdapter(
             }
 
             binding.layoutActions.isVisible = !isStreamingMessage && (hasContent || hasParts)
-            binding.btnCopy.isEnabled = hasContent
+            binding.btnCopy.isEnabled = hasCopyableContent
             binding.btnRetry.isVisible = isLastAiMessage && !isStreamingMessage
-            binding.btnCopy.setOnClickListener { onCopyMessage(message) }
-            binding.btnEdit.setOnClickListener { onEditMessage(position) }
-            binding.btnDelete.setOnClickListener { onDeleteMessage(position) }
-            binding.btnRetry.setOnClickListener { onRetryMessage(position) }
+            binding.btnCopy.setOnClickListener {
+                currentMessageOrNull()?.let(onCopyMessage)
+            }
+            binding.btnEdit.setOnClickListener {
+                currentPositionOrNull()?.let(onEditMessage)
+            }
+            binding.btnDelete.setOnClickListener {
+                currentPositionOrNull()?.let(onDeleteMessage)
+            }
+            binding.btnRetry.setOnClickListener {
+                currentPositionOrNull()?.let(onRetryMessage)
+            }
+        }
+
+        private fun currentPositionOrNull(): Int? {
+            val position = bindingAdapterPosition
+            return position.takeIf { it != RecyclerView.NO_POSITION && it in messages.indices }
+        }
+
+        private fun currentMessageOrNull(): ChatMessage? {
+            val position = currentPositionOrNull() ?: return null
+            return messages.getOrNull(position)
         }
 
         private fun syncThinkingPartExpansion(message: ChatMessage, isStreamingMessage: Boolean) {
@@ -241,9 +261,31 @@ class ChatMessageAdapter(
         fun bind(message: ChatMessage, position: Int) {
             binding.textContent.text = message.content
             binding.btnCopy.isEnabled = message.content.isNotBlank()
-            binding.btnCopy.setOnClickListener { onCopyMessage(message) }
-            binding.btnEdit.setOnClickListener { onEditMessage(position) }
-            binding.btnDelete.setOnClickListener { onDeleteMessage(position) }
+            binding.btnCopy.setOnClickListener {
+                currentMessageOrNull()?.let(onCopyMessage)
+            }
+            binding.btnEdit.setOnClickListener {
+                currentPositionOrNull()?.let(onEditMessage)
+            }
+            binding.btnDelete.setOnClickListener {
+                currentPositionOrNull()?.let(onDeleteMessage)
+            }
+        }
+
+        private fun currentPositionOrNull(): Int? {
+            val position = bindingAdapterPosition
+            return position.takeIf { it != RecyclerView.NO_POSITION && it in messages.indices }
+        }
+
+        private fun currentMessageOrNull(): ChatMessage? {
+            val position = currentPositionOrNull() ?: return null
+            return messages.getOrNull(position)
+        }
+    }
+
+    private fun hasCopyableMarkdownParts(message: ChatMessage): Boolean {
+        return message.assistantParts.any { part ->
+            part is AssistantMarkdownPart && part.text.isNotBlank()
         }
     }
 

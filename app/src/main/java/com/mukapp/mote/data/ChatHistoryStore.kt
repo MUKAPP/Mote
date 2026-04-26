@@ -31,6 +31,7 @@ object ChatHistoryStore {
     private const val LegacyMigrationMarkerFileName = "legacy_migrated.json"
     private const val CorruptedDirectoryName = "corrupted"
     private const val DefaultConversationTitle = "新对话"
+    private val SafeConversationIdPattern = Regex("^[A-Za-z0-9_-]{1,80}$")
 
     private val summaryCacheLock = Any()
     @Volatile
@@ -50,6 +51,7 @@ object ChatHistoryStore {
     ): File {
         val conversationsDir = ensureConversationsDir(context)
         val safeConversationId = conversationId.ifBlank { newConversationId() }
+        require(isSafeConversationId(safeConversationId)) { "对话 ID 不合法。" }
         val historyFile = conversationFile(conversationsDir, safeConversationId)
         val existingRoot = readJsonObjectOrNull(historyFile)
         val now = System.currentTimeMillis()
@@ -93,7 +95,7 @@ object ChatHistoryStore {
         migrateLegacyConversationIfNeeded(context)
 
         val currentId = loadCurrentConversationId(context)
-        if (currentId.isNotBlank()) {
+        if (currentId.isNotBlank() && isSafeConversationId(currentId)) {
             val current = loadConversation(context, currentId)
             if (current != null) {
                 return current
@@ -102,6 +104,8 @@ object ChatHistoryStore {
             if (!currentFile.exists() && isMissingCurrentConversationAllowed(context)) {
                 return emptyConversationState(conversationId = currentId)
             }
+            saveCurrentConversationId(context, "")
+        } else if (currentId.isNotBlank()) {
             saveCurrentConversationId(context, "")
         }
 
@@ -120,6 +124,9 @@ object ChatHistoryStore {
 
     fun loadConversation(context: Context, conversationId: String): SavedConversationState? {
         migrateLegacyConversationIfNeeded(context)
+        if (!isSafeConversationId(conversationId)) {
+            return null
+        }
 
         val file = conversationFile(ensureConversationsDir(context), conversationId)
         if (!file.exists() || !file.isFile) {
@@ -142,7 +149,9 @@ object ChatHistoryStore {
     private fun scanConversationSummaries(context: Context): List<ConversationSummary> {
         val conversationsDir = ensureConversationsDir(context)
         val files = conversationsDir.listFiles { file ->
-            file.isFile && file.extension.equals("json", ignoreCase = true)
+            file.isFile &&
+                    file.extension.equals("json", ignoreCase = true) &&
+                    isSafeConversationId(file.nameWithoutExtension)
         }.orEmpty()
         return files.mapNotNull { file ->
             val root = readJsonObjectOrNull(file) ?: return@mapNotNull null
@@ -179,16 +188,20 @@ object ChatHistoryStore {
     ) {
         val historyDir = ensureHistoryDir(context)
         val indexFile = File(historyDir, IndexFileName)
+        val safeConversationId = conversationId.takeIf { it.isBlank() || isSafeConversationId(it) }.orEmpty()
         writeJsonAtomically(
             indexFile,
             JSONObject().apply {
-                put("currentConversationId", conversationId)
+                put("currentConversationId", safeConversationId)
                 put("allowMissingConversation", allowMissingConversation)
             }
         )
     }
 
     fun deleteConversation(context: Context, conversationId: String): String? {
+        if (!isSafeConversationId(conversationId)) {
+            return null
+        }
         val conversationsDir = ensureConversationsDir(context)
         val file = conversationFile(conversationsDir, conversationId)
         if (file.exists() && !file.delete()) {
@@ -206,6 +219,9 @@ object ChatHistoryStore {
 
     fun updateConversationTitle(context: Context, conversationId: String, title: String): Boolean {
         val normalizedTitle = title.trim().takeIf { it.isNotBlank() } ?: return false
+        if (!isSafeConversationId(conversationId)) {
+            return false
+        }
         val conversationsDir = ensureConversationsDir(context)
         val file = conversationFile(conversationsDir, conversationId)
         val root = readJsonObjectOrNull(file) ?: return false
@@ -243,7 +259,9 @@ object ChatHistoryStore {
             val conversationsDir = ensureConversationsDir(context)
             val migrationMarkerFile = File(historyDir, LegacyMigrationMarkerFileName)
             val hasConversationFiles = conversationsDir.listFiles { file ->
-                file.isFile && file.extension.equals("json", ignoreCase = true)
+                file.isFile &&
+                        file.extension.equals("json", ignoreCase = true) &&
+                        isSafeConversationId(file.nameWithoutExtension)
             }?.isNotEmpty() == true
             if (hasConversationFiles || migrationMarkerFile.exists()) {
                 legacyMigrationChecked = true
@@ -346,7 +364,7 @@ object ChatHistoryStore {
 
     private fun parseConversationSummary(file: File, root: JSONObject): ConversationSummary? {
         val conversationId = file.nameWithoutExtension
-        if (conversationId.isBlank()) {
+        if (!isSafeConversationId(conversationId)) {
             return null
         }
         val uiMessages = root.optJSONArray("uiMessages")
@@ -366,7 +384,11 @@ object ChatHistoryStore {
 
     private fun loadCurrentConversationId(context: Context): String {
         val indexFile = File(ensureHistoryDir(context), IndexFileName)
-        return readJsonObjectOrNull(indexFile)?.optString("currentConversationId").orEmpty()
+        return readJsonObjectOrNull(indexFile)
+            ?.optString("currentConversationId")
+            .orEmpty()
+            .takeIf { it.isBlank() || isSafeConversationId(it) }
+            .orEmpty()
     }
 
     private fun isMissingCurrentConversationAllowed(context: Context): Boolean {
@@ -391,7 +413,19 @@ object ChatHistoryStore {
     }
 
     private fun conversationFile(conversationsDir: File, conversationId: String): File {
-        return File(conversationsDir, "${conversationId.ifBlank { newConversationId() }}.json")
+        val safeConversationId = conversationId.ifBlank { newConversationId() }
+        require(isSafeConversationId(safeConversationId)) { "对话 ID 不合法。" }
+        val canonicalDir = conversationsDir.canonicalFile
+        if (!canonicalDir.exists() && !canonicalDir.mkdirs()) {
+            throw IllegalStateException("无法创建对话记录目录。")
+        }
+        val file = File(canonicalDir, "$safeConversationId.json").canonicalFile
+        require(file.path.startsWith(canonicalDir.path + File.separator)) { "对话记录路径不合法。" }
+        return file
+    }
+
+    private fun isSafeConversationId(conversationId: String): Boolean {
+        return SafeConversationIdPattern.matches(conversationId)
     }
 
     private fun readJsonObjectOrNull(file: File): JSONObject? {

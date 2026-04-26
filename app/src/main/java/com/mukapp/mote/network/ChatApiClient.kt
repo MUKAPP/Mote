@@ -19,6 +19,7 @@ import java.net.URL
 
 object ChatApiClient {
     private val mainDispatcher = Dispatchers.Main
+    private const val ERROR_SNIPPET_MAX_LENGTH = 240
 
     suspend fun generateConversationTitle(
         settings: ApiSettings,
@@ -250,6 +251,7 @@ object ChatApiClient {
         val replyBuilder = StringBuilder()
         val thinkingBuilder = StringBuilder()
         var streamFinished = false
+        var finishReason: String? = null
         val toolCalls = linkedMapOf<Int, ToolCallAccumulator>()
 
         connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
@@ -265,6 +267,7 @@ object ChatApiClient {
                             replyBuilder = replyBuilder,
                             thinkingBuilder = thinkingBuilder,
                             toolCalls = toolCalls,
+                            onFinishReason = { finishReason = it },
                             onDelta = onDelta,
                             onThinkingDelta = onThinkingDelta
                         )
@@ -291,6 +294,7 @@ object ChatApiClient {
                     replyBuilder = replyBuilder,
                     thinkingBuilder = thinkingBuilder,
                     toolCalls = toolCalls,
+                    onFinishReason = { finishReason = it },
                     onDelta = onDelta,
                     onThinkingDelta = onThinkingDelta
                 )
@@ -313,11 +317,19 @@ object ChatApiClient {
             }
 
         if (content.isBlank() && thinkingContent.isBlank() && finalizedToolCalls.isEmpty()) {
-            throw IllegalStateException("接口返回内容为空。")
+            throw IllegalStateException(buildEmptyResponseMessage(finishReason))
+        }
+
+        val finishReasonNotice = buildFinishReasonNotice(finishReason, hasToolCalls = finalizedToolCalls.isNotEmpty())
+        if (finishReasonNotice.isNotEmpty() && finalizedToolCalls.isEmpty()) {
+            withContext(mainDispatcher) {
+                onDelta(finishReasonNotice)
+            }
+            replyBuilder.append(finishReasonNotice)
         }
 
         return ChatCompletionResult(
-            content = content,
+            content = replyBuilder.toString(),
             thinkingContent = thinkingContent,
             toolCalls = finalizedToolCalls
         )
@@ -328,6 +340,7 @@ object ChatApiClient {
         replyBuilder: StringBuilder,
         thinkingBuilder: StringBuilder,
         toolCalls: MutableMap<Int, ToolCallAccumulator>,
+        onFinishReason: (String) -> Unit,
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit
     ): Boolean {
@@ -340,9 +353,13 @@ object ChatApiClient {
             return true
         }
 
-        val responseJson = JSONObject(normalizedPayload)
+        val responseJson = parseStreamPayload(normalizedPayload)
         val choices = responseJson.optJSONArray("choices") ?: return false
         val firstChoice = choices.optJSONObject(0) ?: return false
+        val finishReason = firstChoice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" }
+        if (finishReason != null) {
+            onFinishReason(finishReason)
+        }
         val deltaObject = firstChoice.optJSONObject("delta")
         val toolCallsArray = deltaObject?.optJSONArray("tool_calls")
         if (toolCallsArray != null) {
@@ -368,6 +385,15 @@ object ChatApiClient {
             onDelta(deltaText)
         }
         return false
+    }
+
+    private fun parseStreamPayload(payload: String): JSONObject {
+        return runCatching { JSONObject(payload) }.getOrElse { error ->
+            throw IllegalStateException(
+                "流式响应解析失败，payload 片段：${truncateForError(payload)}",
+                error
+            )
+        }
     }
 
     private fun appendToolCallDeltas(
@@ -415,12 +441,20 @@ object ChatApiClient {
         }
 
         val thinkingContent = messageObject?.let { extractMessageContent(it.opt("reasoning_content")) }.orEmpty()
+        val finishReason = firstChoice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" }
         if (content.isBlank() && thinkingContent.isBlank() && toolCalls.isEmpty()) {
-            throw IllegalStateException("接口返回内容为空。")
+            throw IllegalStateException(buildEmptyResponseMessage(finishReason))
+        }
+
+        val finishReasonNotice = buildFinishReasonNotice(finishReason, hasToolCalls = toolCalls.isNotEmpty())
+        val finalContent = if (finishReasonNotice.isNotEmpty() && toolCalls.isEmpty()) {
+            content + finishReasonNotice
+        } else {
+            content
         }
 
         return ChatCompletionResult(
-            content = content,
+            content = finalContent,
             thinkingContent = thinkingContent,
             toolCalls = toolCalls
         )
@@ -474,10 +508,47 @@ object ChatApiClient {
     }
 
     private fun parseErrorMessage(responseText: String): String {
+        val trimmedResponse = responseText.trim()
+        if (trimmedResponse.isBlank()) {
+            return "接口请求失败，服务器返回了空错误响应。"
+        }
+
         return runCatching {
-            val root = JSONObject(responseText)
-            root.optJSONObject("error")?.optString("message")
-                ?: root.optString("message")
-        }.getOrDefault(responseText).trim()
+            val root = JSONObject(trimmedResponse)
+            root.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                ?: root.optString("message").takeIf { it.isNotBlank() }
+                ?: "接口请求失败，错误响应缺少可读消息。"
+        }.getOrElse {
+            "接口请求失败，服务器返回了非 JSON 错误响应：${truncateForError(trimmedResponse)}"
+        }.let { truncateForError(it.trim()) }
+    }
+
+    private fun buildEmptyResponseMessage(finishReason: String?): String {
+        return when (finishReason) {
+            "length" -> "接口返回内容为空，模型输出因达到长度限制被截断。"
+            "content_filter" -> "接口返回内容为空，模型输出被内容安全策略过滤。"
+            null, "stop", "tool_calls" -> "接口返回内容为空。"
+            else -> "接口返回内容为空，结束原因：${truncateForError(finishReason)}。"
+        }
+    }
+
+    private fun buildFinishReasonNotice(finishReason: String?, hasToolCalls: Boolean): String {
+        if (finishReason == null || finishReason == "stop" || finishReason == "tool_calls" || hasToolCalls) {
+            return ""
+        }
+        return when (finishReason) {
+            "length" -> "\n\n> 提示：模型输出因达到长度限制被截断。"
+            "content_filter" -> "\n\n> 提示：模型输出被内容安全策略过滤，部分内容可能缺失。"
+            else -> "\n\n> 提示：模型以非标准原因结束：${truncateForError(finishReason)}。"
+        }
+    }
+
+    private fun truncateForError(text: String): String {
+        val compact = text.replace(Regex("\\s+"), " ").trim()
+        return if (compact.length <= ERROR_SNIPPET_MAX_LENGTH) {
+            compact
+        } else {
+            compact.take(ERROR_SNIPPET_MAX_LENGTH) + "..."
+        }
     }
 }

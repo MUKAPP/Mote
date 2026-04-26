@@ -135,7 +135,7 @@ class SpannedBuilder(private val context: Context) {
     private fun appendOrderedList(ssb: SpannableStringBuilder, list: MdBlock.OrderedList, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         for ((index, childBlocks) in list.items.withIndex()) {
             val itemStart = ssb.length
-            val number = "${index + 1}. "
+            val number = "${list.startNumber + index}. "
             ssb.append(number)
             appendBlocks(ssb, childBlocks, isStreaming, linkDefs)
             val itemEnd = ssb.length

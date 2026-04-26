@@ -27,6 +27,7 @@ sealed class MdBlock {
 
     data class OrderedList(
         val items: List<List<MdBlock>>,
+        val startNumber: Int,
         override val startOffset: Int,
         override val endOffset: Int
     ) : MdBlock()

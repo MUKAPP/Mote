@@ -26,7 +26,11 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
 ) : MaterialCardView(context, attrs, defStyleAttr) {
 
     private var codeColors = resolveMarkdownCodeColors(context)
-    private var codeSpanRenderer = MarkdownCodeSpanRenderer(context, codeColors)
+    private var sharedCodeSpanRenderer: MarkdownCodeSpanRenderer? = null
+    private val codeSpanRenderer: MarkdownCodeSpanRenderer
+        get() = sharedCodeSpanRenderer ?: MarkdownCodeSpanRenderer(context, codeColors).also {
+            sharedCodeSpanRenderer = it
+        }
     private val blockBackgroundColor by lazy {
         codeColors.blockBackgroundColor
     }
@@ -50,7 +54,7 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
      * 设置共享的 MarkdownCodeSpanRenderer，避免每个代码块视图都创建独立的 Prism4j 实例。
      */
     fun setSharedCodeSpanRenderer(renderer: MarkdownCodeSpanRenderer) {
-        this.codeSpanRenderer = renderer
+        this.sharedCodeSpanRenderer = renderer
     }
 
     private var codeContent: String = ""

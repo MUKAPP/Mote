@@ -84,6 +84,7 @@ class MarkdownTableView @JvmOverloads constructor(
     private var rowHeights: FloatArray = FloatArray(0)
     private var cachedTotalWidth: Float = 0f
     private var cachedTotalHeight: Float = 0f
+    private var metricsDirty: Boolean = true
     private val linkRenderInfos = mutableListOf<LinkRenderInfo>()
     private var pressedLinkSpan: URLSpan? = null
     private var pressedX: Float = 0f
@@ -132,18 +133,26 @@ class MarkdownTableView @JvmOverloads constructor(
         linkDefs: Map<String, Pair<String, String>> = emptyMap(),
         isStreaming: Boolean = false
     ) {
+        if (this.headers == headers &&
+            this.rows == rows &&
+            this.alignments == alignments &&
+            this.linkDefs == linkDefs &&
+            this.isStreaming == isStreaming
+        ) {
+            return
+        }
         this.headers = headers
         this.rows = rows
         this.alignments = alignments
         this.linkDefs = linkDefs
         this.isStreaming = isStreaming
-        recalculateMetrics()
+        metricsDirty = true
         requestLayout()
         invalidate()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        recalculateMetrics()
+        ensureMetrics()
 
         val desiredWidth = ceil(cachedTotalWidth + paddingLeft + paddingRight).toInt()
         val desiredHeight = ceil(cachedTotalHeight + paddingTop + paddingBottom).toInt()
@@ -174,7 +183,7 @@ class MarkdownTableView @JvmOverloads constructor(
         super.onDraw(canvas)
         if (headers.isEmpty()) return
 
-        recalculateMetrics()
+        ensureMetrics()
         linkRenderInfos.clear()
         val totalW = cachedTotalWidth
         val totalH = cachedTotalHeight
@@ -331,6 +340,7 @@ class MarkdownTableView @JvmOverloads constructor(
             cachedTotalWidth = 0f
             cachedTotalHeight = 0f
             headerHeight = 0f
+            metricsDirty = false
             return
         }
 
@@ -346,6 +356,13 @@ class MarkdownTableView @JvmOverloads constructor(
         rowHeights = FloatArray(rowCells.size) { index -> calculateRowHeight(rowCells[index]) }
         cachedTotalWidth = columnWidths.sum()
         cachedTotalHeight = headerHeight + rowHeights.sum()
+        metricsDirty = false
+    }
+
+    private fun ensureMetrics() {
+        if (metricsDirty) {
+            recalculateMetrics()
+        }
     }
 
     private fun calculateColumnWidths(): FloatArray {
