@@ -5,11 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Outline
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.SystemClock
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -33,11 +31,10 @@ import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.FragmentChatBinding
-import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
-import com.mukapp.mote.util.px
 import kotlin.math.max
-import androidx.core.graphics.drawable.toDrawable
+import androidx.core.view.isVisible
+import eightbitlab.com.blurview.BlurView
 
 class ChatFragment : Fragment() {
     private var _binding: FragmentChatBinding? = null
@@ -91,20 +88,6 @@ class ChatFragment : Fragment() {
 
         var imeAnimationRunning = false
 
-        fun updateContentPadding(top: Int = binding.recyclerMessages.paddingTop, bottom: Int) {
-            binding.recyclerMessages.updatePadding(top = top, bottom = bottom)
-            binding.emptyPlaceholder.root.updatePadding(top = top, bottom = bottom)
-        }
-
-        fun inputStackHeight(): Int {
-            val confirmationHeight = if (binding.cardShellConfirmation.visibility == View.VISIBLE) {
-                binding.cardShellConfirmation.height + confirmationCardGap
-            } else {
-                0
-            }
-            return binding.cardInput.height + confirmationHeight
-        }
-
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -127,13 +110,18 @@ class ChatFragment : Fragment() {
             insets
         }
 
-        val inputStackLayoutChangeListener = View.OnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            if ((bottom - top) != (oldBottom - oldTop)) {
-                updateContentPadding(
-                    bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset
-                )
+        val inputStackLayoutChangeListener =
+            View.OnLayoutChangeListener { changedView, _, top, _, bottom, _, oldTop, _, oldBottom ->
+                if ((bottom - top) != (oldBottom - oldTop)) {
+                    updateContentPadding(
+                        bottom = max(
+                            systemBottomInset,
+                            imeBottomInset
+                        ) + inputStackHeight() + bottomOffset,
+                        scrollRecyclerByBottomDelta = changedView == binding.cardShellConfirmation
+                    )
+                }
             }
-        }
         binding.cardInput.addOnLayoutChangeListener(inputStackLayoutChangeListener)
         binding.cardShellConfirmation.addOnLayoutChangeListener(inputStackLayoutChangeListener)
 
@@ -186,38 +174,44 @@ class ChatFragment : Fragment() {
             com.google.android.material.R.attr.colorSurfaceContainerLow
         )
         val overlayColor = ColorUtils.setAlphaComponent(baseColor, (255 * 0.6).toInt())
-        binding.cardInput.setupWith(binding.blurTarget)
-            .setFrameClearDrawable(realWindowBackground)
-            .setBlurRadius(20f)
-            .setOverlayColor(overlayColor)
 
-        // 1. 动态创建一个透明的圆角 Drawable
-        val radius = 36f * resources.displayMetrics.density
-        val roundedBackground = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = radius
-            setColor(Color.TRANSPARENT)
-        }
+        fun setupBlur(view: BlurView, blurRadius: Float, overlayColor: Int, borderRadius: Float) {
+            view.setupWith(binding.blurTarget)
+                .setFrameClearDrawable(realWindowBackground)
+                .setBlurRadius(blurRadius)
+                .setOverlayColor(overlayColor)
 
-        // 2. 应用背景、自定义轮廓裁剪与阴影
-        binding.cardInput.apply {
-            background = roundedBackground
-
-            // 自定义 OutlineProvider
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    // 根据 View 的宽高和圆角设置轮廓形状
-                    outline.setRoundRect(0, 0, view.width, view.height, radius)
-                    // 无视背景的透明度，强制设定轮廓的 Alpha 为 1.0f (不透明)，以投射阴影
-                    outline.alpha = 1.0f
-                }
+            // 1. 动态创建一个透明的圆角 Drawable
+            val radius = borderRadius * resources.displayMetrics.density
+            val roundedBackground = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = radius
+                setColor(Color.TRANSPARENT)
             }
 
-            clipToOutline = true
+            // 2. 应用背景、自定义轮廓裁剪与阴影
+            view.apply {
+                background = roundedBackground
 
-            // 3. 设置阴影的高度 (数值越大，阴影越明显)
-            elevation = 8f
+                // 自定义 OutlineProvider
+                outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(view: View, outline: Outline) {
+                        // 根据 View 的宽高和圆角设置轮廓形状
+                        outline.setRoundRect(0, 0, view.width, view.height, radius)
+                        // 无视背景的透明度，强制设定轮廓的 Alpha 为 1.0f (不透明)，以投射阴影
+                        outline.alpha = 1.0f
+                    }
+                }
+
+                clipToOutline = true
+
+                // 3. 设置阴影的高度 (数值越大，阴影越明显)
+                elevation = 8f
+            }
         }
+
+        setupBlur(binding.cardInput, 20f, overlayColor, 36f)
+        setupBlur(binding.cardShellConfirmation, 20f, overlayColor, 16f)
     }
 
     override fun onDestroyView() {
@@ -281,6 +275,7 @@ class ChatFragment : Fragment() {
                         // 仅用户手指触摸拖拽时标记
                         userScrolling = true
                     }
+
                     androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_IDLE -> {
                         if (userScrolling) {
                             // 用户发起的滚动结束后，根据是否在底部决定是否吸附
@@ -405,7 +400,7 @@ class ChatFragment : Fragment() {
     private fun renderShellConfirmation() {
         val confirmation = latestShellConfirmation
         if (confirmation == null) {
-            binding.cardShellConfirmation.visibility = View.GONE
+            setShellConfirmationVisible(false)
             return
         }
 
@@ -419,7 +414,53 @@ class ChatFragment : Fragment() {
             append('\n')
             append(confirmation.command)
         }
-        binding.cardShellConfirmation.visibility = View.VISIBLE
+        setShellConfirmationVisible(true)
+    }
+
+    private fun setShellConfirmationVisible(visible: Boolean) {
+        val binding = _binding ?: return
+        if (binding.cardShellConfirmation.isVisible != visible) {
+            binding.cardShellConfirmation.visibility = if (visible) View.VISIBLE else View.GONE
+            updateContentPadding(
+                bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset,
+                scrollRecyclerByBottomDelta = true
+            )
+        }
+
+        binding.cardShellConfirmation.post {
+            updateContentPadding(
+                bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset,
+                scrollRecyclerByBottomDelta = true
+            )
+        }
+    }
+
+    private fun inputStackHeight(): Int {
+        val binding = _binding ?: return 0
+        val confirmationHeight = if (binding.cardShellConfirmation.isVisible) {
+            binding.cardShellConfirmation.height + confirmationCardGap
+        } else {
+            0
+        }
+        return binding.cardInput.height + confirmationHeight
+    }
+
+    private fun updateContentPadding(
+        top: Int? = null,
+        bottom: Int,
+        scrollRecyclerByBottomDelta: Boolean = false
+    ) {
+        val binding = _binding ?: return
+        val recyclerView = binding.recyclerMessages
+        val previousBottom = recyclerView.paddingBottom
+        val resolvedTop = top ?: recyclerView.paddingTop
+        recyclerView.updatePadding(top = resolvedTop, bottom = bottom)
+        binding.emptyPlaceholder.root.updatePadding(top = resolvedTop, bottom = bottom)
+
+        val bottomDelta = bottom - previousBottom
+        if (scrollRecyclerByBottomDelta && bottomDelta != 0) {
+            recyclerView.scrollBy(0, bottomDelta)
+        }
     }
 
     private fun renderMessages() {
@@ -428,9 +469,9 @@ class ChatFragment : Fragment() {
         adapter.submitMessages(latestMessages, latestIsSending)
         val currentStreamingSignature = currentStreamingMessageSignature()
         val isStreamingContentUpdate = latestIsSending &&
-            latestMessages.size == previousMessageCount &&
-            currentStreamingSignature != null &&
-            currentStreamingSignature == previousStreamingSignature
+                latestMessages.size == previousMessageCount &&
+                currentStreamingSignature != null &&
+                currentStreamingSignature == previousStreamingSignature
         lastRenderedMessageCount = latestMessages.size
         lastStreamingMessageSignature = currentStreamingSignature
 
