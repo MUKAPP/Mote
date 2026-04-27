@@ -55,11 +55,12 @@ class ChatFragment : Fragment() {
     private var lastRenderedMessageCount: Int = 0
     private var lastStreamingMessageSignature: String? = null
     private var lastStreamingScrollUptime: Long = 0L
-    private val smoothScrollToBottomRunnable = Runnable { scrollToBottom(animated = true) }
+    private var scrollAfterLayoutPending: Boolean = false
+    private val smoothScrollToBottomRunnable = Runnable { scrollToBottomIfScrollable(animated = true) }
     private val immediateScrollToBottomRunnable = Runnable { scrollToBottom(animated = false) }
     private val throttledSmoothScrollToBottomRunnable = Runnable {
         lastStreamingScrollUptime = SystemClock.uptimeMillis()
-        scrollToBottom(animated = true)
+        scrollToBottomIfScrollable(animated = true)
     }
 
     private var systemBottomInset = 0
@@ -218,6 +219,7 @@ class ChatFragment : Fragment() {
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
+        scrollAfterLayoutPending = false
         binding.recyclerMessages.adapter = null
         _binding = null
         super.onDestroyView()
@@ -408,6 +410,10 @@ class ChatFragment : Fragment() {
             R.string.shell_confirmation_risk,
             confirmation.risk
         )
+        binding.textShellConfirmationDescription.text = getString(
+            R.string.shell_confirmation_description,
+            confirmation.description.ifBlank { getString(R.string.shell_confirmation_description_empty) }
+        )
         binding.textShellConfirmationCommand.text = buildString {
             val workDir = confirmation.workDir?.takeIf { it.isNotBlank() } ?: "默认目录"
             append(getString(R.string.shell_confirmation_work_dir, workDir))
@@ -537,6 +543,41 @@ class ChatFragment : Fragment() {
             }
             snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
         }
+    }
+
+    private fun scrollToBottomIfScrollable(animated: Boolean) {
+        val binding = _binding ?: return
+        val recyclerView = binding.recyclerMessages
+        if (recyclerView.isLayoutRequested) {
+            if (scrollAfterLayoutPending) {
+                return
+            }
+            scrollAfterLayoutPending = true
+            recyclerView.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    view: View,
+                    left: Int,
+                    top: Int,
+                    right: Int,
+                    bottom: Int,
+                    oldLeft: Int,
+                    oldTop: Int,
+                    oldRight: Int,
+                    oldBottom: Int
+                ) {
+                    view.removeOnLayoutChangeListener(this)
+                    scrollAfterLayoutPending = false
+                    scrollToBottomIfScrollable(animated)
+                }
+            })
+            return
+        }
+
+        // 内容未超过可视区域时跳过自动滚动，避免 RecyclerView 触发拉伸效果。
+        if (!recyclerView.canScrollVertically(-1) && !recyclerView.canScrollVertically(1)) {
+            return
+        }
+        scrollToBottom(animated)
     }
 
     private fun currentStreamingMessageSignature(): String? {

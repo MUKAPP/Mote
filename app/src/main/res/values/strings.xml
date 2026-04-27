@@ -71,6 +71,8 @@
     <string name="error_delete_conversation_failed">删除对话失败，请稍后重试。</string>
     <string name="shell_confirmation_title">确认执行高风险 Shell 命令</string>
     <string name="shell_confirmation_risk">风险：%1$s</string>
+    <string name="shell_confirmation_description">AI 说明：%1$s</string>
+    <string name="shell_confirmation_description_empty">未提供说明</string>
     <string name="shell_confirmation_work_dir">工作目录：%1$s</string>
     <string name="shell_confirmation_confirm">确认执行</string>
 </resources>

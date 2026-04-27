@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 data class ShellConfirmationUiState(
     val confirmationId: String,
+    val description: String,
     val command: String,
     val workDir: String?,
     val background: Boolean,
@@ -47,6 +48,7 @@ data class ShellConfirmationUiState(
 
 private data class ShellConfirmationRequest(
     val confirmationId: String,
+    val description: String,
     val command: String,
     val workDir: String?,
     val background: Boolean,
@@ -790,7 +792,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val results = mutableListOf<ChatMessage>()
         for (toolCall in toolCalls) {
             var result = executeLocalToolCall(toolCall)
-            val confirmation = parseShellConfirmationRequest(result.content)
+            val confirmation = parseShellConfirmationRequest(result.content, toolCall.arguments)
             if (confirmation != null) {
                 val approved = awaitShellConfirmation(
                     confirmation = confirmation,
@@ -844,6 +846,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             pendingShellConfirmationDecision = decision
             _shellConfirmation.value = ShellConfirmationUiState(
                 confirmationId = confirmation.confirmationId,
+                description = confirmation.description,
                 command = confirmation.command,
                 workDir = confirmation.workDir,
                 background = confirmation.background,
@@ -868,14 +871,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun parseShellConfirmationRequest(toolResult: String): ShellConfirmationRequest? {
+    private fun parseShellConfirmationRequest(toolResult: String, toolArguments: String): ShellConfirmationRequest? {
         if (!LocalAiTools.isShellConfirmationRequest(toolResult)) {
             return null
         }
         val payload = runCatching { JSONObject(toolResult) }.getOrNull() ?: return null
         val rawWorkDir = payload.opt("work_dir")
+        val description = runCatching { JSONObject(toolArguments) }
+            .getOrNull()
+            ?.optString("description")
+            ?.trim()
+            .orEmpty()
         return ShellConfirmationRequest(
             confirmationId = payload.optString("confirmation_id"),
+            description = description,
             command = payload.optString("command"),
             workDir = rawWorkDir?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() },
             background = payload.optBoolean("background", false),
