@@ -25,7 +25,7 @@ object ShellProcessManager {
         val isComplete: Boolean get() = !process.isAlive && outputFinished && errorFinished
     }
 
-    fun start(command: String, workDir: String? = null): String {
+    fun start(command: String, workDir: String? = null, environment: Map<String, String> = emptyMap()): String {
         val workingDirectory = workDir?.takeIf { it.isNotBlank() }?.let { File(it).canonicalFile }
         require(workingDirectory == null || workingDirectory.exists()) { "工作目录不存在。" }
         require(workingDirectory == null || workingDirectory.isDirectory) { "工作目录不是目录。" }
@@ -35,6 +35,9 @@ object ShellProcessManager {
 
         val id = generateId()
         val builder = ProcessBuilder("sh", "-c", command)
+        if (environment.isNotEmpty()) {
+            builder.environment().putAll(environment)
+        }
         workingDirectory?.let { builder.directory(it) }
         val process = builder.start()
         registerProcess(id, command, process)

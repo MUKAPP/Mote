@@ -38,6 +38,7 @@ app/src/main/java/com/mukapp/mote/
 ├── network/
 │   └── ChatApiClient.kt         # OpenAI 兼容 API 客户端（流式 SSE + 非流式回退 + 标题生成）
 ├── tools/
+│   ├── BusyBoxManager.kt        # 内置 BusyBox 初始化、ABI 选择、PATH/TMPDIR 环境注入
 │   ├── LocalAiTools.kt          # AI 工具定义与执行调度（read_file, list_path, shell 等）
 │   ├── ShellRiskDetector.kt     # Shell 高风险命令静态检测（删除/覆盖/权限/系统设置等）
 │   └── ShellProcessManager.kt   # Shell 进程生命周期管理（前台/后台、输出缓冲）
@@ -163,6 +164,14 @@ Mote 向模型注册了以下工具，定义在 `LocalAiTools.kt`：
 
 工具执行期间会先插入 `AssistantToolPart(isLoading=true)` 作为加载中片段，工具返回后替换为最终结果。`wait` 工具由 `ChatViewModel` 延迟指定秒数后继续下一轮请求。
 
+### 内置 BusyBox Shell 环境
+
+- 内置 BusyBox 二进制来自 `Magisk-Modules-Repo/busybox-ndk`，以 `jniLibs/<abi>/libbusybox.so` 形式打包，当前覆盖 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64`。
+- `BusyBoxManager.initialize()` 在 `MyApplication` 启动后后台初始化，优先使用 Android 原生库目录中的 `libbusybox.so`，并在 `filesDir/shell` 中创建 `busybox` 启动软链接，规避 Android 10+ 对私有目录直接执行自写入二进制的限制。
+- 首次安装或 BusyBox 源文件变化时，会创建 `filesDir/shell/bin` 与 `filesDir/shell/tmp`，执行 `busybox --install -s filesDir/shell/bin` 生成 applet 软链接，并写入 `.busybox_install` 戳文件避免重复安装。
+- 所有 `shell` 工具进程启动前都会调用 `BusyBoxManager.ensureInitialized()`，并把 `filesDir/shell/bin`、`filesDir/shell` 前置到 `PATH`，同时注入 `BUSYBOX`、`MOTE_SHELL_DIR`、`TMPDIR` 环境变量。
+- 若原生库形式不可用，`BusyBoxManager` 仍保留 `assets/busybox/<abi>/busybox` 回退路径；若完全不可用，则退回系统 `PATH` 执行命令。
+
 ### Shell 高风险确认
 
 - `ShellRiskDetector.detect(command)` 会在 `LocalAiTools.runShell()` 真正启动进程前进行静态检测，命中风险时先返回 `ok=false`、`needs_confirmation=true`、`confirmation_id`、`risk`、`command`、`work_dir`、`background` 的 JSON 工具结果。
@@ -265,7 +274,7 @@ Mote 向模型注册了以下工具，定义在 `LocalAiTools.kt`：
 
 Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规则定义在 `app/proguard-rules.pro`。
 
-构建配置使用 Java 11 编译选项，并在 `settings.gradle.kts` 中启用 `org.gradle.toolchains.foojay-resolver-convention`。关键依赖版本以 `gradle/libs.versions.toml` 为准，当前包括 AGP 9.1.1、Material 1.12.0、Lifecycle 2.9.4、RecyclerView 1.4.0、BlurView version-3.2.0、prism4j 2.0.0。
+构建配置使用 Java 11 编译选项，并在 `settings.gradle.kts` 中启用 `org.gradle.toolchains.foojay-resolver-convention`。关键依赖版本以 `gradle/libs.versions.toml` 为准，当前包括 AGP 9.2.0、Material 1.13.0、Lifecycle 2.10.0、RecyclerView 1.4.0、BlurView version-3.2.0、prism4j 2.0.0。
 
 修改代码之后需要进行测试构建。
 
@@ -276,13 +285,14 @@ Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规
 3. **多对话历史**：每个对话独立 JSON 文件存储，索引文件记录当前对话，侧边栏通过摘要列表切换对话
 4. **双消息列表**：UI 消息和 API 消息分离，避免中间步骤污染 API 上下文
 5. **Shell 高风险确认**：Shell 工具执行前通过 `ShellRiskDetector` 静态拦截破坏性或写入型命令，必须由用户在 UI 确认后才会消费一次性 `confirmation_id` 并继续执行
-6. **Shell 进程管理**：前台/后台双模式，后台进程支持状态查询和手动停止，最多保留 20 个进程
-7. **流式渲染优化**：50ms 防抖 + 差异化 RecyclerView 更新 + 流式 payload 部分绑定 + Markdown block 级增量更新
-8. **自研 Markdown 渲染**：采用原生视图树架构（MarkdownView 将 AST 映射为原生 View 树），代码语法高亮使用 prism4j 库（MarkdownCodeSpanRenderer + MarkdownGrammarLocator），支持流式渲染和 10 种语言语法高亮
-9. **对话标题生成**：首轮对话后可使用独立 `titleModel` 生成标题；未配置时使用本地备用标题
-10. **IME 动画跟随**：ChatFragment 实现 WindowInsetsAnimationCompat.Callback，输入法弹出/收起时列表内容像素级跟随滚动
-11. **动态主题色**：MyApplication 应用 DynamicColors，支持 Material You 动态取色
-12. **Material Symbols Rounded 图标**：项目统一使用 Material Symbols Rounded 风格图标，从 Google 官方 `material-design-icons` 仓库下载（主题路径 `materialsymbolsrounded`），保存为 `ic_{icon_name}.xml` 格式到 `res/drawable/` 目录，不使用 `_24px` 后缀命名
+6. **内置 BusyBox**：通过 `jniLibs` 打包各 ABI 的 `libbusybox.so`，安装时由系统提取为可执行原生库，应用启动后生成 `busybox --install -s` applet 软链接并注入 Shell `PATH`
+7. **Shell 进程管理**：前台/后台双模式，后台进程支持状态查询和手动停止，最多保留 20 个进程
+8. **流式渲染优化**：50ms 防抖 + 差异化 RecyclerView 更新 + 流式 payload 部分绑定 + Markdown block 级增量更新
+9. **自研 Markdown 渲染**：采用原生视图树架构（MarkdownView 将 AST 映射为原生 View 树），代码语法高亮使用 prism4j 库（MarkdownCodeSpanRenderer + MarkdownGrammarLocator），支持流式渲染和 10 种语言语法高亮
+10. **对话标题生成**：首轮对话后可使用独立 `titleModel` 生成标题；未配置时使用本地备用标题
+11. **IME 动画跟随**：ChatFragment 实现 WindowInsetsAnimationCompat.Callback，输入法弹出/收起时列表内容像素级跟随滚动
+12. **动态主题色**：MyApplication 应用 DynamicColors，支持 Material You 动态取色
+13. **Material Symbols Rounded 图标**：项目统一使用 Material Symbols Rounded 风格图标，从 Google 官方 `material-design-icons` 仓库下载（主题路径 `materialsymbolsrounded`），保存为 `ic_{icon_name}.xml` 格式到 `res/drawable/` 目录，不使用 `_24px` 后缀命名
 
 ## 注意事项
 
@@ -290,6 +300,7 @@ Release 构建启用了 `isMinifyEnabled` 和 `isShrinkResources`，ProGuard 规
 - 修改 `ConversationSummary`、`SavedConversationState` 或历史文件根字段时，需要同步多对话索引、旧版历史迁移和侧边栏列表刷新逻辑
 - 修改 `AssistantPart` 字段时，需要同步 `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter` 和工具结果展开状态逻辑
 - 新增 AI 工具时需在 `LocalAiTools` 中同时添加工具定义和执行逻辑，并在 `IntermediateStepsHelper.parseToolSummary` 中添加摘要解析
+- 更新内置 BusyBox 时需同步替换 `app/src/main/jniLibs/<abi>/libbusybox.so`，保留 `packaging.jniLibs.useLegacyPackaging=true` 与 `keepDebugSymbols += "**/libbusybox.so"`，并运行 `testDebugUnitTest` 和 `assembleDebug` 验证打包路径
 - 修改 Shell 高风险检测规则时需同步更新 `ShellRiskDetectorTest`，覆盖误杀和漏检场景；不要把 `confirmation_id` 暴露为可由模型自行构造的可信输入
 - API 主聊天请求体包含 `stream=true` 和 `tools`，`reasoning_effort` 为条件包含（仅当 `settings.reasoningEffort` 非空时添加），修改时注意兼容性
 - 标题生成请求不携带 tools，固定 `stream=false`、低温度、短输出；修改标题生成逻辑时需保持对空 `titleModel` 的本地备用标题兼容

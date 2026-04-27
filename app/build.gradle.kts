@@ -37,6 +37,12 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/libbusybox.so"
+        }
+    }
 }
 
 dependencies {

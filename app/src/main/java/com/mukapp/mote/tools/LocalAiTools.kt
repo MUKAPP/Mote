@@ -62,7 +62,7 @@ object LocalAiTools {
             when (toolCall.name) {
                 ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
                 ListPathToolName -> listPath(toolCall.arguments)
-                ShellToolName -> runShell(toolCall.arguments, onShellProcessStarted)
+                ShellToolName -> runShell(context, toolCall.arguments, onShellProcessStarted)
                 ShellStatusToolName -> checkShellStatus(toolCall.arguments)
                 ShellStopToolName -> stopShell(toolCall.arguments)
                 WaitToolName -> scheduleWait(toolCall.arguments)
@@ -253,7 +253,7 @@ object LocalAiTools {
         return text.take(half) + "\n... [输出已截断，共 ${text.length} 字符] ...\n" + text.takeLast(half)
     }
 
-    private fun runShell(arguments: String, onShellProcessStarted: ((String, Boolean) -> Unit)?): String {
+    private fun runShell(context: Context, arguments: String, onShellProcessStarted: ((String, Boolean) -> Unit)?): String {
         val payload = JSONObject(arguments)
         val command = payload.optString("command").trim()
         require(command.isNotEmpty()) { "command 不能为空。" }
@@ -283,7 +283,8 @@ object LocalAiTools {
             }.toString(2)
         }
 
-        val id = ShellProcessManager.start(command, workDir)
+        BusyBoxManager.ensureInitialized(context)
+        val id = ShellProcessManager.start(command, workDir, BusyBoxManager.environmentOverrides())
         onShellProcessStarted?.invoke(id, background)
 
         if (background) {

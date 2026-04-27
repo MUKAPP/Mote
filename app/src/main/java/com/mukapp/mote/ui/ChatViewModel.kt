@@ -93,6 +93,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingStreamingPublishJob: Job? = null
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
+
     @Volatile
     private var activeForegroundShellProcessId: String? = null
     private var pendingShellConfirmationDecision: CompletableDeferred<Boolean>? = null
@@ -207,7 +208,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             if (deleteResult.isFailure) {
                 unmarkConversationDeleted(conversationId)
                 withContext(Dispatchers.Main) {
-                    _userNotice.value = appContext.getString(R.string.error_delete_conversation_failed)
+                    _userNotice.value =
+                        appContext.getString(R.string.error_delete_conversation_failed)
                 }
                 return@launch
             }
@@ -807,7 +809,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 result = executeLocalToolCall(
-                    toolCall.copy(arguments = addShellConfirmationId(toolCall.arguments, confirmation.confirmationId))
+                    toolCall.copy(
+                        arguments = addShellConfirmationId(
+                            toolCall.arguments,
+                            confirmation.confirmationId
+                        )
+                    )
                 )
             }
             results += result
@@ -871,7 +878,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun parseShellConfirmationRequest(toolResult: String, toolArguments: String): ShellConfirmationRequest? {
+    private fun parseShellConfirmationRequest(
+        toolResult: String,
+        toolArguments: String
+    ): ShellConfirmationRequest? {
         if (!LocalAiTools.isShellConfirmationRequest(toolResult)) {
             return null
         }
@@ -886,7 +896,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             confirmationId = payload.optString("confirmation_id"),
             description = description,
             command = payload.optString("command"),
-            workDir = rawWorkDir?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() },
+            workDir = rawWorkDir?.takeIf { it != JSONObject.NULL }?.toString()
+                ?.takeIf { it.isNotBlank() },
             background = payload.optBoolean("background", false),
             risk = payload.optString("risk").ifBlank { "可能修改设备数据" }
         ).takeIf { it.confirmationId.isNotBlank() && it.command.isNotBlank() }
@@ -1203,15 +1214,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val currentTime = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
             return """
                 # 角色定义
-                你是一个运行在 Android 设备上的 AI Agent，具备读取本地文件和执行 Shell 命令的权限。
-                当前时间：$currentTime
+                你是一个 Android 系统的本地 AI Agent，负责协助用户完成设备级任务。你可以调用工具来读取本地文件和执行 Shell 命令。
+                当前系统时间：$currentTime
                 
-                # 安全与权限控制（最高优先级）
-                执行任何高风险 Shell 命令（如 `rm` 删除文件/目录、移动或修改敏感数据等破坏性操作）时，可以正常调用工具；应用会自动拦截并通过界面确认条要求用户确认。严禁自行编造 `confirmation_id`。
+                # 环境规范
+                - 基础环境：Android busybox（执行器已自动注入相关环境变量）。
+                - 路径约定：优先操作 `/sdcard/` 或应用私有目录。访问其他目录时需注意 Android 沙盒机制与读写权限限制。
                 
-                # 环境
-                - 路径规范：以安卓标准的 `/sdcard/` 或应用私有目录为主。外部存储需注意是否有读写权限。
-                - Shell 环境：Android Shell，部分 GNU/Linux 标准命令或参数可能不支持。
+                # 安全协议（最高优先级）
+                - 拦截机制：当你调用高风险指令（如 `rm` 删除、`mv` 覆盖、修改敏感配置等）时，宿主应用会自动拦截并弹窗要求用户确认。
+                - 执行准则：执行高风险命令之前必须先向用户说明风险，用户同意之后才能继续执行。
             """.trimIndent()
         }
     }
