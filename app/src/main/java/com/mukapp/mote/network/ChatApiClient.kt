@@ -128,7 +128,7 @@ object ChatApiClient {
                 val requestBody = JSONObject().apply {
                     put("model", settings.model)
                     put("stream", true)
-                    put("tools", LocalAiTools.toolDefinitions())
+                    put("tools", LocalAiTools.toolDefinitions(settings))
                     if (settings.reasoningEffort.isNotBlank()) {
                         put("reasoning_effort", settings.reasoningEffort)
                     }

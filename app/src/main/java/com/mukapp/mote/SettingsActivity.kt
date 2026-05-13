@@ -87,6 +87,7 @@ class SettingsActivity : AppCompatActivity() {
                 apiKey = binding.settingsContent.editApiKey.text?.toString().orEmpty().trim(),
                 model = binding.settingsContent.editModel.text?.toString().orEmpty().trim(),
                 titleModel = binding.settingsContent.editTitleModel.text?.toString().orEmpty().trim(),
+                searxngUrl = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim(),
                 reasoningEffort = selectedReasoningEffort
             )
             ApiSettingsStore.save(this, settings)
@@ -113,6 +114,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.settingsContent.editApiKey.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editModel.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editTitleModel.doAfterTextChanged { hideSavedMessage() }
+        binding.settingsContent.editSearxngUrl.doAfterTextChanged { hideSavedMessage() }
     }
 
     private fun applySettings(settings: ApiSettings) {
@@ -127,6 +129,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         if (binding.settingsContent.editTitleModel.text?.toString() != settings.titleModel) {
             binding.settingsContent.editTitleModel.setText(settings.titleModel)
+        }
+        if (binding.settingsContent.editSearxngUrl.text?.toString() != settings.searxngUrl) {
+            binding.settingsContent.editSearxngUrl.setText(settings.searxngUrl)
         }
 
         selectedReasoningEffort = settings.reasoningEffort.ifBlank { "high" }

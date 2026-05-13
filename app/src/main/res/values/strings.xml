@@ -25,6 +25,7 @@
     <string name="hint_api_key">sk-...</string>
     <string name="hint_model">gpt-4o-mini</string>
     <string name="hint_title_model">gpt-4o-mini</string>
+    <string name="hint_searxng_url">https://searx.example.org</string>
     <string name="label_ai">AI</string>
     <string name="status_generating">正在生成...</string>
     <string name="status_generation_stopped">已停止生成。</string>
@@ -50,6 +51,8 @@
     <string name="settings_label_model">模型</string>
     <string name="settings_label_title_model">轻量模型</string>
     <string name="settings_title_model_hint">用于自动生成历史对话标题；留空时使用首条消息作为标题。</string>
+    <string name="settings_label_searxng_url">SearXNG 地址</string>
+    <string name="settings_searxng_hint">填写后会向 AI 暴露 web_search 工具，通过 /search?format=json 请求 SearXNG；留空则不暴露搜索工具。</string>
     <string name="settings_reasoning_title">思考强度</string>
     <string name="settings_reasoning_hint">控制模型的推理深度；高强度思考更深入，但响应通常更慢。</string>
     <string name="settings_reasoning_low">低</string>
@@ -59,7 +62,7 @@
     <string name="settings_save">保存设置</string>
     <string name="settings_saved">设置已保存</string>
     <string name="settings_contract_title">接口约定</string>
-    <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 聊天请求体会发送 model、messages、stream=true、tools 和 reasoning_effort\n• 轻量模型只用于生成历史对话标题\n• 若要访问外部存储文件，请先授予文件管理权限</string>
+    <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 聊天请求体会发送 model、messages、stream=true、tools 和 reasoning_effort\n• 轻量模型只用于生成历史对话标题\n• SearXNG 地址留空时不会暴露搜索工具\n• 若要访问外部存储文件，请先授予文件管理权限</string>
     <string name="dialog_edit_title">编辑消息</string>
     <string name="dialog_edit_message">编辑将删除此消息及之后的所有消息，并将内容填入输入框。</string>
     <string name="dialog_delete_title">删除消息</string>

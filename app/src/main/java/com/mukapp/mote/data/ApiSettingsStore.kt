@@ -9,6 +9,7 @@ object ApiSettingsStore {
     private const val KeyApiKey = "api_key"
     private const val KeyModel = "model"
     private const val KeyTitleModel = "title_model"
+    private const val KeySearxngUrl = "searxng_url"
     private const val KeyReasoningEffort = "reasoning_effort"
 
     fun load(context: Context): ApiSettings {
@@ -18,6 +19,7 @@ object ApiSettingsStore {
             apiKey = preferences.getString(KeyApiKey, "").orEmpty(),
             model = preferences.getString(KeyModel, "").orEmpty(),
             titleModel = preferences.getString(KeyTitleModel, "").orEmpty(),
+            searxngUrl = preferences.getString(KeySearxngUrl, "").orEmpty(),
             reasoningEffort = preferences.getString(KeyReasoningEffort, "high").orEmpty()
         )
     }
@@ -29,6 +31,7 @@ object ApiSettingsStore {
             .putString(KeyApiKey, settings.apiKey)
             .putString(KeyModel, settings.model)
             .putString(KeyTitleModel, settings.titleModel)
+            .putString(KeySearxngUrl, settings.searxngUrl)
             .putString(KeyReasoningEffort, settings.reasoningEffort)
             .apply()
     }

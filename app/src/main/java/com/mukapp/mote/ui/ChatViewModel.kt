@@ -390,6 +390,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
 
                     val toolBatch = executeToolCallsWithConfirmation(
+                        settings = settings,
                         toolCalls = response.toolCalls,
                         assistantParts = assistantParts,
                         assistantIndex = assistantIndex,
@@ -786,6 +787,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun executeToolCallsWithConfirmation(
+        settings: ApiSettings,
         toolCalls: List<AiToolCall>,
         assistantParts: MutableList<AssistantPart>,
         assistantIndex: Int,
@@ -793,7 +795,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ): ToolExecutionBatch {
         val results = mutableListOf<ChatMessage>()
         for (toolCall in toolCalls) {
-            var result = executeLocalToolCall(toolCall)
+            var result = executeLocalToolCall(settings, toolCall)
             val confirmation = parseShellConfirmationRequest(result.content, toolCall.arguments)
             if (confirmation != null) {
                 val approved = awaitShellConfirmation(
@@ -809,6 +811,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 result = executeLocalToolCall(
+                    settings,
                     toolCall.copy(
                         arguments = addShellConfirmationId(
                             toolCall.arguments,
@@ -822,12 +825,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return ToolExecutionBatch(results = results, cancelled = false)
     }
 
-    private suspend fun executeLocalToolCall(toolCall: AiToolCall): ChatMessage {
+    private suspend fun executeLocalToolCall(settings: ApiSettings, toolCall: AiToolCall): ChatMessage {
         return try {
             withContext(Dispatchers.IO) {
                 LocalAiTools.executeToolCall(
                     context = appContext,
                     toolCall = toolCall,
+                    settings = settings,
                     onShellProcessStarted = { id, background ->
                         if (!background) {
                             activeForegroundShellProcessId = id

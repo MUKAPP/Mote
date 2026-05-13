@@ -48,6 +48,7 @@ data class ApiSettings(
     val apiKey: String = "",
     val model: String = "",
     val titleModel: String = "",
+    val searxngUrl: String = "",
     val reasoningEffort: String = "high"
 )
 

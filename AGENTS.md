@@ -69,6 +69,7 @@ app/src/main/java/com/mukapp/mote/
 | --- | --- | --- |
 | `read_file` | 读取文本文件 | `description`, `path`, `first_lines` 或 `start_line`/`end_line` |
 | `list_path` | 列出目录或文件信息 | `description`, `path`, `limit` |
+| `web_search` | 通过 SearXNG 搜索互联网 | `description`, `query`, `limit`, `page`, `language`, `categories`, `time_range`, `safesearch` |
 | `shell` | 执行 Shell 命令 | `description`, `command`, `work_dir`, `background`, `confirmation_id` |
 | `shell_status` | 查询后台进程 | `description`, `id` |
 | `shell_stop` | 停止后台进程 | `description`, `id` |
@@ -76,6 +77,7 @@ app/src/main/java/com/mukapp/mote/
 
 - 所有工具的 `description` 为必填，会直接作为工具标题展示给用户。
 - `read_file` 兼容别名 `read_local_file`；读取中间内容时使用 `start_line`/`end_line`，并且优先级高于模型误填的 `first_lines`。
+- `web_search` 仅在 `settings.searxngUrl` 非空时暴露；执行时使用该地址请求 `/search?format=json`，模型不能传入或覆盖 SearXNG 地址。
 - 工具调用最多循环 200 轮。
 - Shell 命令超过 30 秒会自动转为后台进程。
 - `confirmation_id` 只能由应用在用户确认高风险 Shell 后写入，模型不能自行构造。
@@ -99,7 +101,7 @@ app/src/main/java/com/mukapp/mote/
 
 ## 网络请求
 
-- 主聊天请求在 `ChatApiClient.streamChat()` 中构建，固定包含 `model`、`messages`、`stream=true`、`tools`。
+- 主聊天请求在 `ChatApiClient.streamChat()` 中构建，固定包含 `model`、`messages`、`stream=true`；`tools` 来自 `LocalAiTools.toolDefinitions(settings)`，其中搜索工具按 SearXNG 设置动态暴露。
 - `reasoning_effort` 仅在 `settings.reasoningEffort` 非空时发送。
 - 流式解析支持 SSE `delta.content`、`delta.reasoning_content`、`delta.tool_calls`。
 - 非流式回退支持 `message.content`、`message.reasoning_content`、`message.tool_calls`、`content` 数组和 `choices[0].text`。
@@ -132,7 +134,7 @@ app/src/main/java/com/mukapp/mote/
 ## 修改同步清单
 
 - 修改数据模型时，同步更新 `ChatHistoryStore` 的序列化和反序列化。
-- 修改 `ApiSettings.titleModel` 或设置字段时，同步更新 `ApiSettingsStore`。
+- 修改 `ApiSettings.titleModel`、`ApiSettings.searxngUrl` 或其他设置字段时，同步更新 `ApiSettingsStore`。
 - 修改 `ConversationSummary`、`SavedConversationState` 或历史根字段时，同步多对话索引、旧历史迁移和侧栏刷新逻辑。
 - 修改 `AssistantPart` 字段时，同步 `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter` 和工具结果展开状态。
 - 新增 AI 工具时，同步 `LocalAiTools` 的工具定义、执行逻辑和 `IntermediateStepsHelper.parseToolSummary`。

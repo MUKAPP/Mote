@@ -2,12 +2,16 @@ package com.mukapp.mote.tools
 
 import android.content.Context
 import com.mukapp.mote.data.model.AiToolCall
+import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.util.optIntOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,6 +22,7 @@ import java.util.concurrent.TimeUnit
 object LocalAiTools {
     private const val ReadFileToolName = "read_file"
     private const val ListPathToolName = "list_path"
+    private const val WebSearchToolName = "web_search"
     private const val ShellToolName = "shell"
     private const val ShellStatusToolName = "shell_status"
     private const val ShellStopToolName = "shell_stop"
@@ -25,6 +30,11 @@ object LocalAiTools {
 
     private const val MaxReadLines = 400
     private const val MaxListEntries = 200
+    private const val DefaultSearchResultLimit = 5
+    private const val MaxSearchResultLimit = 10
+    private const val MaxSearchQueryChars = 300
+    private const val MaxSearchSnippetChars = 600
+    private const val MaxSearchResponseChars = 1_000_000
     private const val ShellShortTimeoutMs = 30_000L
     private const val MaxShellOutputChars = 8000
     private const val ShellConfirmationTtlMs = 10 * 60 * 1000L
@@ -41,7 +51,7 @@ object LocalAiTools {
 
     private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
 
-    private val cachedToolDefinitions: JSONArray by lazy {
+    private val cachedBaseToolDefinitions: JSONArray by lazy {
         JSONArray()
             .put(buildReadFileDefinition())
             .put(buildListPathDefinition())
@@ -51,17 +61,27 @@ object LocalAiTools {
             .put(buildWaitDefinition())
     }
 
-    fun toolDefinitions(): JSONArray = cachedToolDefinitions
+    private val cachedWebSearchToolDefinition: JSONObject by lazy { buildWebSearchDefinition() }
+
+    fun toolDefinitions(settings: ApiSettings = ApiSettings()): JSONArray {
+        val definitions = JSONArray(cachedBaseToolDefinitions.toString())
+        if (settings.searxngUrl.isNotBlank()) {
+            definitions.put(JSONObject(cachedWebSearchToolDefinition.toString()))
+        }
+        return definitions
+    }
 
     fun executeToolCall(
         context: Context,
         toolCall: AiToolCall,
+        settings: ApiSettings = ApiSettings(),
         onShellProcessStarted: ((String, Boolean) -> Unit)? = null
     ): ChatMessage {
         val output = runCatching {
             when (toolCall.name) {
                 ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
                 ListPathToolName -> listPath(toolCall.arguments)
+                WebSearchToolName -> webSearch(settings, toolCall.arguments)
                 ShellToolName -> runShell(context, toolCall.arguments, onShellProcessStarted)
                 ShellStatusToolName -> checkShellStatus(toolCall.arguments)
                 ShellStopToolName -> stopShell(toolCall.arguments)
@@ -244,6 +264,184 @@ object LocalAiTools {
                 put("parent", target.parentFile?.path?.replace('\\', '/'))
             }.toString(2)
         }
+    }
+
+    internal fun webSearch(settings: ApiSettings, arguments: String): String {
+        val searxngBaseUrl = settings.searxngUrl.trim()
+        require(searxngBaseUrl.isNotEmpty()) { "SearXNG 地址未配置，无法执行搜索。" }
+
+        val payload = JSONObject(arguments)
+        val query = payload.optString("query").trim()
+        require(query.isNotEmpty()) { "query 不能为空。" }
+        require(query.length <= MaxSearchQueryChars) { "query 不能超过 $MaxSearchQueryChars 个字符。" }
+
+        val limit = payload.optIntOrNull("limit") ?: DefaultSearchResultLimit
+        require(limit > 0) { "limit 必须大于 0。" }
+        require(limit <= MaxSearchResultLimit) { "limit 不能超过 $MaxSearchResultLimit。" }
+
+        val page = payload.optIntOrNull("page") ?: 1
+        require(page > 0) { "page 必须大于 0。" }
+        require(page <= 20) { "page 不能超过 20。" }
+
+        val searchUrl = buildSearxngSearchUrl(
+            baseUrl = searxngBaseUrl,
+            query = query,
+            page = page,
+            language = payload.optString("language").trim().takeIf { it.isNotEmpty() },
+            categories = payload.optString("categories").trim().takeIf { it.isNotEmpty() },
+            timeRange = payload.optString("time_range").trim().takeIf { it.isNotEmpty() },
+            safesearch = payload.optIntOrNull("safesearch")
+        )
+        val connection = (URL(searchUrl).openConnection() as HttpURLConnection)
+        return try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("User-Agent", "Mote/1.0")
+
+            val statusCode = connection.responseCode
+            val responseText = readHttpResponseText(connection, statusCode, MaxSearchResponseChars)
+            if (statusCode !in 200..299) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("status", statusCode)
+                    put("error", "SearXNG 请求失败，HTTP $statusCode。")
+                    put("body", truncateOutput(responseText, maxChars = 1200))
+                }.toString(2)
+            }
+
+            val root = runCatching { JSONObject(responseText) }.getOrElse { error ->
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "SearXNG 返回的内容不是有效 JSON：${error.message ?: "解析失败"}")
+                    put("body", truncateOutput(responseText, maxChars = 1200))
+                }.toString(2)
+            }
+            formatSearchResults(query = query, page = page, limit = limit, root = root)
+        } finally {
+            runCatching { connection.disconnect() }
+        }
+    }
+
+    private fun buildSearxngSearchUrl(
+        baseUrl: String,
+        query: String,
+        page: Int,
+        language: String?,
+        categories: String?,
+        timeRange: String?,
+        safesearch: Int?
+    ): String {
+        val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
+        require(normalizedBaseUrl.startsWith("http://") || normalizedBaseUrl.startsWith("https://")) {
+            "SearXNG 地址需要以 http:// 或 https:// 开头。"
+        }
+
+        val endpoint = if (normalizedBaseUrl.endsWith("/search")) {
+            normalizedBaseUrl
+        } else {
+            "$normalizedBaseUrl/search"
+        }
+        val params = mutableListOf(
+            "q" to query,
+            "format" to "json",
+            "pageno" to page.toString()
+        )
+        language?.let { params += "language" to it }
+        categories?.let { params += "categories" to it }
+        timeRange?.let { params += "time_range" to it }
+        safesearch?.let { value ->
+            require(value in 0..2) { "safesearch 只能是 0、1 或 2。" }
+            params += "safesearch" to value.toString()
+        }
+
+        return endpoint + "?" + params.joinToString(separator = "&") { (key, value) ->
+            "${urlEncode(key)}=${urlEncode(value)}"
+        }
+    }
+
+    private fun readHttpResponseText(connection: HttpURLConnection, statusCode: Int, maxChars: Int): String {
+        val stream = if (statusCode in 200..299) {
+            connection.inputStream
+        } else {
+            connection.errorStream ?: return ""
+        }
+        val output = StringBuilder()
+        stream.bufferedReader(Charsets.UTF_8).use { reader ->
+            val buffer = CharArray(4096)
+            while (output.length <= maxChars) {
+                val read = reader.read(buffer)
+                if (read == -1) {
+                    break
+                }
+                val remaining = maxChars - output.length
+                output.append(buffer, 0, minOf(read, remaining.coerceAtLeast(0)))
+                if (read > remaining) {
+                    break
+                }
+            }
+        }
+        return output.toString()
+    }
+
+    private fun formatSearchResults(query: String, page: Int, limit: Int, root: JSONObject): String {
+        val rawResults = root.optJSONArray("results") ?: JSONArray()
+        val results = JSONArray()
+        var skipped = 0
+        for (index in 0 until rawResults.length()) {
+            val item = rawResults.optJSONObject(index) ?: continue
+            val title = item.optString("title").trim()
+            val url = item.optString("url").trim()
+            if (title.isBlank() && url.isBlank()) {
+                skipped++
+                continue
+            }
+            if (results.length() >= limit) {
+                skipped++
+                continue
+            }
+            results.put(
+                JSONObject().apply {
+                    put("title", title)
+                    put("url", url)
+                    item.optString("content").trim().takeIf { it.isNotEmpty() }?.let { content ->
+                        put("content", truncateSearchSnippet(content))
+                    }
+                    item.optString("engine").trim().takeIf { it.isNotEmpty() }?.let { put("engine", it) }
+                    item.optString("category").trim().takeIf { it.isNotEmpty() }?.let { put("category", it) }
+                    item.optString("publishedDate").trim().takeIf { it.isNotEmpty() }?.let {
+                        put("publishedDate", it)
+                    }
+                }
+            )
+        }
+
+        return JSONObject().apply {
+            put("ok", true)
+            put("query", root.optString("query").takeIf { it.isNotBlank() } ?: query)
+            put("page", page)
+            put("returned", results.length())
+            put("available", root.optInt("number_of_results", rawResults.length()))
+            put("has_more", rawResults.length() > results.length() || skipped > 0)
+            put("results", results)
+            root.optJSONArray("answers")?.takeIf { it.length() > 0 }?.let { put("answers", it) }
+            root.optJSONArray("suggestions")?.takeIf { it.length() > 0 }?.let { put("suggestions", it) }
+            root.optJSONArray("infoboxes")?.takeIf { it.length() > 0 }?.let { put("infoboxes", it) }
+        }.toString(2)
+    }
+
+    private fun truncateSearchSnippet(text: String): String {
+        val compact = text.replace(Regex("\\s+"), " ").trim()
+        return if (compact.length <= MaxSearchSnippetChars) {
+            compact
+        } else {
+            compact.take(MaxSearchSnippetChars) + "..."
+        }
+    }
+
+    private fun urlEncode(value: String): String {
+        return URLEncoder.encode(value, Charsets.UTF_8.name())
     }
 
     private fun truncateOutput(text: String, maxChars: Int = MaxShellOutputChars): String {
@@ -473,6 +671,84 @@ object LocalAiTools {
                                 }
                             )
                             put("required", JSONArray().put("description").put("path"))
+                            put("additionalProperties", false)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    private fun buildWebSearchDefinition(): JSONObject {
+        return JSONObject().apply {
+            put("type", "function")
+            put(
+                "function",
+                JSONObject().apply {
+                    put("name", WebSearchToolName)
+                    put("description", "使用用户在设置中配置的 SearXNG 实例搜索互联网。适合查询最新信息、网页资料、新闻或需要来源链接的问题。应用会通过 /search 端点追加 format=json 请求；不要在参数里传入搜索服务地址。")
+                    put(
+                        "parameters",
+                        JSONObject().apply {
+                            put("type", "object")
+                            put(
+                                "properties",
+                                JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
+                                    put(
+                                        "query",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "搜索关键词，使用与用户问题最匹配的自然语言或关键词，最大 300 个字符。")
+                                        }
+                                    )
+                                    put(
+                                        "limit",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "最多返回多少条结果，默认 5，最大 10。")
+                                        }
+                                    )
+                                    put(
+                                        "page",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "搜索结果页码，默认 1，最大 20。")
+                                        }
+                                    )
+                                    put(
+                                        "language",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "可选的搜索语言代码，例如 zh-CN、en-US 或 all。")
+                                        }
+                                    )
+                                    put(
+                                        "categories",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "可选的 SearXNG 分类，多个分类用英文逗号分隔，例如 general、news、it、science。")
+                                        }
+                                    )
+                                    put(
+                                        "time_range",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "可选的时间范围，例如 day、week、month 或 year。")
+                                            put("enum", JSONArray().put("day").put("week").put("month").put("year"))
+                                        }
+                                    )
+                                    put(
+                                        "safesearch",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "可选的安全搜索等级：0 关闭，1 中等，2 严格。")
+                                            put("enum", JSONArray().put(0).put(1).put(2))
+                                        }
+                                    )
+                                }
+                            )
+                            put("required", JSONArray().put("description").put("query"))
                             put("additionalProperties", false)
                         }
                     )
