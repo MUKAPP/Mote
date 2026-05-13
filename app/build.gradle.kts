@@ -62,6 +62,7 @@ dependencies {
         exclude(group = "org.jetbrains", module = "annotations-java5")
     }
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

@@ -111,15 +111,16 @@ object LocalAiTools {
         return !payload.optBoolean("ok", true) && payload.optBoolean("needs_confirmation", false)
     }
 
-    @Suppress("UNUSED_PARAMETER")
-    private fun readFile(arguments: String): String {
+    internal fun readFile(arguments: String): String {
         val payload = JSONObject(arguments)
         val rawPath = payload.optString("path").trim()
         require(rawPath.isNotEmpty()) { "path 不能为空。" }
 
-        val firstLines = payload.optIntOrNull("first_lines")
+        val rawFirstLines = payload.optIntOrNull("first_lines")
         val rawStartLine = payload.optIntOrNull("start_line")
         val rawEndLine = payload.optIntOrNull("end_line")
+        val hasExplicitRange = rawStartLine != null || rawEndLine != null
+        val firstLines = rawFirstLines?.takeIf { it > 0 || !hasExplicitRange }
 
         val targetFile = File(rawPath).canonicalFile
         require(targetFile.exists() && targetFile.isFile) { "文件不存在。" }
@@ -130,17 +131,17 @@ object LocalAiTools {
         // 未提供任何行范围参数时，默认读取前 200 行
         val defaultFirstLines = 200
 
-        val (actualStartLine, actualEndLine) = if (firstLines != null) {
-            require(firstLines > 0) { "first_lines 必须大于 0。" }
-            require(firstLines <= MaxReadLines) { "first_lines 不能超过 $MaxReadLines。" }
-            1 to firstLines
-        } else if (rawStartLine != null || rawEndLine != null) {
-            // 将 0 自动修正为 1，兼容 0-based 行号
+        val (actualStartLine, actualEndLine) = if (hasExplicitRange) {
+            // 模型有时会同时补 first_lines，占位值不应覆盖明确的行号范围。
             val startLine = maxOf(rawStartLine ?: 1, 1)
             val endLine = maxOf(rawEndLine ?: startLine, startLine)
             val requestedLines = endLine - startLine + 1
             require(requestedLines <= MaxReadLines) { "单次读取行数不能超过 $MaxReadLines。" }
             startLine to endLine
+        } else if (firstLines != null) {
+            require(firstLines > 0) { "first_lines 必须大于 0。" }
+            require(firstLines <= MaxReadLines) { "first_lines 不能超过 $MaxReadLines。" }
+            1 to firstLines
         } else {
             // 都没提供，默认读取前 defaultFirstLines 行
             1 to defaultFirstLines
@@ -391,7 +392,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ReadFileToolName)
-                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。")
+                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line；即使同时误填 first_lines，也会优先按 start_line/end_line 读取。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -411,14 +412,14 @@ object LocalAiTools {
                                         "first_lines",
                                         JSONObject().apply {
                                             put("type", "integer")
-                                            put("description", "读取文件前多少行。与 start_line/end_line 二选一使用。")
+                                            put("description", "读取文件前多少行。只在不提供 start_line/end_line 时生效；如果需要读取中间内容，不要填写此字段。")
                                         }
                                     )
                                     put(
                                         "start_line",
                                         JSONObject().apply {
                                             put("type", "integer")
-                                            put("description", "起始行号，从 1 开始（传入 0 会自动修正为 1）。需要和 end_line 一起使用。")
+                                            put("description", "起始行号，从 1 开始（传入 0 会自动修正为 1）。读取中间内容时优先使用此字段，可与 end_line 一起使用。")
                                         }
                                     )
                                     put(

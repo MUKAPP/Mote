@@ -75,7 +75,7 @@ app/src/main/java/com/mukapp/mote/
 | `wait` | 等待后继续工具循环 | `description`, `seconds` |
 
 - 所有工具的 `description` 为必填，会直接作为工具标题展示给用户。
-- `read_file` 兼容别名 `read_local_file`。
+- `read_file` 兼容别名 `read_local_file`；读取中间内容时使用 `start_line`/`end_line`，并且优先级高于模型误填的 `first_lines`。
 - 工具调用最多循环 200 轮。
 - Shell 命令超过 30 秒会自动转为后台进程。
 - `confirmation_id` 只能由应用在用户确认高风险 Shell 后写入，模型不能自行构造。
