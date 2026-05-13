@@ -1147,7 +1147,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ReadFileToolName)
-                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line；即使同时误填 first_lines，也会优先按 start_line/end_line 读取。")
+                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -1167,14 +1167,14 @@ object LocalAiTools {
                                         "first_lines",
                                         JSONObject().apply {
                                             put("type", "integer")
-                                            put("description", "读取文件前多少行。只在不提供 start_line/end_line 时生效；如果需要读取中间内容，不要填写此字段。")
+                                            put("description", "读取文件前多少行。只在不提供 start_line/end_line 时生效。")
                                         }
                                     )
                                     put(
                                         "start_line",
                                         JSONObject().apply {
                                             put("type", "integer")
-                                            put("description", "起始行号，从 1 开始（传入 0 会自动修正为 1）。读取中间内容时优先使用此字段，可与 end_line 一起使用。")
+                                            put("description", "起始行号，从 1 开始。读取中间内容时优先使用此字段，可与 end_line 一起使用。")
                                         }
                                     )
                                     put(
@@ -1243,7 +1243,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", FetchUrlToolName)
-                    put("description", "通过 HTTP GET 获取一个 http/https URL 的内容。支持 raw 原始响应文本、text 纯文本提取和 markdown HTML 转 Markdown 输出。适合读取搜索结果中的网页、文档或接口文本响应。")
+                    put("description", "通过 HTTP GET 获取一个 http/https URL 的内容。支持 markdown、 raw 原始网页和 text 纯文本。适合读取搜索结果中的网页、文档或接口文本响应。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -1263,7 +1263,7 @@ object LocalAiTools {
                                         "output_format",
                                         JSONObject().apply {
                                             put("type", "string")
-                                            put("description", "输出格式：text 提取可读纯文本，raw 返回原始响应文本，markdown 将 HTML 转为 Markdown。默认 text。")
+                                            put("description", "输出格式：text 提取可读纯文本，raw 返回原始网页，markdown 将 HTML 转为 Markdown。默认 text。")
                                             put("enum", JSONArray().put("text").put("raw").put("markdown"))
                                         }
                                     )
@@ -1312,7 +1312,7 @@ object LocalAiTools {
                                         "output_format",
                                         JSONObject().apply {
                                             put("type", "string")
-                                            put("description", "输出格式：text 返回渲染后的 innerText，raw 返回渲染后的 outerHTML，markdown 将渲染后的 HTML 转为 Markdown。默认 text。")
+                                            put("description", "输出格式：text 提取可读纯文本，raw 返回原始网页，markdown 将 HTML 转为 Markdown。默认 text。")
                                             put("enum", JSONArray().put("text").put("raw").put("markdown"))
                                         }
                                     )
@@ -1355,7 +1355,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", WebSearchToolName)
-                    put("description", "使用用户在设置中配置的 SearXNG 实例搜索互联网。适合查询最新信息、网页资料、新闻或需要来源链接的问题。应用会通过 /search 端点追加 format=json 请求；不要在参数里传入搜索服务地址。")
+                    put("description", "使用 SearXNG 搜索互联网。适合查询最新信息、网页资料、新闻或需要来源链接的问题。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -1396,7 +1396,7 @@ object LocalAiTools {
                                         "categories",
                                         JSONObject().apply {
                                             put("type", "string")
-                                            put("description", "可选的 SearXNG 分类，多个分类用英文逗号分隔，例如 general、news、it、science。")
+                                            put("description", "可选的分类，多个分类用英文逗号分隔，例如 general、news、it、science。")
                                         }
                                     )
                                     put(
@@ -1433,7 +1433,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ShellToolName)
-                    put("description", "在设备上执行 shell 命令。短命令会等待完成并返回输出；长命令可设为后台运行，然后用 shell_status 查询状态。如果命令超过 30 秒未完成会自动转为后台运行。")
+                    put("description", "在设备上执行 shell 命令。短命令会等待完成并返回输出；长命令可设为后台运行，用 shell_status 查询状态。如果命令超过 30 秒未完成会自动转为后台运行。")
                     put(
                         "parameters",
                         JSONObject().apply {
