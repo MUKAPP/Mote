@@ -17,6 +17,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
 import com.google.android.material.card.MaterialCardView
 import com.mukapp.mote.R
@@ -652,10 +653,13 @@ class MarkdownView @JvmOverloads constructor(
         binding.root.layoutParams = createBlockLayoutParams()
         val expanded = expandedToolPartIds.contains(toolPart.id)
 
+        binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
+
+        val summary = IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)
         binding.textSummary.text = if (toolPart.isLoading) {
-            "⏳ ${IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)}"
+            context.getString(R.string.tool_summary_loading, summary)
         } else {
-            IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)
+            summary
         }
 
         var detailPopulated = false
@@ -696,6 +700,22 @@ class MarkdownView @JvmOverloads constructor(
         }
         binding.layoutHeader.setOnClickListener(toggle)
         return binding.root
+    }
+
+    @DrawableRes
+    private fun toolIconRes(toolName: String): Int {
+        return when (toolName) {
+            "read_file", "read_local_file" -> R.drawable.ic_description
+            "list_path" -> R.drawable.ic_folder_open
+            "fetch_url" -> R.drawable.ic_link
+            "fetch_webview" -> R.drawable.ic_web_asset
+            "web_search" -> R.drawable.ic_travel_explore
+            "shell" -> R.drawable.ic_terminal
+            "shell_status" -> R.drawable.ic_manage_search
+            "shell_stop" -> R.drawable.ic_stop_circle
+            "wait" -> R.drawable.ic_hourglass_empty
+            else -> R.drawable.ic_build
+        }
     }
 
     private fun createBlockView(

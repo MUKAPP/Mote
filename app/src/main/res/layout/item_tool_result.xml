@@ -24,12 +24,14 @@
             android:orientation="horizontal"
             android:padding="12dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+            <ImageView
+                android:id="@+id/image_tool_icon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
                 android:layout_marginEnd="8dp"
-                android:text="🔧"
-                android:textAppearance="?attr/textAppearanceLabelLarge" />
+                android:contentDescription="@null"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_build" />
 
             <TextView
                 android:id="@+id/text_summary"
