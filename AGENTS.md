@@ -69,6 +69,8 @@ app/src/main/java/com/mukapp/mote/
 | --- | --- | --- |
 | `read_file` | 读取文本文件 | `description`, `path`, `first_lines` 或 `start_line`/`end_line` |
 | `list_path` | 列出目录或文件信息 | `description`, `path`, `limit` |
+| `fetch_url` | 获取网页或文本 URL 内容 | `description`, `url`, `output_format`, `max_chars` |
+| `fetch_webview` | 用隐藏 WebView 渲染网页后提取内容 | `description`, `url`, `output_format`, `max_chars`, `timeout_seconds`, `settle_ms` |
 | `web_search` | 通过 SearXNG 搜索互联网 | `description`, `query`, `limit`, `page`, `language`, `categories`, `time_range`, `safesearch` |
 | `shell` | 执行 Shell 命令 | `description`, `command`, `work_dir`, `background`, `confirmation_id` |
 | `shell_status` | 查询后台进程 | `description`, `id` |
@@ -77,6 +79,8 @@ app/src/main/java/com/mukapp/mote/
 
 - 所有工具的 `description` 为必填，会直接作为工具标题展示给用户。
 - `read_file` 兼容别名 `read_local_file`；读取中间内容时使用 `start_line`/`end_line`，并且优先级高于模型误填的 `first_lines`。
+- `fetch_url` 只允许 `http`/`https`，支持 `output_format=text|raw|markdown`；HTML 转 Markdown 使用 `flexmark-html2md-converter`。
+- `fetch_webview` 只允许 `http`/`https`，会在主线程创建不可见 WebView，启用 JavaScript 和 DOM Storage，等待页面完成与 `settle_ms` 后提取渲染后的 `innerText` 或 `outerHTML`；仅在 `fetch_url` 无法获得动态内容时使用。
 - `web_search` 仅在 `settings.searxngUrl` 非空时暴露；执行时使用该地址请求 `/search?format=json`，模型不能传入或覆盖 SearXNG 地址。
 - 工具调用最多循环 200 轮。
 - Shell 命令超过 30 秒会自动转为后台进程。

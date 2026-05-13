@@ -30,6 +30,8 @@ object IntermediateStepsHelper {
             "shell_status" -> "shell_status: 进程 ${json.optString("id", "")}"
             "shell_stop" -> "shell_stop: 进程 ${json.optString("id", "")}"
             "wait" -> "wait: ${json.optInt("seconds", 0)}秒"
+            "fetch_url" -> "fetch_url: ${json.optString("url", "").trim()}"
+            "fetch_webview" -> "fetch_webview: ${json.optString("url", "").trim()}"
             "web_search" -> "web_search: ${json.optString("query", "").trim()}"
             else -> {
                 val firstValue = json.keys().asSequence().firstOrNull()

@@ -19,6 +19,20 @@ import kotlin.io.path.writeText
 class LocalAiToolsTest {
 
     @Test
+    fun toolDefinitionsExposeFetchUrlByDefault() {
+        val definitions = LocalAiTools.toolDefinitions()
+
+        assertTrue(definitions.hasTool("fetch_url"))
+    }
+
+    @Test
+    fun toolDefinitionsExposeFetchWebViewByDefault() {
+        val definitions = LocalAiTools.toolDefinitions()
+
+        assertTrue(definitions.hasTool("fetch_webview"))
+    }
+
+    @Test
     fun toolDefinitionsDoNotExposeWebSearchWhenSearxngUrlIsBlank() {
         val definitions = LocalAiTools.toolDefinitions(ApiSettings(searxngUrl = ""))
 
@@ -47,6 +61,177 @@ class LocalAiToolsTest {
         }
 
         assertEquals("SearXNG 地址未配置，无法执行搜索。", error.message)
+    }
+
+    @Test
+    fun fetchUrlRejectsNonHttpScheme() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            LocalAiTools.fetchUrl(
+                JSONObject()
+                    .put("description", "读取本地文件")
+                    .put("url", "file:///sdcard/test.txt")
+                    .toString()
+            )
+        }
+
+        assertEquals("url 只支持 http 或 https。", error.message)
+    }
+
+    @Test
+    fun fetchWebViewOptionsRejectNonHttpScheme() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            LocalAiTools.parseFetchWebViewOptions(
+                JSONObject()
+                    .put("description", "渲染本地文件")
+                    .put("url", "file:///sdcard/index.html")
+                    .toString()
+            )
+        }
+
+        assertEquals("url 只支持 http 或 https。", error.message)
+    }
+
+    @Test
+    fun fetchWebViewOptionsValidateTimeoutAndSettleMs() {
+        val timeoutError = assertThrows(IllegalArgumentException::class.java) {
+            LocalAiTools.parseFetchWebViewOptions(
+                JSONObject()
+                    .put("description", "渲染网页")
+                    .put("url", "https://example.org")
+                    .put("timeout_seconds", 61)
+                    .toString()
+            )
+        }
+        val settleError = assertThrows(IllegalArgumentException::class.java) {
+            LocalAiTools.parseFetchWebViewOptions(
+                JSONObject()
+                    .put("description", "渲染网页")
+                    .put("url", "https://example.org")
+                    .put("settle_ms", 10_001)
+                    .toString()
+            )
+        }
+
+        assertEquals("timeout_seconds 不能超过 60。", timeoutError.message)
+        assertEquals("settle_ms 不能超过 10000。", settleError.message)
+    }
+
+    @Test
+    fun fetchWebViewOptionsParseDefaultsAndOutputFormat() {
+        val options = LocalAiTools.parseFetchWebViewOptions(
+            JSONObject()
+                .put("description", "渲染网页")
+                .put("url", "https://example.org/page")
+                .put("output_format", "markdown")
+                .put("max_chars", 1234)
+                .toString()
+        )
+
+        assertEquals("https://example.org/page", options.url.toString())
+        assertEquals("markdown", options.outputFormat)
+        assertEquals(1234, options.maxChars)
+        assertEquals(20, options.timeoutSeconds)
+        assertEquals(1000, options.settleMs)
+    }
+
+    @Test
+    fun fetchUrlExtractsPlainTextFromHtmlByDefault() {
+        val server = createFetchTestServer()
+        server.start()
+        try {
+            val result = JSONObject(
+                LocalAiTools.fetchUrl(
+                    JSONObject()
+                        .put("description", "读取 HTML 文本")
+                        .put("url", "http://127.0.0.1:${server.address.port}/html")
+                        .toString()
+                )
+            )
+
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("text", result.getString("output_format"))
+            assertTrue(result.getString("content").contains("标题 & 内容"))
+            assertTrue(result.getString("content").contains("第一段文本"))
+            assertFalse(result.getString("content").contains("secret"))
+            assertFalse(result.getString("content").contains("<h1>"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun fetchUrlReturnsRawResponseText() {
+        val server = createFetchTestServer()
+        server.start()
+        try {
+            val result = JSONObject(
+                LocalAiTools.fetchUrl(
+                    JSONObject()
+                        .put("description", "读取原始 HTML")
+                        .put("url", "http://127.0.0.1:${server.address.port}/html")
+                        .put("output_format", "raw")
+                        .toString()
+                )
+            )
+
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("raw", result.getString("output_format"))
+            assertTrue(result.getString("content").contains("<h1>标题 &amp; 内容</h1>"))
+            assertTrue(result.getString("content").contains("secret"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun fetchUrlConvertsHtmlToMarkdown() {
+        val server = createFetchTestServer()
+        server.start()
+        try {
+            val result = JSONObject(
+                LocalAiTools.fetchUrl(
+                    JSONObject()
+                        .put("description", "读取 Markdown")
+                        .put("url", "http://127.0.0.1:${server.address.port}/html")
+                        .put("output_format", "markdown")
+                        .toString()
+                )
+            )
+
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("markdown", result.getString("output_format"))
+            assertEquals(true, result.getBoolean("converted"))
+            assertTrue(result.getString("content").contains("标题"))
+            assertTrue(result.getString("content").contains("内容"))
+            assertTrue(result.getString("content").contains("[链接](https://example.org/page)"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun fetchUrlFollowsRedirectsAndTruncatesContent() {
+        val server = createFetchTestServer()
+        server.start()
+        try {
+            val result = JSONObject(
+                LocalAiTools.fetchUrl(
+                    JSONObject()
+                        .put("description", "读取跳转文本")
+                        .put("url", "http://127.0.0.1:${server.address.port}/redirect")
+                        .put("max_chars", 5)
+                        .toString()
+                )
+            )
+
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("http://127.0.0.1:${server.address.port}/plain", result.getString("final_url"))
+            assertEquals(1, result.getJSONArray("redirects").length())
+            assertEquals(true, result.getBoolean("truncated"))
+            assertEquals("纯文本响应", result.getString("content"))
+        } finally {
+            server.stop(0)
+        }
     }
 
     @Test
@@ -287,6 +472,46 @@ class LocalAiToolsTest {
                         URLDecoder.decode(pair.substring(separator + 1), Charsets.UTF_8.name())
             }
             .toMap()
+    }
+
+    private fun createFetchTestServer(): HttpServer {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/html") { exchange ->
+            val response = """
+                <!doctype html>
+                <html>
+                  <head><title>测试页面</title><style>.hidden { display: none; }</style></head>
+                  <body>
+                    <h1>标题 &amp; 内容</h1>
+                    <script>var secret = true;</script>
+                    <p>第一段文本</p>
+                    <a href="https://example.org/page">链接</a>
+                  </body>
+                </html>
+            """.trimIndent()
+            sendResponse(exchange, 200, "text/html; charset=utf-8", response)
+        }
+        server.createContext("/plain") { exchange ->
+            sendResponse(exchange, 200, "text/plain; charset=utf-8", "纯文本响应内容")
+        }
+        server.createContext("/redirect") { exchange ->
+            exchange.responseHeaders.add("Location", "/plain")
+            exchange.sendResponseHeaders(302, -1)
+            exchange.close()
+        }
+        return server
+    }
+
+    private fun sendResponse(
+        exchange: com.sun.net.httpserver.HttpExchange,
+        statusCode: Int,
+        contentType: String,
+        body: String
+    ) {
+        val response = body.toByteArray(Charsets.UTF_8)
+        exchange.responseHeaders.add("Content-Type", contentType)
+        exchange.sendResponseHeaders(statusCode, response.size.toLong())
+        exchange.responseBody.use { output -> output.write(response) }
     }
 
     private fun createTempLineFile(lineCount: Int): File {

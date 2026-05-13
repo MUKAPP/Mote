@@ -1,27 +1,48 @@
 package com.mukapp.mote.tools
 
 import android.content.Context
+import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.util.optIntOrNull
 import org.json.JSONArray
+import org.json.JSONTokener
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 object LocalAiTools {
     private const val ReadFileToolName = "read_file"
     private const val ListPathToolName = "list_path"
+    private const val FetchUrlToolName = "fetch_url"
+    private const val FetchWebViewToolName = "fetch_webview"
     private const val WebSearchToolName = "web_search"
     private const val ShellToolName = "shell"
     private const val ShellStatusToolName = "shell_status"
@@ -30,6 +51,15 @@ object LocalAiTools {
 
     private const val MaxReadLines = 400
     private const val MaxListEntries = 200
+    private const val DefaultFetchMaxChars = 20_000
+    private const val MaxFetchMaxChars = 100_000
+    private const val MaxFetchResponseBytes = 1_000_000
+    private const val MaxFetchRedirects = 5
+    private const val DefaultWebViewTimeoutSeconds = 20
+    private const val MaxWebViewTimeoutSeconds = 60
+    private const val DefaultWebViewSettleMs = 1_000
+    private const val MaxWebViewSettleMs = 10_000
+    private const val MaxWebViewExtractChars = 1_000_000
     private const val DefaultSearchResultLimit = 5
     private const val MaxSearchResultLimit = 10
     private const val MaxSearchQueryChars = 300
@@ -49,12 +79,28 @@ object LocalAiTools {
         @Volatile var active: Boolean = false
     )
 
+    internal data class WebViewFetchOptions(
+        val url: URL,
+        val outputFormat: String,
+        val maxChars: Int,
+        val timeoutSeconds: Int,
+        val settleMs: Int
+    )
+
+    private data class WebViewExtractedPage(
+        val finalUrl: String,
+        val title: String,
+        val content: String
+    )
+
     private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
 
     private val cachedBaseToolDefinitions: JSONArray by lazy {
         JSONArray()
             .put(buildReadFileDefinition())
             .put(buildListPathDefinition())
+            .put(buildFetchUrlDefinition())
+            .put(buildFetchWebViewDefinition())
             .put(buildShellDefinition())
             .put(buildShellStatusDefinition())
             .put(buildShellStopDefinition())
@@ -81,6 +127,8 @@ object LocalAiTools {
             when (toolCall.name) {
                 ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
                 ListPathToolName -> listPath(toolCall.arguments)
+                FetchUrlToolName -> fetchUrl(toolCall.arguments)
+                FetchWebViewToolName -> fetchWebView(context, toolCall.arguments)
                 WebSearchToolName -> webSearch(settings, toolCall.arguments)
                 ShellToolName -> runShell(context, toolCall.arguments, onShellProcessStarted)
                 ShellStatusToolName -> checkShellStatus(toolCall.arguments)
@@ -264,6 +312,515 @@ object LocalAiTools {
                 put("parent", target.parentFile?.path?.replace('\\', '/'))
             }.toString(2)
         }
+    }
+
+    internal fun fetchUrl(arguments: String): String {
+        val payload = JSONObject(arguments)
+        val rawUrl = payload.optString("url").trim()
+        require(rawUrl.isNotEmpty()) { "url 不能为空。" }
+        val outputFormat = parseFetchOutputFormat(payload)
+        val maxChars = parseFetchMaxChars(payload)
+        val initialUrl = normalizeFetchUrl(rawUrl)
+        return fetchUrlWithRedirects(initialUrl = initialUrl, outputFormat = outputFormat, maxChars = maxChars)
+    }
+
+    private fun parseFetchOutputFormat(payload: JSONObject): String {
+        val outputFormat = payload.optString("output_format", "text")
+            .trim()
+            .lowercase(Locale.ROOT)
+            .ifBlank { "text" }
+        require(outputFormat in setOf("text", "raw", "markdown")) {
+            "output_format 只能是 text、raw 或 markdown。"
+        }
+        return outputFormat
+    }
+
+    private fun parseFetchMaxChars(payload: JSONObject): Int {
+        val maxChars = payload.optIntOrNull("max_chars") ?: DefaultFetchMaxChars
+        require(maxChars > 0) { "max_chars 必须大于 0。" }
+        require(maxChars <= MaxFetchMaxChars) { "max_chars 不能超过 $MaxFetchMaxChars。" }
+        return maxChars
+    }
+
+    private fun fetchUrlWithRedirects(initialUrl: URL, outputFormat: String, maxChars: Int): String {
+        var currentUrl = initialUrl
+        val redirects = JSONArray()
+        repeat(MaxFetchRedirects + 1) { redirectCount ->
+            val connection = (currentUrl.openConnection() as HttpURLConnection)
+            try {
+                connection.instanceFollowRedirects = false
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.setRequestProperty("Accept", buildFetchAcceptHeader(outputFormat))
+                connection.setRequestProperty("User-Agent", "Mote/1.0")
+
+                val statusCode = connection.responseCode
+                if (statusCode in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                    if (location.isNullOrBlank()) {
+                        return JSONObject().apply {
+                            put("ok", false)
+                            put("url", initialUrl.toString())
+                            put("final_url", currentUrl.toString())
+                            put("status", statusCode)
+                            put("error", "重定向响应缺少 Location。")
+                            put("redirects", redirects)
+                        }.toString(2)
+                    }
+                    if (redirectCount >= MaxFetchRedirects) {
+                        return JSONObject().apply {
+                            put("ok", false)
+                            put("url", initialUrl.toString())
+                            put("final_url", currentUrl.toString())
+                            put("status", statusCode)
+                            put("error", "重定向次数超过 $MaxFetchRedirects 次。")
+                            put("redirects", redirects)
+                        }.toString(2)
+                    }
+                    val nextUrl = normalizeFetchUrl(currentUrl.toURI().resolve(location).toString())
+                    redirects.put(
+                        JSONObject().apply {
+                            put("from", currentUrl.toString())
+                            put("to", nextUrl.toString())
+                            put("status", statusCode)
+                        }
+                    )
+                    currentUrl = nextUrl
+                    return@repeat
+                }
+
+                val contentType = connection.contentType.orEmpty()
+                val responseBody = readHttpResponseBody(connection, statusCode, MaxFetchResponseBytes)
+                if (statusCode !in 200..299) {
+                    return JSONObject().apply {
+                        put("ok", false)
+                        put("url", initialUrl.toString())
+                        put("final_url", currentUrl.toString())
+                        put("status", statusCode)
+                        put("content_type", contentType)
+                        put("output_format", outputFormat)
+                        put("truncated", responseBody.truncated)
+                        put("redirects", redirects)
+                        put("error", "URL 请求失败，HTTP $statusCode。")
+                        put("content", decodeResponseBody(responseBody.bytes, contentType).take(maxChars))
+                    }.toString(2)
+                }
+
+                val bodyText = decodeResponseBody(responseBody.bytes, contentType)
+                if (!isTextualResponse(contentType, bodyText)) {
+                    return JSONObject().apply {
+                        put("ok", false)
+                        put("url", initialUrl.toString())
+                        put("final_url", currentUrl.toString())
+                        put("status", statusCode)
+                        put("content_type", contentType)
+                        put("output_format", outputFormat)
+                        put("truncated", responseBody.truncated)
+                        put("redirects", redirects)
+                        put("error", "响应看起来不是文本内容，fetch_url 不返回二进制数据。")
+                    }.toString(2)
+                }
+                val isHtml = isHtmlContent(contentType, bodyText)
+                val formattedContent = when (outputFormat) {
+                    "raw" -> bodyText
+                    "markdown" -> if (isHtml) htmlToMarkdown(bodyText) else bodyText
+                    else -> if (isHtml) htmlToPlainText(bodyText) else bodyText
+                }
+                val truncatedContent = formattedContent.length > maxChars
+                return JSONObject().apply {
+                    put("ok", true)
+                    put("url", initialUrl.toString())
+                    put("final_url", currentUrl.toString())
+                    put("status", statusCode)
+                    put("content_type", contentType)
+                    put("output_format", outputFormat)
+                    put("converted", outputFormat == "markdown" && isHtml)
+                    put("truncated", responseBody.truncated || truncatedContent)
+                    put("redirects", redirects)
+                    put("content", if (truncatedContent) formattedContent.take(maxChars) else formattedContent)
+                }.toString(2)
+            } finally {
+                runCatching { connection.disconnect() }
+            }
+        }
+
+        return JSONObject().apply {
+            put("ok", false)
+            put("url", initialUrl.toString())
+            put("final_url", currentUrl.toString())
+            put("error", "重定向处理失败。")
+            put("redirects", redirects)
+        }.toString(2)
+    }
+
+    internal fun parseFetchWebViewOptions(arguments: String): WebViewFetchOptions {
+        val payload = JSONObject(arguments)
+        val rawUrl = payload.optString("url").trim()
+        require(rawUrl.isNotEmpty()) { "url 不能为空。" }
+        val timeoutSeconds = payload.optIntOrNull("timeout_seconds") ?: DefaultWebViewTimeoutSeconds
+        require(timeoutSeconds > 0) { "timeout_seconds 必须大于 0。" }
+        require(timeoutSeconds <= MaxWebViewTimeoutSeconds) {
+            "timeout_seconds 不能超过 $MaxWebViewTimeoutSeconds。"
+        }
+        val settleMs = payload.optIntOrNull("settle_ms") ?: DefaultWebViewSettleMs
+        require(settleMs >= 0) { "settle_ms 不能小于 0。" }
+        require(settleMs <= MaxWebViewSettleMs) { "settle_ms 不能超过 $MaxWebViewSettleMs。" }
+        return WebViewFetchOptions(
+            url = normalizeFetchUrl(rawUrl),
+            outputFormat = parseFetchOutputFormat(payload),
+            maxChars = parseFetchMaxChars(payload),
+            timeoutSeconds = timeoutSeconds,
+            settleMs = settleMs
+        )
+    }
+
+    private fun fetchWebView(context: Context, arguments: String): String {
+        val options = parseFetchWebViewOptions(arguments)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return JSONObject().apply {
+                put("ok", false)
+                put("url", options.url.toString())
+                put("final_url", options.url.toString())
+                put("output_format", options.outputFormat)
+                put("error", "fetch_webview 不能在主线程同步执行。")
+            }.toString(2)
+        }
+
+        val result = AtomicReference<String>()
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            runCatching {
+                startFetchWebViewOnMainThread(context.applicationContext, options) { output ->
+                    result.set(output)
+                    latch.countDown()
+                }
+            }.onFailure { error ->
+                result.set(
+                    JSONObject().apply {
+                        put("ok", false)
+                        put("url", options.url.toString())
+                        put("final_url", options.url.toString())
+                        put("output_format", options.outputFormat)
+                        put("error", error.message ?: "WebView 初始化失败。")
+                    }.toString(2)
+                )
+                latch.countDown()
+            }
+        }
+        val completed = latch.await((options.timeoutSeconds + 5).toLong(), TimeUnit.SECONDS)
+        if (!completed) {
+            return JSONObject().apply {
+                put("ok", false)
+                put("url", options.url.toString())
+                put("final_url", options.url.toString())
+                put("output_format", options.outputFormat)
+                put("error", "WebView 抓取等待超时。")
+            }.toString(2)
+        }
+        return result.get().orEmpty()
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun startFetchWebViewOnMainThread(
+        context: Context,
+        options: WebViewFetchOptions,
+        onComplete: (String) -> Unit
+    ) {
+        val webView = WebView(context)
+        val completed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+
+        fun finishOnce(output: String) {
+            if (!completed.compareAndSet(false, true)) {
+                return
+            }
+            handler.removeCallbacksAndMessages(null)
+            runCatching {
+                webView.stopLoading()
+                webView.loadUrl("about:blank")
+                webView.destroy()
+            }
+            onComplete(output)
+        }
+
+        fun finishError(message: String, finalUrl: String = webView.url ?: options.url.toString()) {
+            finishOnce(
+                JSONObject().apply {
+                    put("ok", false)
+                    put("url", options.url.toString())
+                    put("final_url", finalUrl)
+                    put("output_format", options.outputFormat)
+                    put("truncated", false)
+                    put("error", message)
+                }.toString(2)
+            )
+        }
+
+        fun extractPage() {
+            if (completed.get()) {
+                return
+            }
+            val script = buildWebViewExtractionScript(options.outputFormat)
+            webView.evaluateJavascript(script) { value ->
+                if (completed.get()) {
+                    return@evaluateJavascript
+                }
+                val page = parseWebViewExtractedPage(value, webView.url ?: options.url.toString())
+                finishOnce(formatWebViewFetchResult(options, page))
+            }
+        }
+
+        webView.settings.javaScriptEnabled = true
+        webView.settings.domStorageEnabled = true
+        webView.settings.loadsImagesAutomatically = false
+        webView.settings.blockNetworkImage = true
+        webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        webView.layout(0, 0, 1, 1)
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val target = request?.url?.toString().orEmpty()
+                if (target.isBlank()) {
+                    return false
+                }
+                val allowed = runCatching { normalizeFetchUrl(target) }.isSuccess
+                if (!allowed) {
+                    finishError("WebView 跳转到了不支持的 URL。", target)
+                    return true
+                }
+                return false
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                if (url != null && runCatching { normalizeFetchUrl(url) }.isFailure) {
+                    finishError("WebView 跳转到了不支持的 URL。", url)
+                }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                handler.postDelayed({ extractPage() }, options.settleMs.toLong())
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    finishError("WebView 加载失败：${error?.description ?: "未知错误"}")
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    finishError("WebView 请求失败，HTTP ${errorResponse?.statusCode ?: 0}。")
+                }
+            }
+        }
+
+        handler.postDelayed({
+            finishError("WebView 加载超过 ${options.timeoutSeconds} 秒。")
+        }, options.timeoutSeconds * 1000L)
+
+        webView.loadUrl(options.url.toString())
+    }
+
+    private fun buildWebViewExtractionScript(outputFormat: String): String {
+        val expression = if (outputFormat == "raw" || outputFormat == "markdown") {
+            "document.documentElement ? document.documentElement.outerHTML : ''"
+        } else {
+            "document.body ? (document.body.innerText || document.body.textContent || '') : ''"
+        }
+        val maxChars = MaxWebViewExtractChars + 1
+        return """
+            (function() {
+                var content = String($expression || '');
+                return JSON.stringify({
+                    title: document.title || '',
+                    url: location.href || '',
+                    content: content.substring(0, $maxChars)
+                });
+            })();
+        """.trimIndent()
+    }
+
+    private fun parseWebViewExtractedPage(value: String?, fallbackUrl: String): WebViewExtractedPage {
+        val decoded = runCatching { JSONTokener(value ?: "").nextValue() }
+            .getOrNull()
+            ?.toString()
+            .orEmpty()
+        val payload = runCatching { JSONObject(decoded) }.getOrNull() ?: JSONObject()
+        return WebViewExtractedPage(
+            finalUrl = payload.optString("url").ifBlank { fallbackUrl },
+            title = payload.optString("title"),
+            content = payload.optString("content")
+        )
+    }
+
+    private fun formatWebViewFetchResult(options: WebViewFetchOptions, page: WebViewExtractedPage): String {
+        val sourceContent = if (page.content.length > MaxWebViewExtractChars) {
+            page.content.take(MaxWebViewExtractChars)
+        } else {
+            page.content
+        }
+        val formattedContent = when (options.outputFormat) {
+            "markdown" -> htmlToMarkdown(sourceContent)
+            "raw" -> sourceContent
+            else -> sourceContent
+        }
+        val truncatedContent = formattedContent.length > options.maxChars
+        return JSONObject().apply {
+            put("ok", true)
+            put("url", options.url.toString())
+            put("final_url", page.finalUrl)
+            put("title", page.title)
+            put("output_format", options.outputFormat)
+            put("rendered", true)
+            put("converted", options.outputFormat == "markdown")
+            put("truncated", truncatedContent || page.content.length > MaxWebViewExtractChars)
+            put("content", if (truncatedContent) formattedContent.take(options.maxChars) else formattedContent)
+        }.toString(2)
+    }
+
+    private fun normalizeFetchUrl(rawUrl: String): URL {
+        val uri = URI(rawUrl.trim()).normalize()
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        require(scheme == "http" || scheme == "https") { "url 只支持 http 或 https。" }
+        require(!uri.host.isNullOrBlank()) { "url 缺少主机名。" }
+        return uri.toURL()
+    }
+
+    private fun buildFetchAcceptHeader(outputFormat: String): String {
+        return when (outputFormat) {
+            "markdown" -> "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.6"
+            else -> "text/*,application/json,application/xml,*/*;q=0.6"
+        }
+    }
+
+    private data class HttpResponseBody(
+        val bytes: ByteArray,
+        val truncated: Boolean
+    )
+
+    private fun readHttpResponseBody(
+        connection: HttpURLConnection,
+        statusCode: Int,
+        maxBytes: Int
+    ): HttpResponseBody {
+        val stream = if (statusCode in 200..299) {
+            connection.inputStream
+        } else {
+            connection.errorStream ?: return HttpResponseBody(ByteArray(0), truncated = false)
+        }
+        val output = ByteArrayOutputStream()
+        var truncated = false
+        stream.use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) {
+                    break
+                }
+                val remaining = maxBytes - output.size()
+                if (remaining <= 0) {
+                    truncated = true
+                    break
+                }
+                if (read > remaining) {
+                    output.write(buffer, 0, remaining)
+                    truncated = true
+                    break
+                }
+                output.write(buffer, 0, read)
+            }
+        }
+        return HttpResponseBody(bytes = output.toByteArray(), truncated = truncated)
+    }
+
+    private fun decodeResponseBody(bytes: ByteArray, contentType: String): String {
+        if (bytes.isEmpty()) {
+            return ""
+        }
+        return bytes.toString(resolveCharset(contentType))
+    }
+
+    private fun resolveCharset(contentType: String): Charset {
+        val charsetName = contentType
+            .split(';')
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("charset=", ignoreCase = true) }
+            ?.substringAfter('=')
+            ?.trim()
+            ?.trim('"')
+        return charsetName
+            ?.let { runCatching { Charset.forName(it) }.getOrNull() }
+            ?: StandardCharsets.UTF_8
+    }
+
+    private fun isHtmlContent(contentType: String, text: String): Boolean {
+        val mediaType = contentType.substringBefore(';').trim().lowercase(Locale.ROOT)
+        if (mediaType == "text/html" || mediaType == "application/xhtml+xml") {
+            return true
+        }
+        val head = text.take(500).lowercase(Locale.ROOT)
+        return "<html" in head || "<!doctype html" in head
+    }
+
+    private fun isTextualResponse(contentType: String, text: String): Boolean {
+        val mediaType = contentType.substringBefore(';').trim().lowercase(Locale.ROOT)
+        if (mediaType.isBlank()) {
+            return !text.contains('\u0000')
+        }
+        return mediaType.startsWith("text/") ||
+                mediaType == "application/json" ||
+                mediaType == "application/xml" ||
+                mediaType == "application/xhtml+xml" ||
+                mediaType == "application/javascript" ||
+                mediaType == "application/x-javascript" ||
+                mediaType == "application/rss+xml" ||
+                mediaType == "application/atom+xml" ||
+                mediaType.endsWith("+json") ||
+                mediaType.endsWith("+xml")
+    }
+
+    private fun htmlToMarkdown(html: String): String {
+        return FlexmarkHtmlConverter.builder().build().convert(html).trim()
+    }
+
+    private fun htmlToPlainText(html: String): String {
+        return html
+            .replace(Regex("(?is)<(script|style|noscript)[^>]*>.*?</\\1>"), " ")
+            .replace(Regex("(?i)<br\\s*/?>"), "\n")
+            .replace(Regex("(?i)</(p|div|section|article|header|footer|main|li|tr|h[1-6])>"), "\n")
+            .replace(Regex("<[^>]+>"), " ")
+            .let { decodeHtmlEntities(it) }
+            .lines()
+            .map { line -> line.replace(Regex("[ \\t\\x0B\\f\\r]+"), " ").trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString(separator = "\n")
+    }
+
+    private fun decodeHtmlEntities(text: String): String {
+        return text
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace(Regex("&#(\\d+);")) { match ->
+                val codePoint = match.groupValues[1].toIntOrNull() ?: return@replace match.value
+                runCatching { String(Character.toChars(codePoint)) }.getOrDefault(match.value)
+            }
+            .replace(Regex("&#x([0-9a-fA-F]+);")) { match ->
+                val codePoint = match.groupValues[1].toIntOrNull(16) ?: return@replace match.value
+                runCatching { String(Character.toChars(codePoint)) }.getOrDefault(match.value)
+            }
     }
 
     internal fun webSearch(settings: ApiSettings, arguments: String): String {
@@ -671,6 +1228,118 @@ object LocalAiTools {
                                 }
                             )
                             put("required", JSONArray().put("description").put("path"))
+                            put("additionalProperties", false)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    private fun buildFetchUrlDefinition(): JSONObject {
+        return JSONObject().apply {
+            put("type", "function")
+            put(
+                "function",
+                JSONObject().apply {
+                    put("name", FetchUrlToolName)
+                    put("description", "通过 HTTP GET 获取一个 http/https URL 的内容。支持 raw 原始响应文本、text 纯文本提取和 markdown HTML 转 Markdown 输出。适合读取搜索结果中的网页、文档或接口文本响应。")
+                    put(
+                        "parameters",
+                        JSONObject().apply {
+                            put("type", "object")
+                            put(
+                                "properties",
+                                JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
+                                    put(
+                                        "url",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "要获取的 URL，只支持 http 或 https。")
+                                        }
+                                    )
+                                    put(
+                                        "output_format",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "输出格式：text 提取可读纯文本，raw 返回原始响应文本，markdown 将 HTML 转为 Markdown。默认 text。")
+                                            put("enum", JSONArray().put("text").put("raw").put("markdown"))
+                                        }
+                                    )
+                                    put(
+                                        "max_chars",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "返回 content 的最大字符数，默认 20000，最大 100000。")
+                                        }
+                                    )
+                                }
+                            )
+                            put("required", JSONArray().put("description").put("url"))
+                            put("additionalProperties", false)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    private fun buildFetchWebViewDefinition(): JSONObject {
+        return JSONObject().apply {
+            put("type", "function")
+            put(
+                "function",
+                JSONObject().apply {
+                    put("name", FetchWebViewToolName)
+                    put("description", "使用不可见 WebView 加载完整网页，执行页面 JavaScript 后提取渲染后的内容。适合普通 fetch_url 拿不到动态内容时使用；比 fetch_url 更慢且更耗资源。")
+                    put(
+                        "parameters",
+                        JSONObject().apply {
+                            put("type", "object")
+                            put(
+                                "properties",
+                                JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
+                                    put(
+                                        "url",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "要加载的网页 URL，只支持 http 或 https。")
+                                        }
+                                    )
+                                    put(
+                                        "output_format",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "输出格式：text 返回渲染后的 innerText，raw 返回渲染后的 outerHTML，markdown 将渲染后的 HTML 转为 Markdown。默认 text。")
+                                            put("enum", JSONArray().put("text").put("raw").put("markdown"))
+                                        }
+                                    )
+                                    put(
+                                        "max_chars",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "返回 content 的最大字符数，默认 20000，最大 100000。")
+                                        }
+                                    )
+                                    put(
+                                        "timeout_seconds",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "WebView 加载超时时间，默认 20 秒，最大 60 秒。")
+                                        }
+                                    )
+                                    put(
+                                        "settle_ms",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "页面 onPageFinished 后继续等待的毫秒数，用于等待异步渲染，默认 1000，最大 10000。")
+                                        }
+                                    )
+                                }
+                            )
+                            put("required", JSONArray().put("description").put("url"))
                             put("additionalProperties", false)
                         }
                     )

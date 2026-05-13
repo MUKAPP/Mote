@@ -61,6 +61,7 @@ dependencies {
     implementation(libs.prism4j.core) {
         exclude(group = "org.jetbrains", module = "annotations-java5")
     }
+    implementation(libs.flexmark.html2md.converter)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     androidTestImplementation(libs.androidx.junit)

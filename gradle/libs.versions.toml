@@ -15,6 +15,7 @@ lifecycle = "2.10.0"
 recyclerview = "1.4.0"
 blurview = "version-3.2.0"
 prism4j = "2.0.0"
+flexmark = "0.64.8"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -34,6 +35,7 @@ androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifec
 androidx-recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "recyclerview" }
 blurview = { group = "com.github.Dimezis", name = "BlurView", version.ref = "blurview" }
 prism4j-core = { group = "io.noties", name = "prism4j", version.ref = "prism4j" }
+flexmark-html2md-converter = { group = "com.vladsch.flexmark", name = "flexmark-html2md-converter", version.ref = "flexmark" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
