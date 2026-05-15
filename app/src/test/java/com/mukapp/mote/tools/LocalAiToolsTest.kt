@@ -210,6 +210,40 @@ class LocalAiToolsTest {
     }
 
     @Test
+    fun fetchUrlFallsBackToPlainTextWhenHtmlToMarkdownConversionFails() {
+        val originalConverter = LocalAiTools.htmlToMarkdownConverter
+        LocalAiTools.htmlToMarkdownConverter = {
+            throw ArrayIndexOutOfBoundsException("length=5; index=5")
+        }
+        val server = createFetchTestServer()
+        server.start()
+        try {
+            val result = JSONObject(
+                LocalAiTools.fetchUrl(
+                    JSONObject()
+                        .put("description", "读取 Markdown")
+                        .put("url", "http://127.0.0.1:${server.address.port}/html")
+                        .put("output_format", "markdown")
+                        .toString()
+                )
+            )
+
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("markdown", result.getString("output_format"))
+            assertEquals(false, result.getBoolean("converted"))
+            assertTrue(result.getString("conversion_error").contains("已降级为纯文本"))
+            assertTrue(result.getString("conversion_error").contains("length=5; index=5"))
+            assertTrue(result.getString("content").contains("标题 & 内容"))
+            assertTrue(result.getString("content").contains("第一段文本"))
+            assertFalse(result.getString("content").contains("<h1>"))
+            assertFalse(result.getString("content").contains("secret"))
+        } finally {
+            server.stop(0)
+            LocalAiTools.htmlToMarkdownConverter = originalConverter
+        }
+    }
+
+    @Test
     fun fetchUrlFollowsRedirectsAndTruncatesContent() {
         val server = createFetchTestServer()
         server.start()

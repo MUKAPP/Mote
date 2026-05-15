@@ -93,7 +93,17 @@ object LocalAiTools {
         val content: String
     )
 
+    private data class MarkdownConversionResult(
+        val content: String,
+        val converted: Boolean,
+        val error: String? = null
+    )
+
     private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
+
+    internal var htmlToMarkdownConverter: (String) -> String = { html ->
+        FlexmarkHtmlConverter.builder().build().convert(html).trim()
+    }
 
     private val cachedBaseToolDefinitions: JSONArray by lazy {
         JSONArray()
@@ -422,9 +432,14 @@ object LocalAiTools {
                     }.toString(2)
                 }
                 val isHtml = isHtmlContent(contentType, bodyText)
+                val markdownConversion = if (outputFormat == "markdown" && isHtml) {
+                    htmlToMarkdown(bodyText)
+                } else {
+                    null
+                }
                 val formattedContent = when (outputFormat) {
                     "raw" -> bodyText
-                    "markdown" -> if (isHtml) htmlToMarkdown(bodyText) else bodyText
+                    "markdown" -> markdownConversion?.content ?: bodyText
                     else -> if (isHtml) htmlToPlainText(bodyText) else bodyText
                 }
                 val truncatedContent = formattedContent.length > maxChars
@@ -435,7 +450,8 @@ object LocalAiTools {
                     put("status", statusCode)
                     put("content_type", contentType)
                     put("output_format", outputFormat)
-                    put("converted", outputFormat == "markdown" && isHtml)
+                    put("converted", markdownConversion?.converted ?: false)
+                    markdownConversion?.error?.let { put("conversion_error", it) }
                     put("truncated", responseBody.truncated || truncatedContent)
                     put("redirects", redirects)
                     put("content", if (truncatedContent) formattedContent.take(maxChars) else formattedContent)
@@ -562,12 +578,22 @@ object LocalAiTools {
                 return
             }
             val script = buildWebViewExtractionScript(options.outputFormat)
-            webView.evaluateJavascript(script) { value ->
-                if (completed.get()) {
-                    return@evaluateJavascript
+            runCatching {
+                webView.evaluateJavascript(script) { value ->
+                    if (completed.get()) {
+                        return@evaluateJavascript
+                    }
+                    runCatching {
+                        val page = parseWebViewExtractedPage(value, webView.url ?: options.url.toString())
+                        formatWebViewFetchResult(options, page)
+                    }.onSuccess { output ->
+                        finishOnce(output)
+                    }.onFailure { error ->
+                        finishError("WebView 内容处理失败：${error.readableMessage()}")
+                    }
                 }
-                val page = parseWebViewExtractedPage(value, webView.url ?: options.url.toString())
-                finishOnce(formatWebViewFetchResult(options, page))
+            }.onFailure { error ->
+                finishError("WebView 内容提取失败：${error.readableMessage()}")
             }
         }
 
@@ -668,8 +694,13 @@ object LocalAiTools {
         } else {
             page.content
         }
+        val markdownConversion = if (options.outputFormat == "markdown") {
+            htmlToMarkdown(sourceContent)
+        } else {
+            null
+        }
         val formattedContent = when (options.outputFormat) {
-            "markdown" -> htmlToMarkdown(sourceContent)
+            "markdown" -> markdownConversion?.content ?: sourceContent
             "raw" -> sourceContent
             else -> sourceContent
         }
@@ -681,7 +712,8 @@ object LocalAiTools {
             put("title", page.title)
             put("output_format", options.outputFormat)
             put("rendered", true)
-            put("converted", options.outputFormat == "markdown")
+            put("converted", markdownConversion?.converted ?: false)
+            markdownConversion?.error?.let { put("conversion_error", it) }
             put("truncated", truncatedContent || page.content.length > MaxWebViewExtractChars)
             put("content", if (truncatedContent) formattedContent.take(options.maxChars) else formattedContent)
         }.toString(2)
@@ -788,8 +820,28 @@ object LocalAiTools {
                 mediaType.endsWith("+xml")
     }
 
-    private fun htmlToMarkdown(html: String): String {
-        return FlexmarkHtmlConverter.builder().build().convert(html).trim()
+    private fun htmlToMarkdown(html: String): MarkdownConversionResult {
+        return runCatching {
+            htmlToMarkdownConverter(html).trim()
+        }.fold(
+            onSuccess = { markdown ->
+                MarkdownConversionResult(
+                    content = markdown,
+                    converted = true
+                )
+            },
+            onFailure = { error ->
+                MarkdownConversionResult(
+                    content = htmlToPlainText(html),
+                    converted = false,
+                    error = "Markdown 转换失败，已降级为纯文本：${error.readableMessage()}"
+                )
+            }
+        )
+    }
+
+    private fun Throwable.readableMessage(): String {
+        return message?.takeIf { it.isNotBlank() } ?: javaClass.simpleName
     }
 
     private fun htmlToPlainText(html: String): String {
