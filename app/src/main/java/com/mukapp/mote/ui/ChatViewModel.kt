@@ -482,15 +482,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
                 val currentContent = currentMessage?.content.orEmpty()
                 val currentParts = currentMessage?.assistantParts ?: emptyList()
+                val failureNotice = if (currentContent.isBlank()) {
+                    "请求失败：$message"
+                } else {
+                    "[处理失败：$message]"
+                }
+                val failureContent = if (currentContent.isBlank()) {
+                    failureNotice
+                } else {
+                    "$currentContent\n\n$failureNotice"
+                }
                 uiMessagesInternal[assistantIndex] = ChatMessage(
                     id = assistantId,
                     role = ChatRole.Assistant,
-                    content = if (currentContent.isBlank()) {
-                        "请求失败：$message"
-                    } else {
-                        "$currentContent\n\n[处理失败：$message]"
-                    },
-                    assistantParts = currentParts,
+                    content = failureContent,
+                    assistantParts = appendFailureNoticePart(currentParts, failureNotice),
                     excludeFromConversation = true
                 )
                 publishMessagesImmediately()
@@ -756,6 +762,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             streamingBuilders[newPart.id] = StringBuilder(delta)
             parts += newPart
         }
+    }
+
+    private fun appendFailureNoticePart(
+        parts: List<AssistantPart>,
+        failureNotice: String
+    ): List<AssistantPart> {
+        if (parts.isEmpty()) {
+            return emptyList()
+        }
+        return parts + AssistantMarkdownPart(text = failureNotice)
     }
 
     private fun appendAssistantToolResults(
