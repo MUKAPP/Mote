@@ -15,6 +15,7 @@ import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
@@ -58,6 +59,12 @@ private data class ShellConfirmationRequest(
 private data class ToolExecutionBatch(
     val results: List<ChatMessage>,
     val cancelled: Boolean
+)
+
+private data class StreamChatAttemptResult(
+    val response: ChatCompletionResult,
+    val accumulatedReply: String,
+    val accumulatedThinking: String
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -308,37 +315,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 repeat(MaxToolRounds) { roundIndex ->
-                    val accumulatedReply = StringBuilder()
-                    val accumulatedThinking = StringBuilder()
-                    val response = ChatApiClient.streamChat(
+                    val streamResult = streamChatWithRetries(
                         settings = settings,
                         messages = workingConversation,
-                        onDelta = { delta ->
-                            accumulatedReply.append(delta)
-                            appendAssistantMarkdown(assistantParts, delta)
-                            updateStreamingAssistantMessage(
-                                assistantIndex = assistantIndex,
-                                assistantId = assistantId,
-                                content = buildAssistantContent(assistantParts),
-                                assistantParts = assistantParts
-                            )
-                        },
-                        onThinkingDelta = { thinkingDelta ->
-                            accumulatedThinking.append(thinkingDelta)
-                            appendAssistantThinking(assistantParts, thinkingDelta)
-                            updateStreamingAssistantMessage(
-                                assistantIndex = assistantIndex,
-                                assistantId = assistantId,
-                                content = buildAssistantContent(assistantParts),
-                                assistantParts = assistantParts
-                            )
-                        }
+                        assistantParts = assistantParts,
+                        assistantIndex = assistantIndex,
+                        assistantId = assistantId
                     )
+                    val response = streamResult.response
 
-                    if (accumulatedThinking.isEmpty() && response.thinkingContent.isNotBlank()) {
+                    if (streamResult.accumulatedThinking.isEmpty() && response.thinkingContent.isNotBlank()) {
                         appendAssistantThinking(assistantParts, response.thinkingContent)
                     }
-                    if (accumulatedReply.isEmpty() && response.content.isNotBlank()) {
+                    if (streamResult.accumulatedReply.isEmpty() && response.content.isNotBlank()) {
                         appendAssistantMarkdown(assistantParts, response.content)
                     }
 
@@ -764,6 +753,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun appendAssistantMarkdownAfterRetryNotice(
+        parts: MutableList<AssistantPart>,
+        retryNoticeIndex: Int?,
+        delta: String
+    ) {
+        if (delta.isEmpty()) {
+            return
+        }
+
+        if (retryNoticeIndex == parts.lastIndex && parts.lastOrNull() is AssistantMarkdownPart) {
+            cachedAssistantContent = null
+            val newPart = AssistantMarkdownPart(text = delta)
+            streamingBuilders[newPart.id] = StringBuilder(delta)
+            parts += newPart
+            return
+        }
+
+        appendAssistantMarkdown(parts, delta)
+    }
+
     private fun appendFailureNoticePart(
         parts: List<AssistantPart>,
         failureNotice: String
@@ -818,6 +827,149 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .joinToString(separator = "\n\n")
         cachedAssistantContent = result
         return result
+    }
+
+    private suspend fun streamChatWithRetries(
+        settings: ApiSettings,
+        messages: List<ChatMessage>,
+        assistantParts: MutableList<AssistantPart>,
+        assistantIndex: Int,
+        assistantId: String
+    ): StreamChatAttemptResult {
+        var lastError: Throwable? = null
+        var retryNoticeIndex: Int? = null
+        repeat(MaxStreamRetryAttempts + 1) { attemptIndex ->
+            val accumulatedReply = StringBuilder()
+            val accumulatedThinking = StringBuilder()
+            val partCountBeforeAttempt = assistantParts.size
+
+            try {
+                val response = ChatApiClient.streamChat(
+                    settings = settings,
+                    messages = messages,
+                    onDelta = { delta ->
+                        accumulatedReply.append(delta)
+                        appendAssistantMarkdownAfterRetryNotice(
+                            parts = assistantParts,
+                            retryNoticeIndex = retryNoticeIndex,
+                            delta = delta
+                        )
+                        updateStreamingAssistantMessage(
+                            assistantIndex = assistantIndex,
+                            assistantId = assistantId,
+                            content = buildAssistantContent(assistantParts),
+                            assistantParts = assistantParts
+                        )
+                    },
+                    onThinkingDelta = { thinkingDelta ->
+                        accumulatedThinking.append(thinkingDelta)
+                        appendAssistantThinking(assistantParts, thinkingDelta)
+                        updateStreamingAssistantMessage(
+                            assistantIndex = assistantIndex,
+                            assistantId = assistantId,
+                            content = buildAssistantContent(assistantParts),
+                            assistantParts = assistantParts
+                        )
+                    }
+                )
+                if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
+                    updateStreamingAssistantMessage(
+                        assistantIndex = assistantIndex,
+                        assistantId = assistantId,
+                        content = buildAssistantContent(assistantParts),
+                        assistantParts = assistantParts
+                    )
+                }
+                return StreamChatAttemptResult(
+                    response = response,
+                    accumulatedReply = accumulatedReply.toString(),
+                    accumulatedThinking = accumulatedThinking.toString()
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+
+                lastError = error
+                removeAssistantPartsFrom(assistantParts, partCountBeforeAttempt)
+                val nextAttempt = attemptIndex + 1
+                if (nextAttempt > MaxStreamRetryAttempts) {
+                    if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
+                        updateStreamingAssistantMessage(
+                            assistantIndex = assistantIndex,
+                            assistantId = assistantId,
+                            content = buildAssistantContent(assistantParts),
+                            assistantParts = assistantParts
+                        )
+                    }
+                    throw error
+                }
+
+                retryNoticeIndex = replaceRetryNoticePart(
+                    parts = assistantParts,
+                    retryNoticeIndex = retryNoticeIndex,
+                    attempt = nextAttempt,
+                    error = error
+                )
+                updateStreamingAssistantMessage(
+                    assistantIndex = assistantIndex,
+                    assistantId = assistantId,
+                    content = buildAssistantContent(assistantParts),
+                    assistantParts = assistantParts
+                )
+            }
+        }
+
+        throw lastError ?: IllegalStateException("请求失败，重试次数已用尽。")
+    }
+
+    private fun removeAssistantPartsFrom(parts: MutableList<AssistantPart>, startIndex: Int) {
+        if (startIndex !in 0..parts.size) {
+            return
+        }
+        while (parts.size > startIndex) {
+            val removedPart = parts.removeAt(parts.lastIndex)
+            streamingBuilders.remove(removedPart.id)
+        }
+        cachedAssistantContent = null
+    }
+
+    private fun removeRetryNoticePart(
+        parts: MutableList<AssistantPart>,
+        retryNoticeIndex: Int?
+    ): Boolean {
+        val index = retryNoticeIndex
+            ?.takeIf { it in parts.indices && parts[it] is AssistantMarkdownPart }
+            ?: return false
+        val removedPart = parts.removeAt(index)
+        streamingBuilders.remove(removedPart.id)
+        cachedAssistantContent = null
+        return true
+    }
+
+    private fun replaceRetryNoticePart(
+        parts: MutableList<AssistantPart>,
+        retryNoticeIndex: Int?,
+        attempt: Int,
+        error: Throwable
+    ): Int {
+        val message = error.message?.takeIf { it.isNotBlank() }
+            ?: "请求失败。"
+        val part = AssistantMarkdownPart(
+            text = "请求异常，正在重试第 $attempt/$MaxStreamRetryAttempts 次：$message"
+        )
+        val existingIndex = retryNoticeIndex
+            ?.takeIf { it in parts.indices && parts[it] is AssistantMarkdownPart }
+        if (existingIndex != null) {
+            streamingBuilders.remove(parts[existingIndex].id)
+            parts[existingIndex] = part
+            cachedAssistantContent = null
+            return existingIndex
+        }
+
+        parts += part
+        cachedAssistantContent = null
+        return parts.lastIndex
     }
 
     private suspend fun executeToolCallsWithConfirmation(
@@ -1239,6 +1391,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val DefaultConversationTitle = "新对话"
         const val MaxToolRounds = 200
+        const val MaxStreamRetryAttempts = 3
 
         fun buildFallbackTitle(message: String): String {
             return normalizeTitle(message).ifBlank { DefaultConversationTitle }
