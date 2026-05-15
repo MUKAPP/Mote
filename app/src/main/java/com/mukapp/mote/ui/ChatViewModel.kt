@@ -290,6 +290,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         publishMessagesImmediately()
 
         activeSendJob = viewModelScope.launch {
+            var skipStoppedAssistantContextCommit = false
+            var hasCommittedToolContextInCurrentTurn = false
             val result = runCatching {
                 val workingConversation = conversationMessagesInternal
                     .filter { message ->
@@ -300,6 +302,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         add(0, ChatMessage(role = ChatRole.System, content = buildSystemPrompt()))
                     }
                 val assistantParts = mutableListOf<AssistantPart>()
+
+                fun commitWorkingConversationSnapshot() {
+                    commitWorkingConversation(workingConversation)
+                }
 
                 repeat(MaxToolRounds) { roundIndex ->
                     val accumulatedReply = StringBuilder()
@@ -337,8 +343,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     if (response.toolCalls.isEmpty()) {
-                        val finalReply =
-                            buildAssistantContent(assistantParts).takeIf { it.isNotBlank() }
+                        val finalReply = buildAssistantContent(assistantParts)
+                        val finalConversationContent = response.content.takeIf { it.isNotBlank() }
+                            ?: finalReply
+                        finalConversationContent.takeIf { it.isNotBlank() }
                                 ?: throw IllegalStateException("接口返回内容为空。")
 
                         uiMessagesInternal[assistantIndex] = ChatMessage(
@@ -349,13 +357,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         workingConversation += ChatMessage(
                             role = ChatRole.Assistant,
-                            content = finalReply
+                            content = finalConversationContent
                         )
 
-                        conversationMessagesInternal.clear()
-                        conversationMessagesInternal.addAll(
-                            workingConversation.filter { it.role != ChatRole.System }
-                        )
+                        commitWorkingConversationSnapshot()
                         publishMessagesImmediately()
                         persistConversationAsync()
                         if (isFirstUserMessage) {
@@ -389,6 +394,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantParts = assistantParts
                     )
 
+                    skipStoppedAssistantContextCommit = true
                     val toolBatch = executeToolCallsWithConfirmation(
                         settings = settings,
                         toolCalls = response.toolCalls,
@@ -398,6 +404,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     val toolResults = toolBatch.results
                     workingConversation.addAll(toolResults)
+                    commitWorkingConversationSnapshot()
+                    hasCommittedToolContextInCurrentTurn = true
+                    skipStoppedAssistantContextCommit = false
 
                     // 用实际结果替换 loading 占位
                     replaceLoadingToolParts(assistantParts, toolResults)
@@ -415,10 +424,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             role = ChatRole.Assistant,
                             content = finalContent
                         )
-                        conversationMessagesInternal.clear()
-                        conversationMessagesInternal.addAll(
-                            workingConversation.filter { it.role != ChatRole.System }
-                        )
+                        commitWorkingConversationSnapshot()
                         publishMessagesImmediately()
                         persistConversationAsync()
                         if (isFirstUserMessage) {
@@ -461,7 +467,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             result.onFailure { error ->
                 if (error is CancellationException) {
                     if (stopGenerationRequested) {
-                        handleStoppedGeneration(assistantIndex, assistantId)
+                        handleStoppedGeneration(
+                            assistantIndex = assistantIndex,
+                            assistantId = assistantId,
+                            includeAssistantInConversation = !skipStoppedAssistantContextCommit &&
+                                    !hasCommittedToolContextInCurrentTurn
+                        )
                     }
                     return@onFailure
                 }
@@ -482,7 +493,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     assistantParts = currentParts,
                     excludeFromConversation = true
                 )
-                rebuildConversationFromUiMessages()
                 publishMessagesImmediately()
                 persistConversationAsync()
                 if (isFirstUserMessage) {
@@ -675,12 +685,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         scheduleStreamingPublish()
     }
 
-    private fun handleStoppedGeneration(assistantIndex: Int, assistantId: String) {
+    private fun handleStoppedGeneration(
+        assistantIndex: Int,
+        assistantId: String,
+        includeAssistantInConversation: Boolean
+    ) {
         val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
         val currentContent = currentMessage?.content.orEmpty()
         val currentParts = currentMessage?.assistantParts ?: emptyList()
         if (assistantIndex !in uiMessagesInternal.indices) {
-            rebuildConversationFromUiMessages()
             persistConversationAsync()
             return
         }
@@ -688,20 +701,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val assistantContent = currentContent.ifBlank {
             buildAssistantContent(currentParts)
         }
-        val shouldKeepInConversation = assistantContent.isNotBlank()
+        val shouldKeepInConversation = includeAssistantInConversation && assistantContent.isNotBlank()
 
         uiMessagesInternal[assistantIndex] = ChatMessage(
             id = assistantId,
             role = ChatRole.Assistant,
             content = when {
-                shouldKeepInConversation -> assistantContent
+                assistantContent.isNotBlank() -> assistantContent
                 currentParts.isEmpty() -> appContext.getString(R.string.status_generation_stopped)
                 else -> ""
             },
             assistantParts = currentParts,
             excludeFromConversation = !shouldKeepInConversation
         )
-        rebuildConversationFromUiMessages()
+        if (shouldKeepInConversation) {
+            conversationMessagesInternal += ChatMessage(
+                role = ChatRole.Assistant,
+                content = assistantContent
+            )
+        }
         publishMessagesImmediately()
         persistConversationAsync()
     }
@@ -960,6 +978,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 message.role != ChatRole.Tool &&
                         message.role != ChatRole.System &&
                         !message.excludeFromConversation
+            }
+        )
+    }
+
+    private fun commitWorkingConversation(workingConversation: List<ChatMessage>) {
+        conversationMessagesInternal.clear()
+        conversationMessagesInternal.addAll(
+            workingConversation.filter { message ->
+                message.role != ChatRole.System
             }
         )
     }
