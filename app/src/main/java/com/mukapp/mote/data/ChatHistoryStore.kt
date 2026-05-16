@@ -1,7 +1,6 @@
 package com.mukapp.mote.data
 
 import android.content.Context
-import android.util.Log
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
@@ -13,6 +12,7 @@ import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.SavedConversationState
+import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.toChatRoleOrNull
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,6 +25,7 @@ import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 object ChatHistoryStore {
+    private const val Component = "History"
     private const val SchemaVersion = 2
     private const val DirectoryName = "chat_history"
     private const val ConversationsDirectoryName = "conversations"
@@ -94,6 +95,17 @@ object ChatHistoryStore {
         parseConversationSummary(historyFile, payload)?.let { summary ->
             upsertCachedSummary(summary)
         }
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "已保存对话",
+                "conversationId" to MoteLog.shortId(safeConversationId),
+                "uiMessages" to uiMessages.size,
+                "conversationMessages" to conversationMessages.size,
+                "contextSummaries" to contextSummaries.size,
+                "titleLength" to savedTitle.length
+            )
+        )
         return historyFile
     }
 
@@ -104,23 +116,41 @@ object ChatHistoryStore {
         if (currentId.isNotBlank() && isSafeConversationId(currentId)) {
             val current = loadConversation(context, currentId)
             if (current != null) {
+                MoteLog.i(
+                    Component,
+                    MoteLog.event("已加载当前对话", "conversationId" to MoteLog.shortId(currentId))
+                )
                 return current
             }
             val currentFile = conversationFile(ensureConversationsDir(context), currentId)
             if (!currentFile.exists() && isMissingCurrentConversationAllowed(context)) {
+                MoteLog.i(
+                    Component,
+                    MoteLog.event("当前对话文件允许缺失，返回空状态", "conversationId" to MoteLog.shortId(currentId))
+                )
                 return emptyConversationState(conversationId = currentId)
             }
+            MoteLog.w(
+                Component,
+                MoteLog.event("当前对话缺失，清空索引", "conversationId" to MoteLog.shortId(currentId))
+            )
             saveCurrentConversationId(context, "")
         } else if (currentId.isNotBlank()) {
+            MoteLog.w(Component, "当前对话 ID 不合法，已清空索引。")
             saveCurrentConversationId(context, "")
         }
 
         val latest = listConversations(context).firstOrNull()
         if (latest != null) {
             saveCurrentConversationId(context, latest.id)
+            MoteLog.i(
+                Component,
+                MoteLog.event("回退加载最近对话", "conversationId" to MoteLog.shortId(latest.id))
+            )
             return loadConversation(context, latest.id) ?: emptyConversationState()
         }
 
+        MoteLog.i(Component, "未找到历史对话，创建空对话状态。")
         return emptyConversationState(conversationId = newConversationId())
     }
 
@@ -139,14 +169,27 @@ object ChatHistoryStore {
             return null
         }
 
-        return deserializeConversation(file, readJsonObjectOrNull(file) ?: return null)
+        return deserializeConversation(file, readJsonObjectOrNull(file) ?: return null).also { state ->
+            MoteLog.d(
+                Component,
+                MoteLog.event(
+                    "已反序列化对话",
+                    "conversationId" to MoteLog.shortId(conversationId),
+                    "uiMessages" to state.uiMessages.size,
+                    "conversationMessages" to state.conversationMessages.size,
+                    "contextSummaries" to state.contextSummaries.size
+                )
+            )
+        }
     }
 
     fun listConversations(context: Context): List<ConversationSummary> {
         migrateLegacyConversationIfNeeded(context)
 
         return synchronized(summaryCacheLock) {
-            cachedConversationSummaries ?: scanConversationSummaries(context).also { summaries ->
+            cachedConversationSummaries?.also { summaries ->
+                MoteLog.d(Component, MoteLog.event("对话列表缓存命中", "count" to summaries.size))
+            } ?: scanConversationSummaries(context).also { summaries ->
                 cachedConversationSummaries = summaries
             }
         }
@@ -162,7 +205,12 @@ object ChatHistoryStore {
         return files.mapNotNull { file ->
             val root = readJsonObjectOrNull(file) ?: return@mapNotNull null
             parseConversationSummary(file, root)
-        }.sortedByDescending { it.updatedAt }
+        }.sortedByDescending { it.updatedAt }.also { summaries ->
+            MoteLog.i(
+                Component,
+                MoteLog.event("已扫描对话列表", "files" to files.size, "summaries" to summaries.size)
+            )
+        }
     }
 
     private fun upsertCachedSummary(summary: ConversationSummary) {
@@ -202,6 +250,14 @@ object ChatHistoryStore {
                 put("allowMissingConversation", allowMissingConversation)
             }
         )
+        MoteLog.d(
+            Component,
+            MoteLog.event(
+                "已保存当前对话索引",
+                "conversationId" to MoteLog.shortId(safeConversationId),
+                "allowMissingConversation" to allowMissingConversation
+            )
+        )
     }
 
     fun deleteConversation(context: Context, conversationId: String): String? {
@@ -220,6 +276,14 @@ object ChatHistoryStore {
         if (currentId == conversationId || currentId.isBlank()) {
             saveCurrentConversationId(context, replacementId.orEmpty())
         }
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "已删除对话",
+                "conversationId" to MoteLog.shortId(conversationId),
+                "replacementId" to MoteLog.shortId(replacementId)
+            )
+        )
         return replacementId
     }
 
@@ -236,6 +300,14 @@ object ChatHistoryStore {
         parseConversationSummary(file, root)?.let { summary ->
             upsertCachedSummary(summary)
         }
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "已更新对话标题",
+                "conversationId" to MoteLog.shortId(conversationId),
+                "titleLength" to normalizedTitle.length
+            )
+        )
         return true
     }
 
@@ -249,6 +321,7 @@ object ChatHistoryStore {
             throw IllegalStateException("无法删除历史记录目录。")
         }
         resetCaches()
+        MoteLog.i(Component, "已清空全部聊天历史。")
     }
 
     private fun migrateLegacyConversationIfNeeded(context: Context) {
@@ -271,18 +344,28 @@ object ChatHistoryStore {
             }?.isNotEmpty() == true
             if (hasConversationFiles || migrationMarkerFile.exists()) {
                 legacyMigrationChecked = true
+                MoteLog.d(
+                    Component,
+                    MoteLog.event(
+                        "跳过旧历史迁移",
+                        "hasConversationFiles" to hasConversationFiles,
+                        "hasMarker" to migrationMarkerFile.exists()
+                    )
+                )
                 return
             }
 
             val legacyFile = File(historyDir, LegacyFileName)
             if (!legacyFile.exists() || !legacyFile.isFile) {
                 legacyMigrationChecked = true
+                MoteLog.d(Component, "未发现旧版历史文件，跳过迁移。")
                 return
             }
 
             val legacyRoot = readJsonObjectOrNull(legacyFile)
             if (legacyRoot == null) {
                 legacyMigrationChecked = true
+                MoteLog.w(Component, "旧版历史文件无法解析，跳过迁移。")
                 return
             }
 
@@ -297,6 +380,7 @@ object ChatHistoryStore {
                 )
                 legacyMigrationChecked = true
                 cachedConversationSummaries = null
+                MoteLog.i(Component, "旧版历史为空，已写入迁移标记。")
                 return
             }
 
@@ -331,6 +415,16 @@ object ChatHistoryStore {
             )
             legacyMigrationChecked = true
             cachedConversationSummaries = null
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "旧版历史迁移完成",
+                    "conversationId" to MoteLog.shortId(conversationId),
+                    "uiMessages" to legacyState.uiMessages.size,
+                    "conversationMessages" to legacyState.conversationMessages.size,
+                    "contextSummaries" to legacyState.contextSummaries.size
+                )
+            )
         }
     }
 
@@ -489,7 +583,7 @@ object ChatHistoryStore {
         return runCatching {
             JSONObject(file.readText(Charsets.UTF_8))
         }.onFailure { error ->
-            Log.e("Mote", "读取历史记录失败：${file.name}", error)
+            MoteLog.e(Component, MoteLog.event("读取历史记录失败", "file" to file.name), error)
             quarantineCorruptedJsonFile(file)
         }.getOrNull()
     }
@@ -506,7 +600,7 @@ object ChatHistoryStore {
 
         val corruptedDir = File(parent, CorruptedDirectoryName)
         if (!corruptedDir.exists() && !corruptedDir.mkdirs()) {
-            Log.e("Mote", "无法创建损坏历史隔离目录：${corruptedDir.path}")
+            MoteLog.e(Component, "无法创建损坏历史隔离目录。")
             return
         }
 
@@ -515,7 +609,9 @@ object ChatHistoryStore {
             "${file.nameWithoutExtension}.${System.currentTimeMillis()}.corrupt.json"
         )
         if (!file.renameTo(quarantinedFile)) {
-            Log.e("Mote", "无法隔离损坏历史记录：${file.path}")
+            MoteLog.e(Component, MoteLog.event("无法隔离损坏历史记录", "file" to file.name))
+        } else {
+            MoteLog.w(Component, MoteLog.event("已隔离损坏历史记录", "file" to file.name))
         }
     }
 

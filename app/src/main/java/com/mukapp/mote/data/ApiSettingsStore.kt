@@ -3,6 +3,7 @@ package com.mukapp.mote.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.util.MoteLog
 
 object ApiSettingsStore {
     private const val PrefName = "mote_api_settings"
@@ -32,7 +33,9 @@ object ApiSettingsStore {
             compressionTriggerLength = preferences.getInt(KeyCompressionTriggerLength, 0).coerceAtLeast(0),
             searxngUrl = preferences.getString(KeySearxngUrl, "").orEmpty(),
             reasoningEffort = preferences.getString(KeyReasoningEffort, "high").orEmpty()
-        )
+        ).also { settings ->
+            MoteLog.d("Settings", MoteLog.event("已加载 API 设置", *settings.safeLogFields()))
+        }
     }
 
     fun save(context: Context, settings: ApiSettings) {
@@ -51,5 +54,21 @@ object ApiSettingsStore {
             .putString(KeySearxngUrl, settings.searxngUrl)
             .putString(KeyReasoningEffort, settings.reasoningEffort)
             .apply()
+        MoteLog.i("Settings", MoteLog.event("已保存 API 设置", *settings.safeLogFields()))
+    }
+
+    private fun ApiSettings.safeLogFields(): Array<Pair<String, Any?>> {
+        return arrayOf(
+            "baseUrl" to MoteLog.safeUrlOrigin(baseUrl),
+            "apiKeyConfigured" to apiKey.isNotBlank(),
+            "modelConfigured" to model.isNotBlank(),
+            "modelLength" to model.length,
+            "titleModelEnabled" to titleModel.isNotBlank(),
+            "compressionModelEnabled" to compressionModel.isNotBlank(),
+            "modelContextLength" to modelContextLength,
+            "compressionTriggerLength" to compressionTriggerLength,
+            "searxngConfigured" to searxngUrl.isNotBlank(),
+            "reasoningEffort" to reasoningEffort.ifBlank { "未配置" }
+        )
     }
 }

@@ -4,12 +4,12 @@ import android.content.Context
 import android.os.Build
 import android.system.Os
 import android.system.OsConstants
-import android.util.Log
+import com.mukapp.mote.util.MoteLog
 import java.io.File
 import java.util.concurrent.TimeUnit
 
 object BusyBoxManager {
-    private const val Tag = "BusyBoxManager"
+    private const val Component = "BusyBox"
     private const val AssetRoot = "busybox"
     private const val ShellDirName = "shell"
     private const val BinDirName = "bin"
@@ -49,13 +49,35 @@ object BusyBoxManager {
         synchronized(initLock) {
             cachedEnvironment?.let { return it }
 
+            val startMs = System.currentTimeMillis()
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "开始初始化 BusyBox",
+                    "abiCount" to Build.SUPPORTED_ABIS.size,
+                    "primaryAbi" to Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+                )
+            )
             val environment = runCatching { installIfNeeded(context.applicationContext) }
-                .onFailure { error -> Log.w(Tag, "BusyBox 初始化失败: ${error.message}", error) }
+                .onSuccess { installed ->
+                    if (installed != null) {
+                        MoteLog.i(
+                            Component,
+                            MoteLog.event(
+                                "BusyBox 初始化成功",
+                                "abi" to installed.abi,
+                                "source" to installed.sourceKind,
+                                "durationMs" to MoteLog.durationMs(startMs)
+                            )
+                        )
+                    }
+                }
+                .onFailure { error -> MoteLog.w(Component, "BusyBox 初始化失败", error) }
                 .getOrNull()
 
             if (environment == null && !hasLoggedUnavailable) {
                 hasLoggedUnavailable = true
-                Log.w(Tag, "未找到内置 BusyBox，将继续使用系统 PATH 执行 shell 命令。")
+                MoteLog.w(Component, "未找到内置 BusyBox，将继续使用系统 PATH 执行 shell 命令。")
             }
 
             cachedEnvironment = environment
@@ -98,6 +120,14 @@ object BusyBoxManager {
 
     private fun installIfNeeded(context: Context): BusyBoxEnvironment? {
         val source = resolveBusyBoxSource(context) ?: return null
+        MoteLog.d(
+            Component,
+            MoteLog.event(
+                "已解析 BusyBox 来源",
+                "abi" to source.abi,
+                "source" to source.kind
+            )
+        )
         val shellDir = File(context.filesDir, ShellDirName)
         val binDir = File(shellDir, BinDirName)
         val tmpDir = File(shellDir, TmpDirName)
@@ -110,8 +140,16 @@ object BusyBoxManager {
             is BusyBoxSource.Asset -> {
                 val target = File(shellDir, BusyBoxFileName)
                 if (!isInstallCurrent(shellDir, binDir, target, source)) {
+                    MoteLog.i(
+                        Component,
+                        MoteLog.event("复制内置 BusyBox", "abi" to source.abi)
+                    )
                     copyAsset(context, source.path, target)
                 } else {
+                    MoteLog.d(
+                        Component,
+                        MoteLog.event("BusyBox 可执行文件缓存命中", "abi" to source.abi)
+                    )
                     target.setExecutable(true, true)
                 }
                 target
@@ -130,11 +168,20 @@ object BusyBoxManager {
         if (!isInstallCurrent(shellDir, binDir, busyBox, source)) {
             resetManagedBinDir(shellDir, binDir)
             val installSucceeded = runCatching { runBusyBoxInstall(environment) }
-                .onFailure { error -> Log.w(Tag, "BusyBox 软链接安装失败: ${error.message}", error) }
+                .onFailure { error -> MoteLog.w(Component, "BusyBox 软链接安装失败", error) }
                 .isSuccess
             if (installSucceeded) {
                 writeInstallStamp(shellDir, binDir, busyBox, source)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event("BusyBox applet 安装成功", "abi" to source.abi)
+                )
             }
+        } else {
+            MoteLog.d(
+                Component,
+                MoteLog.event("BusyBox applet 缓存命中", "abi" to source.abi)
+            )
         }
 
         return environment
@@ -194,7 +241,7 @@ object BusyBoxManager {
             Os.symlink(nativeBusyBox.path, launcher.path)
             launcher
         }.getOrElse { error ->
-            Log.w(Tag, "无法创建 BusyBox 启动软链接，将直接使用原生库路径: ${error.message}")
+            MoteLog.w(Component, "无法创建 BusyBox 启动软链接，将直接使用原生库路径。", error)
             nativeBusyBox
         }
     }
@@ -207,7 +254,7 @@ object BusyBoxManager {
         }
 
         if (!temp.setReadable(true, true)) {
-            Log.w(Tag, "无法设置 BusyBox 可读权限：${temp.path}")
+            MoteLog.w(Component, "无法设置 BusyBox 可读权限。")
         }
         if (!temp.setExecutable(true, true)) {
             throw IllegalStateException("无法设置 BusyBox 可执行权限：${temp.path}")
@@ -333,12 +380,14 @@ object BusyBoxManager {
     private sealed class BusyBoxSource {
         abstract val abi: String
         abstract val id: String
+        abstract val kind: String
 
         data class NativeLibrary(
             val file: File,
             override val abi: String
         ) : BusyBoxSource() {
             override val id: String = "native:${file.path}:${file.length()}:${file.lastModified()}"
+            override val kind: String = "native"
         }
 
         data class Asset(
@@ -346,6 +395,10 @@ object BusyBoxManager {
             override val abi: String
         ) : BusyBoxSource() {
             override val id: String = "asset:$path:$InstallVersion"
+            override val kind: String = "asset"
         }
     }
+
+    private val BusyBoxEnvironment.sourceKind: String
+        get() = sourceId.substringBefore(':').ifBlank { "unknown" }
 }

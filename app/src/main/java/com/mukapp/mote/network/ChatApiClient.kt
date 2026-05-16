@@ -8,6 +8,7 @@ import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.ToolCallAccumulator
 import com.mukapp.mote.tools.LocalAiTools
+import com.mukapp.mote.util.MoteLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -19,6 +20,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object ChatApiClient {
+    private const val Component = "Api"
     private val mainDispatcher = Dispatchers.Main
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
 
@@ -30,6 +32,16 @@ object ChatApiClient {
             require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
             require(settings.titleModel.isNotBlank()) { "标题模型不能为空。" }
 
+            val startMs = System.currentTimeMillis()
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "开始生成对话标题",
+                    "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                    "modelLength" to settings.titleModel.length,
+                    "userMessageLength" to userMessage.length
+                )
+            )
             val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
             val coroutineContext = currentCoroutineContext()
             val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
@@ -86,12 +98,26 @@ object ChatApiClient {
                 coroutineContext.ensureActive()
                 val statusCode = connection.responseCode
                 val responseText = readResponseText(connection, statusCode)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event("标题接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+                )
                 if (statusCode !in 200..299) {
+                    MoteLog.w(Component, MoteLog.event("标题接口返回失败状态", "status" to statusCode))
                     val errorMessage = parseErrorMessage(responseText)
                     throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
                 }
 
-                parseAssistantReply(responseText).content
+                parseAssistantReply(responseText).content.also { title ->
+                    MoteLog.i(
+                        Component,
+                        MoteLog.event(
+                            "对话标题生成完成",
+                            "titleLength" to title.length,
+                            "durationMs" to MoteLog.durationMs(startMs)
+                        )
+                    )
+                }
             } catch (error: Throwable) {
                 coroutineContext.ensureActive()
                 throw error
@@ -113,6 +139,17 @@ object ChatApiClient {
             require(compressionModel.isNotBlank()) { "压缩模型不能为空。" }
             require(messages.isNotEmpty()) { "没有可压缩的上下文。" }
 
+            val startMs = System.currentTimeMillis()
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "开始压缩对话上下文",
+                    "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                    "messages" to messages.size,
+                    "maxSummaryTokens" to maxSummaryTokens,
+                    "modelLength" to compressionModel.length
+                )
+            )
             val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
             val coroutineContext = currentCoroutineContext()
             val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
@@ -161,16 +198,34 @@ object ChatApiClient {
                 coroutineContext.ensureActive()
                 val statusCode = connection.responseCode
                 val responseText = readResponseText(connection, statusCode)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event("上下文压缩接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+                )
                 if (statusCode !in 200..299) {
+                    MoteLog.w(Component, MoteLog.event("上下文压缩接口返回失败状态", "status" to statusCode))
                     val errorMessage = parseErrorMessage(responseText)
                     throw IllegalStateException(errorMessage.ifBlank { "上下文压缩失败，HTTP $statusCode" })
                 }
 
                 val response = parseAssistantReply(responseText, appendFinishReasonNotice = false)
                 if (response.finishReason == "length") {
+                    MoteLog.w(Component, "上下文压缩结果因长度限制被截断。")
                     throw IllegalStateException("上下文压缩结果被截断，请调大模型上下文或降低压缩长度后重试。")
                 }
                 response.content.trim().ifBlank { throw IllegalStateException("上下文压缩结果为空。") }
+                    .also { summary ->
+                        MoteLog.i(
+                            Component,
+                            MoteLog.event(
+                                "上下文压缩完成",
+                                "summaryLength" to summary.length,
+                                "finishReason" to (response.finishReason ?: "未返回"),
+                                "durationMs" to MoteLog.durationMs(startMs),
+                                *response.usage.safeLogFields()
+                            )
+                        )
+                    }
             } catch (error: Throwable) {
                 coroutineContext.ensureActive()
                 throw error
@@ -200,6 +255,7 @@ object ChatApiClient {
             if (!shouldRetryWithoutStreamUsage(error)) {
                 throw error
             }
+            MoteLog.w(Component, "接口不兼容 stream_options.include_usage，改为不请求 usage 后重试。", error)
             streamChatOnce(
                 settings = settings,
                 messages = messages,
@@ -218,6 +274,22 @@ object ChatApiClient {
         onThinkingDelta: suspend (String) -> Unit
     ): ChatCompletionResult {
         return withContext(Dispatchers.IO) {
+            require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            require(settings.model.isNotBlank()) { "模型不能为空。" }
+            val startMs = System.currentTimeMillis()
+            val toolDefinitions = LocalAiTools.toolDefinitions(settings)
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "开始流式聊天请求",
+                    "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                    "messages" to messages.size,
+                    "tools" to toolDefinitions.length(),
+                    "includeUsage" to includeUsage,
+                    "reasoningEffortConfigured" to settings.reasoningEffort.isNotBlank(),
+                    "modelLength" to settings.model.length
+                )
+            )
             val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
             val coroutineContext = currentCoroutineContext()
             val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
@@ -246,7 +318,7 @@ object ChatApiClient {
                             }
                         )
                     }
-                    put("tools", LocalAiTools.toolDefinitions(settings))
+                    put("tools", toolDefinitions)
                     if (settings.reasoningEffort.isNotBlank()) {
                         put("reasoning_effort", settings.reasoningEffort)
                     }
@@ -266,16 +338,42 @@ object ChatApiClient {
 
                 coroutineContext.ensureActive()
                 val statusCode = connection.responseCode
+                MoteLog.i(
+                    Component,
+                    MoteLog.event("聊天接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+                )
                 if (statusCode !in 200..299) {
+                    MoteLog.w(Component, MoteLog.event("聊天接口返回失败状态", "status" to statusCode))
                     val responseText = readResponseText(connection, statusCode)
                     val errorMessage = parseErrorMessage(responseText)
                     throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
                 }
 
                 val contentType = connection.contentType.orEmpty()
+                MoteLog.d(
+                    Component,
+                    MoteLog.event("聊天响应内容类型", "contentType" to safeContentType(contentType))
+                )
                 if (contentType.contains("text/event-stream", ignoreCase = true)) {
-                    readStreamedReply(connection, onDelta, onThinkingDelta)
+                    readStreamedReply(connection, onDelta, onThinkingDelta).also { response ->
+                        MoteLog.i(
+                            Component,
+                            MoteLog.event(
+                                "流式聊天请求完成",
+                                "finishReason" to (response.finishReason ?: "未返回"),
+                                "contentLength" to response.content.length,
+                                "thinkingLength" to response.thinkingContent.length,
+                                "toolCalls" to response.toolCalls.size,
+                                "durationMs" to MoteLog.durationMs(startMs),
+                                *response.usage.safeLogFields()
+                            )
+                        )
+                    }
                 } else {
+                    MoteLog.w(
+                        Component,
+                        MoteLog.event("聊天接口返回非 SSE 响应，使用非流式解析", "contentType" to safeContentType(contentType))
+                    )
                     val responseText = readResponseText(connection, statusCode)
                     coroutineContext.ensureActive()
                     val response = parseAssistantReply(responseText)
@@ -284,7 +382,20 @@ object ChatApiClient {
                             onDelta(response.content)
                         }
                     }
-                    response
+                    response.also {
+                        MoteLog.i(
+                            Component,
+                            MoteLog.event(
+                                "非流式聊天请求完成",
+                                "finishReason" to (it.finishReason ?: "未返回"),
+                                "contentLength" to it.content.length,
+                                "thinkingLength" to it.thinkingContent.length,
+                                "toolCalls" to it.toolCalls.size,
+                                "durationMs" to MoteLog.durationMs(startMs),
+                                *it.usage.safeLogFields()
+                            )
+                        )
+                    }
                 }
             } catch (error: Throwable) {
                 coroutineContext.ensureActive()
@@ -529,6 +640,20 @@ object ChatApiClient {
             finishReason = finishReason,
             usage = usage
         )
+    }
+
+    private fun TokenUsage?.safeLogFields(): Array<Pair<String, Any?>> {
+        return arrayOf(
+            "inputTokens" to this?.inputTokens,
+            "outputTokens" to this?.outputTokens,
+            "totalTokens" to this?.totalTokens,
+            "cachedInputTokens" to this?.cachedInputTokens,
+            "reasoningOutputTokens" to this?.reasoningOutputTokens
+        )
+    }
+
+    private fun safeContentType(contentType: String): String {
+        return contentType.substringBefore(';').trim().ifBlank { "未返回" }
     }
 
     private suspend fun processStreamEvent(

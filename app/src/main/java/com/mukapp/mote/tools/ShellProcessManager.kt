@@ -1,6 +1,6 @@
 package com.mukapp.mote.tools
 
-import android.util.Log
+import com.mukapp.mote.util.MoteLog
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 
 object ShellProcessManager {
     private val processes = ConcurrentHashMap<String, ShellProcess>()
+    private const val Component = "ShellProcess"
     private const val MaxOutputChars = 65536
     private const val MaxProcesses = 20
 
@@ -31,6 +32,12 @@ object ShellProcessManager {
         require(workingDirectory == null || workingDirectory.isDirectory) { "工作目录不是目录。" }
 
         evictCompletedProcesses()
+        if (processes.size >= MaxProcesses) {
+            MoteLog.w(
+                Component,
+                MoteLog.event("后台 shell 进程数量达到上限", "max" to MaxProcesses)
+            )
+        }
         require(processes.size < MaxProcesses) { "后台进程数量已达上限，请先停止或查询已有进程。" }
 
         val id = generateId()
@@ -41,13 +48,33 @@ object ShellProcessManager {
         workingDirectory?.let { builder.directory(it) }
         val process = builder.start()
         registerProcess(id, command, process)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "已启动 shell 进程",
+                "id" to id,
+                "commandHash" to MoteLog.fingerprint(command),
+                "hasWorkDir" to (workingDirectory != null),
+                "environmentKeys" to environment.keys.sorted().joinToString(separator = "+"),
+                "activeProcesses" to processes.size
+            )
+        )
         return id
     }
 
     fun getProcess(id: String): ShellProcess? = processes[id]
 
     fun remove(id: String) {
-        processes.remove(id)
+        processes.remove(id)?.let { entry ->
+            MoteLog.d(
+                Component,
+                MoteLog.event(
+                    "已移除 shell 进程",
+                    "id" to id,
+                    "elapsedSeconds" to ((System.currentTimeMillis() - entry.startTimeMs) / 1000)
+                )
+            )
+        }
     }
 
     fun generateId(): String = "shell_${UUID.randomUUID().toString().take(8)}"
@@ -55,6 +82,9 @@ object ShellProcessManager {
     private fun evictCompletedProcesses() {
         val completed = processes.entries.filter { it.value.isComplete }
         completed.forEach { processes.remove(it.key) }
+        if (completed.isNotEmpty()) {
+            MoteLog.d(Component, MoteLog.event("已清理完成的 shell 进程", "count" to completed.size))
+        }
     }
 
     fun getStatus(id: String, maxOutputChars: Int = 8000): JSONObject {
@@ -77,7 +107,27 @@ object ShellProcessManager {
 
         if (entry.isComplete) {
             processes.remove(id)
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "shell 进程已完成并清理",
+                    "id" to id,
+                    "exitCode" to exitCode,
+                    "elapsedSeconds" to ((System.currentTimeMillis() - entry.startTimeMs) / 1000)
+                )
+            )
         }
+
+        MoteLog.d(
+            Component,
+            MoteLog.event(
+                "已查询 shell 进程状态",
+                "id" to id,
+                "running" to isAlive,
+                "stdoutChars" to stdout.length,
+                "stderrChars" to stderr.length
+            )
+        )
 
         return JSONObject().apply {
             put("ok", true)
@@ -103,6 +153,10 @@ object ShellProcessManager {
         if (!entry.process.isAlive) {
             val exitCode = entry.process.exitValue()
             processes.remove(id)
+            MoteLog.i(
+                Component,
+                MoteLog.event("shell 进程已结束，无需停止", "id" to id, "exitCode" to exitCode)
+            )
             return JSONObject().apply {
                 put("ok", true)
                 put("message", "进程已结束，无需停止")
@@ -120,6 +174,10 @@ object ShellProcessManager {
             entry.process.destroyForcibly()
         }
         processes.remove(id)
+        MoteLog.i(
+            Component,
+            MoteLog.event("已停止 shell 进程", "id" to id, "forced" to !exited)
+        )
         return JSONObject().apply {
             put("ok", true)
             put("message", if (exited) "进程已停止" else "进程已强制终止")
@@ -144,9 +202,10 @@ object ShellProcessManager {
                     }
                 }
             } catch (error: Exception) {
-                Log.w("ShellProcess", "进程 $id 标准输出读取异常: ${error.message}")
+                MoteLog.w(Component, MoteLog.event("shell 标准输出读取异常", "id" to id), error)
             } finally {
                 entry.outputFinished = true
+                MoteLog.d(Component, MoteLog.event("shell 标准输出读取结束", "id" to id))
             }
         }, "ShellStdout-$id").start()
 
@@ -164,9 +223,10 @@ object ShellProcessManager {
                     }
                 }
             } catch (error: Exception) {
-                Log.w("ShellProcess", "进程 $id 标准错误读取异常: ${error.message}")
+                MoteLog.w(Component, MoteLog.event("shell 标准错误读取异常", "id" to id), error)
             } finally {
                 entry.errorFinished = true
+                MoteLog.d(Component, MoteLog.event("shell 标准错误读取结束", "id" to id))
             }
         }, "ShellStderr-$id").start()
     }

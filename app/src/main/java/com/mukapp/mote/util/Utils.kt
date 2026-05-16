@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
-import android.util.Log
 import androidx.core.net.toUri
 import com.mukapp.mote.data.model.ChatRole
 import org.json.JSONObject
@@ -52,7 +51,7 @@ fun openManageAllFilesAccessSettings(context: Context) {
                 context.startActivity(appDetailsIntent)
             }
         }.onFailure { error ->
-            Log.e("Mote", "打开文件管理权限设置失败", error)
+            MoteLog.e("Utils", "打开文件管理权限设置失败", error)
         }
     }
 }

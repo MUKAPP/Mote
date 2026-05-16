@@ -11,12 +11,13 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.optIntOrNull
+import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter
 import org.json.JSONArray
 import org.json.JSONTokener
 import org.json.JSONObject
@@ -39,6 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 object LocalAiTools {
+    private const val Component = "Tools"
     private const val ReadFileToolName = "read_file"
     private const val ListPathToolName = "list_path"
     private const val FetchUrlToolName = "fetch_url"
@@ -124,6 +126,14 @@ object LocalAiTools {
         if (settings.searxngUrl.isNotBlank()) {
             definitions.put(JSONObject(cachedWebSearchToolDefinition.toString()))
         }
+        MoteLog.d(
+            Component,
+            MoteLog.event(
+                "已构建工具定义",
+                "tools" to definitions.length(),
+                "webSearchEnabled" to settings.searxngUrl.isNotBlank()
+            )
+        )
         return definitions
     }
 
@@ -133,6 +143,16 @@ object LocalAiTools {
         settings: ApiSettings = ApiSettings(),
         onShellProcessStarted: ((String, Boolean) -> Unit)? = null
     ): ChatMessage {
+        val startMs = System.currentTimeMillis()
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "开始执行工具",
+                "tool" to toolCall.name,
+                "toolCallId" to MoteLog.shortId(toolCall.id),
+                "argumentKeys" to safeArgumentKeys(toolCall.arguments).joinToString(separator = "+")
+            )
+        )
         val output = runCatching {
             when (toolCall.name) {
                 ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
@@ -145,16 +165,38 @@ object LocalAiTools {
                 ShellStopToolName -> stopShell(toolCall.arguments)
                 WaitToolName -> scheduleWait(toolCall.arguments)
                 else -> JSONObject().apply {
+                    MoteLog.w(Component, MoteLog.event("收到不支持的工具", "tool" to toolCall.name))
                     put("ok", false)
                     put("error", "不支持的工具：${toolCall.name}")
                 }.toString(2)
             }
+        }.onFailure { error ->
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "工具执行异常",
+                    "tool" to toolCall.name,
+                    "toolCallId" to MoteLog.shortId(toolCall.id),
+                    "error" to error
+                )
+            )
         }.getOrElse { error ->
             JSONObject().apply {
                 put("ok", false)
                 put("error", error.message ?: "工具执行失败")
             }.toString(2)
         }
+
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "工具执行完成",
+                "tool" to toolCall.name,
+                "toolCallId" to MoteLog.shortId(toolCall.id),
+                "durationMs" to MoteLog.durationMs(startMs),
+                *safeToolResultFields(output)
+            )
+        )
 
         return ChatMessage(
             role = ChatRole.Tool,
@@ -167,17 +209,46 @@ object LocalAiTools {
 
     fun activatePendingShellConfirmation(confirmationId: String): Boolean {
         val now = System.currentTimeMillis()
-        val confirmation = pendingShellConfirmations[confirmationId] ?: return false
+        val confirmation = pendingShellConfirmations[confirmationId] ?: run {
+            MoteLog.w(
+                Component,
+                MoteLog.event("Shell 确认令牌不存在", "confirmationId" to MoteLog.shortId(confirmationId))
+            )
+            return false
+        }
         if (now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
             pendingShellConfirmations.remove(confirmationId)
+            MoteLog.w(
+                Component,
+                MoteLog.event("Shell 确认令牌已过期", "confirmationId" to MoteLog.shortId(confirmationId))
+            )
             return false
         }
         confirmation.active = true
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "Shell 确认令牌已激活",
+                "confirmationId" to MoteLog.shortId(confirmationId),
+                "background" to confirmation.background,
+                "risk" to confirmation.risk
+            )
+        )
         return true
     }
 
     fun discardPendingShellConfirmation(confirmationId: String) {
-        pendingShellConfirmations.remove(confirmationId)
+        pendingShellConfirmations.remove(confirmationId)?.let { confirmation ->
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "Shell 确认令牌已丢弃",
+                    "confirmationId" to MoteLog.shortId(confirmationId),
+                    "background" to confirmation.background,
+                    "risk" to confirmation.risk
+                )
+            )
+        }
     }
 
     fun isShellConfirmationRequest(message: ChatMessage): Boolean {
@@ -252,6 +323,18 @@ object LocalAiTools {
             actualStartLine + selectedLines.size - 1
         }
 
+        MoteLog.d(
+            Component,
+            MoteLog.event(
+                "读取文件工具完成",
+                "pathHash" to MoteLog.fingerprint(targetFile.path),
+                "size" to fileSize,
+                "startLine" to actualStartLine,
+                "endLine" to actualEndLine,
+                "returnedLines" to selectedLines.size,
+                "hasMore" to hasMore
+            )
+        )
         return JSONObject().apply {
             put("ok", true)
             put("path", targetFile.path.replace('\\', '/'))
@@ -288,6 +371,15 @@ object LocalAiTools {
 
             val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT)
 
+            MoteLog.d(
+                Component,
+                MoteLog.event(
+                    "列出目录工具完成",
+                    "pathHash" to MoteLog.fingerprint(target.path),
+                    "returned" to minOf(children.size, limit),
+                    "total" to children.size
+                )
+            )
             JSONObject().apply {
                 put("ok", true)
                 put("path", target.path.replace('\\', '/'))
@@ -313,6 +405,14 @@ object LocalAiTools {
                 )
             }.toString(2)
         } else {
+            MoteLog.d(
+                Component,
+                MoteLog.event(
+                    "查询文件信息工具完成",
+                    "pathHash" to MoteLog.fingerprint(target.path),
+                    "size" to target.length()
+                )
+            )
             JSONObject().apply {
                 put("ok", true)
                 put("path", target.path.replace('\\', '/'))
@@ -353,6 +453,7 @@ object LocalAiTools {
     }
 
     private fun fetchUrlWithRedirects(initialUrl: URL, outputFormat: String, maxChars: Int): String {
+        val startMs = System.currentTimeMillis()
         var currentUrl = initialUrl
         val redirects = JSONArray()
         repeat(MaxFetchRedirects + 1) { redirectCount ->
@@ -369,6 +470,16 @@ object LocalAiTools {
                 if (statusCode in 300..399) {
                     val location = connection.getHeaderField("Location")
                     if (location.isNullOrBlank()) {
+                        MoteLog.w(
+                            Component,
+                            MoteLog.event(
+                                "fetch_url 重定向缺少 Location",
+                                "status" to statusCode,
+                                "origin" to MoteLog.safeUrlOrigin(currentUrl.toString()),
+                                "redirects" to redirects.length(),
+                                "durationMs" to MoteLog.durationMs(startMs)
+                            )
+                        )
                         return JSONObject().apply {
                             put("ok", false)
                             put("url", initialUrl.toString())
@@ -379,6 +490,16 @@ object LocalAiTools {
                         }.toString(2)
                     }
                     if (redirectCount >= MaxFetchRedirects) {
+                        MoteLog.w(
+                            Component,
+                            MoteLog.event(
+                                "fetch_url 重定向次数超过上限",
+                                "status" to statusCode,
+                                "origin" to MoteLog.safeUrlOrigin(currentUrl.toString()),
+                                "redirects" to redirects.length(),
+                                "durationMs" to MoteLog.durationMs(startMs)
+                            )
+                        )
                         return JSONObject().apply {
                             put("ok", false)
                             put("url", initialUrl.toString())
@@ -403,6 +524,18 @@ object LocalAiTools {
                 val contentType = connection.contentType.orEmpty()
                 val responseBody = readHttpResponseBody(connection, statusCode, MaxFetchResponseBytes)
                 if (statusCode !in 200..299) {
+                    MoteLog.w(
+                        Component,
+                        MoteLog.event(
+                            "fetch_url 请求失败",
+                            "status" to statusCode,
+                            "origin" to MoteLog.safeUrlOrigin(currentUrl.toString()),
+                            "contentType" to contentType.substringBefore(';').ifBlank { "未返回" },
+                            "redirects" to redirects.length(),
+                            "responseTruncated" to responseBody.truncated,
+                            "durationMs" to MoteLog.durationMs(startMs)
+                        )
+                    )
                     return JSONObject().apply {
                         put("ok", false)
                         put("url", initialUrl.toString())
@@ -419,6 +552,16 @@ object LocalAiTools {
 
                 val bodyText = decodeResponseBody(responseBody.bytes, contentType)
                 if (!isTextualResponse(contentType, bodyText)) {
+                    MoteLog.w(
+                        Component,
+                        MoteLog.event(
+                            "fetch_url 响应不是文本",
+                            "status" to statusCode,
+                            "origin" to MoteLog.safeUrlOrigin(currentUrl.toString()),
+                            "contentType" to contentType.substringBefore(';').ifBlank { "未返回" },
+                            "durationMs" to MoteLog.durationMs(startMs)
+                        )
+                    )
                     return JSONObject().apply {
                         put("ok", false)
                         put("url", initialUrl.toString())
@@ -443,6 +586,21 @@ object LocalAiTools {
                     else -> if (isHtml) htmlToPlainText(bodyText) else bodyText
                 }
                 val truncatedContent = formattedContent.length > maxChars
+                MoteLog.i(
+                    Component,
+                    MoteLog.event(
+                        "fetch_url 请求完成",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(currentUrl.toString()),
+                        "outputFormat" to outputFormat,
+                        "contentType" to contentType.substringBefore(';').ifBlank { "未返回" },
+                        "redirects" to redirects.length(),
+                        "converted" to (markdownConversion?.converted ?: false),
+                        "truncated" to (responseBody.truncated || truncatedContent),
+                        "contentLength" to formattedContent.length,
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
                 return JSONObject().apply {
                     put("ok", true)
                     put("url", initialUrl.toString())
@@ -461,6 +619,15 @@ object LocalAiTools {
             }
         }
 
+        MoteLog.w(
+            Component,
+            MoteLog.event(
+                "fetch_url 重定向处理失败",
+                "origin" to MoteLog.safeUrlOrigin(currentUrl.toString()),
+                "redirects" to redirects.length(),
+                "durationMs" to MoteLog.durationMs(startMs)
+            )
+        )
         return JSONObject().apply {
             put("ok", false)
             put("url", initialUrl.toString())
@@ -493,7 +660,19 @@ object LocalAiTools {
 
     private fun fetchWebView(context: Context, arguments: String): String {
         val options = parseFetchWebViewOptions(arguments)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "开始 fetch_webview",
+                "origin" to MoteLog.safeUrlOrigin(options.url.toString()),
+                "outputFormat" to options.outputFormat,
+                "maxChars" to options.maxChars,
+                "timeoutSeconds" to options.timeoutSeconds,
+                "settleMs" to options.settleMs
+            )
+        )
         if (Looper.myLooper() == Looper.getMainLooper()) {
+            MoteLog.w(Component, "fetch_webview 被拒绝：不能在主线程同步执行。")
             return JSONObject().apply {
                 put("ok", false)
                 put("url", options.url.toString())
@@ -512,6 +691,14 @@ object LocalAiTools {
                     latch.countDown()
                 }
             }.onFailure { error ->
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "fetch_webview 初始化失败",
+                        "origin" to MoteLog.safeUrlOrigin(options.url.toString()),
+                        "error" to error
+                    )
+                )
                 result.set(
                     JSONObject().apply {
                         put("ok", false)
@@ -526,6 +713,14 @@ object LocalAiTools {
         }
         val completed = latch.await((options.timeoutSeconds + 5).toLong(), TimeUnit.SECONDS)
         if (!completed) {
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "fetch_webview 等待超时",
+                    "origin" to MoteLog.safeUrlOrigin(options.url.toString()),
+                    "timeoutSeconds" to options.timeoutSeconds
+                )
+            )
             return JSONObject().apply {
                 put("ok", false)
                 put("url", options.url.toString())
@@ -561,6 +756,15 @@ object LocalAiTools {
         }
 
         fun finishError(message: String, finalUrl: String = webView.url ?: options.url.toString()) {
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "fetch_webview 加载失败",
+                    "origin" to MoteLog.safeUrlOrigin(options.url.toString()),
+                    "finalOrigin" to MoteLog.safeUrlOrigin(finalUrl),
+                    "messageLength" to message.length
+                )
+            )
             finishOnce(
                 JSONObject().apply {
                     put("ok", false)
@@ -705,6 +909,19 @@ object LocalAiTools {
             else -> sourceContent
         }
         val truncatedContent = formattedContent.length > options.maxChars
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "fetch_webview 完成",
+                "origin" to MoteLog.safeUrlOrigin(options.url.toString()),
+                "finalOrigin" to MoteLog.safeUrlOrigin(page.finalUrl),
+                "outputFormat" to options.outputFormat,
+                "converted" to (markdownConversion?.converted ?: false),
+                "truncated" to (truncatedContent || page.content.length > MaxWebViewExtractChars),
+                "contentLength" to formattedContent.length,
+                "titleLength" to page.title.length
+            )
+        )
         return JSONObject().apply {
             put("ok", true)
             put("url", options.url.toString())
@@ -878,6 +1095,7 @@ object LocalAiTools {
     internal fun webSearch(settings: ApiSettings, arguments: String): String {
         val searxngBaseUrl = settings.searxngUrl.trim()
         require(searxngBaseUrl.isNotEmpty()) { "SearXNG 地址未配置，无法执行搜索。" }
+        val startMs = System.currentTimeMillis()
 
         val payload = JSONObject(arguments)
         val query = payload.optString("query").trim()
@@ -901,6 +1119,17 @@ object LocalAiTools {
             timeRange = payload.optString("time_range").trim().takeIf { it.isNotEmpty() },
             safesearch = payload.optIntOrNull("safesearch")
         )
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "开始 web_search",
+                "origin" to MoteLog.safeUrlOrigin(searxngBaseUrl),
+                "queryLength" to query.length,
+                "queryHash" to MoteLog.fingerprint(query),
+                "page" to page,
+                "limit" to limit
+            )
+        )
         val connection = (URL(searchUrl).openConnection() as HttpURLConnection)
         return try {
             connection.requestMethod = "GET"
@@ -912,6 +1141,15 @@ object LocalAiTools {
             val statusCode = connection.responseCode
             val responseText = readHttpResponseText(connection, statusCode, MaxSearchResponseChars)
             if (statusCode !in 200..299) {
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "web_search 请求失败",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(searxngBaseUrl),
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
                 return JSONObject().apply {
                     put("ok", false)
                     put("status", statusCode)
@@ -921,13 +1159,35 @@ object LocalAiTools {
             }
 
             val root = runCatching { JSONObject(responseText) }.getOrElse { error ->
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "web_search 响应 JSON 解析失败",
+                        "origin" to MoteLog.safeUrlOrigin(searxngBaseUrl),
+                        "responseLength" to responseText.length,
+                        "durationMs" to MoteLog.durationMs(startMs),
+                        "error" to error
+                    )
+                )
                 return JSONObject().apply {
                     put("ok", false)
                     put("error", "SearXNG 返回的内容不是有效 JSON：${error.message ?: "解析失败"}")
                     put("body", truncateOutput(responseText, maxChars = 1200))
                 }.toString(2)
             }
-            formatSearchResults(query = query, page = page, limit = limit, root = root)
+            formatSearchResults(query = query, page = page, limit = limit, root = root).also { output ->
+                val returned = runCatching { JSONObject(output).optInt("returned", 0) }.getOrDefault(0)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event(
+                        "web_search 完成",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(searxngBaseUrl),
+                        "returned" to returned,
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
+            }
         } finally {
             runCatching { connection.disconnect() }
         }
@@ -1079,6 +1339,17 @@ object LocalAiTools {
                 background = background,
                 risk = risk
             )
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "Shell 命令命中高风险规则，等待用户确认",
+                    "confirmationId" to MoteLog.shortId(id),
+                    "commandHash" to MoteLog.fingerprint(command),
+                    "background" to background,
+                    "hasWorkDir" to (workDir != null),
+                    "risk" to risk
+                )
+            )
             return JSONObject().apply {
                 put("ok", false)
                 put("needs_confirmation", true)
@@ -1094,6 +1365,17 @@ object LocalAiTools {
         BusyBoxManager.ensureInitialized(context)
         val id = ShellProcessManager.start(command, workDir, BusyBoxManager.environmentOverrides())
         onShellProcessStarted?.invoke(id, background)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "Shell 命令已启动",
+                "id" to id,
+                "commandHash" to MoteLog.fingerprint(command),
+                "background" to background,
+                "hasWorkDir" to (workDir != null),
+                "riskConfirmed" to (risk != null)
+            )
+        )
 
         if (background) {
             return JSONObject().apply {
@@ -1120,6 +1402,16 @@ object LocalAiTools {
 
             // 前台命令已完成，从进程管理器中清理
             ShellProcessManager.remove(id)
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "Shell 前台命令完成",
+                    "id" to id,
+                    "exitCode" to entry.process.exitValue(),
+                    "stdoutChars" to stdout.length,
+                    "stderrChars" to stderr.length
+                )
+            )
 
             return JSONObject().apply {
                 put("ok", true)
@@ -1134,6 +1426,16 @@ object LocalAiTools {
         val stderrSoFar: String
         synchronized(entry.outputBuffer) { stdoutSoFar = entry.outputBuffer.toString() }
         synchronized(entry.errorBuffer) { stderrSoFar = entry.errorBuffer.toString() }
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "Shell 前台命令超时并转后台",
+                "id" to id,
+                "timeoutMs" to ShellShortTimeoutMs,
+                "stdoutChars" to stdoutSoFar.length,
+                "stderrChars" to stderrSoFar.length
+            )
+        )
 
         return JSONObject().apply {
             put("ok", true)
@@ -1156,12 +1458,36 @@ object LocalAiTools {
         val now = System.currentTimeMillis()
         if (!confirmation.active || now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
             pendingShellConfirmations.remove(id)
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "Shell 确认消费失败：未激活或已过期",
+                    "confirmationId" to MoteLog.shortId(id),
+                    "active" to confirmation.active
+                )
+            )
             return false
         }
         if (confirmation.command != command || confirmation.workDir != workDir || confirmation.background != background) {
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "Shell 确认消费失败：请求不匹配",
+                    "confirmationId" to MoteLog.shortId(id),
+                    "commandHash" to MoteLog.fingerprint(command)
+                )
+            )
             return false
         }
         pendingShellConfirmations.remove(id)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "Shell 确认令牌已消费",
+                "confirmationId" to MoteLog.shortId(id),
+                "commandHash" to MoteLog.fingerprint(command)
+            )
+        )
         return true
     }
 
@@ -1169,6 +1495,7 @@ object LocalAiTools {
         val payload = JSONObject(arguments)
         val id = payload.optString("id").trim()
         require(id.isNotEmpty()) { "id 不能为空。" }
+        MoteLog.d(Component, MoteLog.event("查询 Shell 进程状态", "id" to id))
         return ShellProcessManager.getStatus(id).toString(2)
     }
 
@@ -1176,6 +1503,7 @@ object LocalAiTools {
         val payload = JSONObject(arguments)
         val id = payload.optString("id").trim()
         require(id.isNotEmpty()) { "id 不能为空。" }
+        MoteLog.i(Component, MoteLog.event("请求停止 Shell 进程", "id" to id))
         return ShellProcessManager.stop(id).toString(2)
     }
 
@@ -1185,11 +1513,35 @@ object LocalAiTools {
         require(seconds > 0) { "seconds 必须大于 0。" }
         require(seconds <= 3600) { "seconds 不能超过 3600（1 小时）。" }
 
+        MoteLog.i(Component, MoteLog.event("工具请求等待", "seconds" to seconds))
         return JSONObject().apply {
             put("ok", true)
             put("wait_seconds", seconds)
             put("message", "将在 ${seconds} 秒后继续对话，届时可查询后台进程状态")
         }.toString(2)
+    }
+
+    private fun safeArgumentKeys(arguments: String): List<String> {
+        return runCatching {
+            val payload = JSONObject(arguments)
+            buildList {
+                val keys = payload.keys()
+                while (keys.hasNext()) {
+                    add(keys.next())
+                }
+            }.sorted()
+        }.getOrDefault(emptyList())
+    }
+
+    private fun safeToolResultFields(output: String): Array<Pair<String, Any?>> {
+        val payload = runCatching { JSONObject(output) }.getOrNull()
+        return arrayOf(
+            "ok" to payload?.optBoolean("ok", false),
+            "needsConfirmation" to (payload?.optBoolean("needs_confirmation", false) ?: false),
+            "cancelled" to (payload?.optBoolean("cancelled", false) ?: false),
+            "mode" to payload?.optString("mode")?.takeIf { it.isNotBlank() },
+            "outputLength" to output.length
+        )
     }
 
     private fun buildReadFileDefinition(): JSONObject {

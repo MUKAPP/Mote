@@ -1,7 +1,6 @@
 package com.mukapp.mote.ui
 
 import android.app.Application
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -25,6 +24,7 @@ import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.tools.ShellProcessManager
+import com.mukapp.mote.util.MoteLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -83,6 +83,7 @@ private data class ContextCompressionResult(
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
+    private val logComponent = "Chat"
     private val appContext = application.applicationContext
 
     private val uiMessagesInternal = mutableListOf<ChatMessage>()
@@ -147,11 +148,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reloadSettings() {
         _savedSettings.value = ApiSettingsStore.load(appContext)
+        MoteLog.d(logComponent, "已重新加载设置。")
     }
 
     fun saveSettings(settings: ApiSettings) {
         ApiSettingsStore.save(appContext, settings)
         _savedSettings.value = settings
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "用户保存设置",
+                "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                "modelConfigured" to settings.model.isNotBlank(),
+                "titleModelEnabled" to settings.titleModel.isNotBlank(),
+                "compressionEnabled" to (settings.compressionTriggerLength > 0),
+                "searchEnabled" to settings.searxngUrl.isNotBlank()
+            )
+        )
         if (uiMessagesInternal.isNotEmpty() || conversationMessagesInternal.isNotEmpty()) {
             persistConversationAsync()
         }
@@ -171,6 +184,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentConversationTitle = DefaultConversationTitle
         val newConversationId = ChatHistoryStore.newConversationId()
         setCurrentConversationId(newConversationId)
+        MoteLog.i(
+            logComponent,
+            MoteLog.event("已新建对话", "conversationId" to MoteLog.shortId(newConversationId))
+        )
         _draftMessage.value = ""
         publishMessagesImmediately()
         persistCurrentConversationIdAsync(
@@ -191,11 +208,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         clearPendingShellConfirmation(discardToken = true)
         val requestVersion = markStateChanged()
+        MoteLog.i(
+            logComponent,
+            MoteLog.event("开始切换对话", "conversationId" to MoteLog.shortId(conversationId))
+        )
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
                 ChatHistoryStore.loadConversation(appContext, conversationId)
             }.onFailure { error ->
-                Log.e("Mote", "加载指定对话失败", error)
+                MoteLog.e(logComponent, "加载指定对话失败", error)
             }.getOrNull() ?: return@launch
 
             withContext(Dispatchers.Main) {
@@ -205,6 +226,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 applyConversationState(historyState)
                 _draftMessage.value = ""
                 persistCurrentConversationIdAsync(conversationId, requestVersion)
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "已切换对话",
+                        "conversationId" to MoteLog.shortId(conversationId),
+                        "uiMessages" to historyState.uiMessages.size,
+                        "conversationMessages" to historyState.conversationMessages.size,
+                        "contextSummaries" to historyState.contextSummaries.size
+                    )
+                )
             }
         }
     }
@@ -223,13 +254,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val requestVersion = markStateChanged()
         markConversationDeleted(conversationId)
+        MoteLog.i(
+            logComponent,
+            MoteLog.event("开始删除当前对话", "conversationId" to MoteLog.shortId(conversationId))
+        )
         viewModelScope.launch(Dispatchers.IO) {
             val deleteResult = runCatching {
                 persistenceMutex.withLock {
                     ChatHistoryStore.deleteConversation(appContext, conversationId)
                 }
             }.onFailure { error ->
-                Log.e("Mote", "删除当前对话失败", error)
+                MoteLog.e(logComponent, "删除当前对话失败", error)
             }
             if (deleteResult.isFailure) {
                 unmarkConversationDeleted(conversationId)
@@ -243,7 +278,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             val replacementState = replacementId?.let { id ->
                 runCatching { ChatHistoryStore.loadConversation(appContext, id) }
-                    .onFailure { error -> Log.e("Mote", "加载替换对话失败", error) }
+                    .onFailure { error -> MoteLog.e(logComponent, "加载替换对话失败", error) }
                     .getOrNull()
             }
             val summaries = runCatching {
@@ -275,6 +310,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     publishMessagesImmediately()
                 }
                 _conversationSummaries.value = summaries
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "已删除当前对话",
+                        "conversationId" to MoteLog.shortId(conversationId),
+                        "replacementId" to MoteLog.shortId(replacementId)
+                    )
+                )
             }
         }
     }
@@ -287,6 +330,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val settings = _savedSettings.value ?: ApiSettingsStore.load(appContext)
         if (settings.baseUrl.isBlank() || settings.model.isBlank()) {
+            MoteLog.w(logComponent, "发送被拒绝：API 地址或模型未配置。")
             uiMessagesInternal += ChatMessage(
                 role = ChatRole.Assistant,
                 content = "请先在设置页填写 API 地址和模型，然后再开始对话。"
@@ -300,6 +344,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val userMessage = ChatMessage(role = ChatRole.User, content = content)
         uiMessagesInternal += userMessage
         conversationMessagesInternal += userMessage
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "开始发送用户消息",
+                "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                "firstUserMessage" to isFirstUserMessage,
+                "userMessageLength" to content.length,
+                "uiMessages" to uiMessagesInternal.size,
+                "conversationMessages" to conversationMessagesInternal.size,
+                "contextSummaries" to contextSummariesInternal.size,
+                "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                "modelLength" to settings.model.length
+            )
+        )
         if (isFirstUserMessage) {
             currentConversationTitle = buildFallbackTitle(content)
         }
@@ -328,6 +386,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     .filterNot { it.isContextSummary }
                     .toMutableList()
                 val assistantParts = mutableListOf<AssistantPart>()
+                var executedToolRounds = 0
 
                 fun commitRawConversationSnapshot() {
                     commitRawConversation(workingRawConversation)
@@ -342,6 +401,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantId = assistantId
                     )
                     val response = streamResult.response
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "收到模型响应",
+                            "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                            "round" to (roundIndex + 1),
+                            "finishReason" to (response.finishReason ?: "未返回"),
+                            "contentLength" to response.content.length,
+                            "thinkingLength" to response.thinkingContent.length,
+                            "toolCalls" to response.toolCalls.size,
+                            *response.usage.usageLogFields()
+                        )
+                    )
 
                     if (streamResult.accumulatedThinking.isEmpty() && response.thinkingContent.isNotBlank()) {
                         appendAssistantThinking(assistantParts, response.thinkingContent)
@@ -375,6 +447,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         commitRawConversationSnapshot()
                         publishMessagesImmediately()
                         persistConversationAsync()
+                        MoteLog.i(
+                            logComponent,
+                            MoteLog.event(
+                                "本轮回复完成",
+                                "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                                "toolRounds" to executedToolRounds,
+                                "assistantContentLength" to finalReply.length,
+                                "assistantParts" to assistantParts.size
+                            )
+                        )
                         if (isFirstUserMessage) {
                             generateConversationTitleAsync(settings, content)
                         }
@@ -392,6 +474,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     workingConversation += toolCallMessage
                     workingRawConversation += toolCallMessage
+                    executedToolRounds += 1
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "开始执行工具批次",
+                            "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                            "round" to (roundIndex + 1),
+                            "toolCalls" to response.toolCalls.size,
+                            "tools" to response.toolCalls.joinToString(separator = "+") { it.name }
+                        )
+                    )
 
                     // 先插入 loading 占位工具块，立即推送 UI
                     val loadingToolParts = response.toolCalls.map { toolCall ->
@@ -422,6 +515,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     val toolResults = toolBatch.results
                     replaceLoadingToolParts(assistantParts, toolResults)
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "工具批次执行完成",
+                            "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                            "round" to (roundIndex + 1),
+                            "results" to toolResults.size,
+                            "cancelled" to toolBatch.cancelled
+                        )
+                    )
                     updateStreamingAssistantMessage(
                         assistantIndex = assistantIndex,
                         assistantId = assistantId,
@@ -456,6 +559,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         commitRawConversationSnapshot()
                         publishMessagesImmediately()
                         persistConversationAsync()
+                        MoteLog.i(
+                            logComponent,
+                            MoteLog.event(
+                                "工具批次取消后结束回复",
+                                "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                                "assistantContentLength" to finalContent.length
+                            )
+                        )
                         if (isFirstUserMessage) {
                             generateConversationTitleAsync(settings, content)
                         }
@@ -486,16 +597,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     publishMessagesImmediately()
 
                     if (waitSeconds != null) {
+                        MoteLog.i(
+                            logComponent,
+                            MoteLog.event("工具请求等待后继续", "seconds" to waitSeconds)
+                        )
                         delay(waitSeconds * 1000L)
                     }
                 }
 
+                MoteLog.w(
+                    logComponent,
+                    MoteLog.event("工具调用达到轮次上限", "maxRounds" to MaxToolRounds)
+                )
                 throw IllegalStateException("工具调用次数过多，请缩小问题范围后再试。")
             }
 
             result.onFailure { error ->
                 if (error is CancellationException) {
                     if (stopGenerationRequested) {
+                        MoteLog.i(
+                            logComponent,
+                            MoteLog.event("生成已被用户停止", "conversationId" to MoteLog.shortId(_currentConversationId.value))
+                        )
                         handleStoppedGeneration(
                             assistantIndex = assistantIndex,
                             assistantId = assistantId,
@@ -506,6 +629,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     return@onFailure
                 }
 
+                MoteLog.e(
+                    logComponent,
+                    MoteLog.event(
+                        "发送消息失败",
+                        "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                        "error" to error
+                    ),
+                    error
+                )
                 val message = error.message?.takeIf { it.isNotBlank() }
                     ?: "请检查 API 设置、网络连接，或确认接口是否兼容 OpenAI Chat Completions。"
                 val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
@@ -541,6 +673,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             activeSendJob = null
             stopGenerationRequested = false
             _isSending.value = false
+            MoteLog.d(logComponent, "发送任务状态已清理。")
         }
     }
 
@@ -550,6 +683,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         stopGenerationRequested = true
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "用户请求停止生成",
+                "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                "hasForegroundShell" to (activeForegroundShellProcessId != null)
+            )
+        )
         clearPendingShellConfirmation(discardToken = true, cancelDecision = true)
         activeForegroundShellProcessId?.let { id ->
             activeForegroundShellProcessId = null
@@ -564,11 +705,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val confirmationId = pendingShellConfirmationId ?: return
         val decision = pendingShellConfirmationDecision ?: return
         if (LocalAiTools.activatePendingShellConfirmation(confirmationId)) {
+            MoteLog.i(
+                logComponent,
+                MoteLog.event("用户确认 Shell 命令", "confirmationId" to MoteLog.shortId(confirmationId))
+            )
             pendingShellConfirmationId = null
             pendingShellConfirmationDecision = null
             _shellConfirmation.value = null
             decision.complete(true)
         } else {
+            MoteLog.w(
+                logComponent,
+                MoteLog.event("用户确认 Shell 命令失败：令牌失效", "confirmationId" to MoteLog.shortId(confirmationId))
+            )
             pendingShellConfirmationId = null
             pendingShellConfirmationDecision = null
             _shellConfirmation.value = null
@@ -578,6 +727,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelPendingShellCommand() {
+        pendingShellConfirmationId?.let { confirmationId ->
+            MoteLog.i(
+                logComponent,
+                MoteLog.event("用户取消 Shell 命令", "confirmationId" to MoteLog.shortId(confirmationId))
+            )
+        }
         clearPendingShellConfirmation(discardToken = true, cancelDecision = false)
     }
 
@@ -608,6 +763,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         rebuildConversationAfterUiMutation(affectedUserMessageIds)
         publishMessagesImmediately()
         persistConversationAsync()
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "用户编辑消息",
+                "index" to index,
+                "removedMessages" to affectedUserMessageIds.size,
+                "uiMessages" to uiMessagesInternal.size
+            )
+        )
     }
 
     fun deleteMessage(index: Int) {
@@ -629,6 +793,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         rebuildConversationAfterUiMutation(affectedUserMessageIds)
         publishMessagesImmediately()
         persistConversationAsync()
+        MoteLog.i(
+            logComponent,
+            MoteLog.event("用户删除消息", "index" to index, "uiMessages" to uiMessagesInternal.size)
+        )
     }
 
     fun retryMessage(index: Int) {
@@ -652,6 +820,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             uiMessagesInternal.removeAt(userIndex)
             rebuildConversationAfterUiMutation(affectedUserMessageIds)
             publishMessagesImmediately()
+            MoteLog.i(logComponent, MoteLog.event("用户重试消息", "index" to index))
             sendMessage()
         } else {
             publishMessagesImmediately()
@@ -660,11 +829,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadHistory() {
         val loadVersion = stateVersion.get()
+        MoteLog.i(logComponent, "开始加载历史记录。")
         viewModelScope.launch(Dispatchers.IO) {
             val historyState = runCatching {
                 ChatHistoryStore.loadCurrentConversation(appContext)
             }.onFailure { error ->
-                Log.e("Mote", "加载历史记录失败", error)
+                MoteLog.e(logComponent, "加载历史记录失败", error)
             }.getOrDefault(
                 SavedConversationState(
                     uiMessages = emptyList(),
@@ -676,7 +846,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val summaries = runCatching {
                 ChatHistoryStore.listConversations(appContext)
             }.onFailure { error ->
-                Log.e("Mote", "加载对话列表失败", error)
+                MoteLog.e(logComponent, "加载对话列表失败", error)
             }.getOrDefault(emptyList())
 
             withContext(Dispatchers.Main) {
@@ -685,6 +855,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 applyConversationState(historyState)
                 _conversationSummaries.value = summaries
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "历史记录加载完成",
+                        "conversationId" to MoteLog.shortId(historyState.conversationId),
+                        "uiMessages" to historyState.uiMessages.size,
+                        "conversationMessages" to historyState.conversationMessages.size,
+                        "contextSummaries" to historyState.contextSummaries.size,
+                        "summaries" to summaries.size
+                    )
+                )
             }
         }
     }
@@ -707,6 +888,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         )
         publishMessagesImmediately()
+        MoteLog.d(
+            logComponent,
+            MoteLog.event(
+                "已应用对话状态",
+                "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                "uiMessages" to uiMessagesInternal.size,
+                "conversationMessages" to conversationMessagesInternal.size,
+                "contextSummaries" to contextSummariesInternal.size
+            )
+        )
     }
 
     private suspend fun updateStreamingAssistantMessage(
@@ -746,6 +937,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             buildAssistantContent(currentParts)
         }
         val shouldKeepInConversation = includeAssistantInConversation && assistantContent.isNotBlank()
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "处理已停止的生成",
+                "assistantContentLength" to assistantContent.length,
+                "assistantParts" to currentParts.size,
+                "keepInConversation" to shouldKeepInConversation
+            )
+        )
 
         uiMessagesInternal[assistantIndex] = ChatMessage(
             id = assistantId,
@@ -890,6 +1090,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val partCountBeforeAttempt = assistantParts.size
 
             try {
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "开始流式请求尝试",
+                        "attempt" to (attemptIndex + 1),
+                        "maxAttempts" to (MaxStreamRetryAttempts + 1),
+                        "messages" to messages.size
+                    )
+                )
                 val response = ChatApiClient.streamChat(
                     settings = settings,
                     messages = messages,
@@ -926,6 +1135,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantParts = assistantParts
                     )
                 }
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "流式请求尝试成功",
+                        "attempt" to (attemptIndex + 1),
+                        "contentLength" to accumulatedReply.length,
+                        "thinkingLength" to accumulatedThinking.length,
+                        "toolCalls" to response.toolCalls.size
+                    )
+                )
                 return StreamChatAttemptResult(
                     response = response,
                     accumulatedReply = accumulatedReply.toString(),
@@ -940,6 +1159,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 removeAssistantPartsFrom(assistantParts, partCountBeforeAttempt)
                 val nextAttempt = attemptIndex + 1
                 if (nextAttempt > MaxStreamRetryAttempts) {
+                    MoteLog.e(
+                        logComponent,
+                        MoteLog.event("流式请求重试已耗尽", "attempts" to (attemptIndex + 1), "error" to error),
+                        error
+                    )
                     if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
                         updateStreamingAssistantMessage(
                             assistantIndex = assistantIndex,
@@ -951,6 +1175,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     throw error
                 }
 
+                MoteLog.w(
+                    logComponent,
+                    MoteLog.event("流式请求失败，准备重试", "nextAttempt" to (nextAttempt + 1), "error" to error)
+                )
                 retryNoticeIndex = replaceRetryNoticePart(
                     parts = assistantParts,
                     retryNoticeIndex = retryNoticeIndex,
@@ -1027,9 +1255,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ): ToolExecutionBatch {
         val results = mutableListOf<ChatMessage>()
         for (toolCall in toolCalls) {
+            MoteLog.i(
+                logComponent,
+                MoteLog.event(
+                    "开始本地工具调用",
+                    "tool" to toolCall.name,
+                    "toolCallId" to MoteLog.shortId(toolCall.id)
+                )
+            )
             var result = executeLocalToolCall(settings, toolCall)
             val confirmation = parseShellConfirmationRequest(result.content, toolCall.arguments)
             if (confirmation != null) {
+                MoteLog.w(
+                    logComponent,
+                    MoteLog.event(
+                        "工具请求 Shell 高风险确认",
+                        "confirmationId" to MoteLog.shortId(confirmation.confirmationId),
+                        "background" to confirmation.background,
+                        "risk" to confirmation.risk
+                    )
+                )
                 val approved = awaitShellConfirmation(
                     confirmation = confirmation,
                     assistantParts = assistantParts,
@@ -1038,10 +1283,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 if (!approved) {
                     LocalAiTools.discardPendingShellConfirmation(confirmation.confirmationId)
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "Shell 高风险确认未通过",
+                            "confirmationId" to MoteLog.shortId(confirmation.confirmationId)
+                        )
+                    )
                     results += buildCancelledShellToolResult(toolCall, confirmation)
                     return ToolExecutionBatch(results = results, cancelled = true)
                 }
 
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "Shell 高风险确认已通过，继续执行工具",
+                        "confirmationId" to MoteLog.shortId(confirmation.confirmationId)
+                    )
+                )
                 result = executeLocalToolCall(
                     settings,
                     toolCall.copy(
@@ -1053,6 +1312,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             results += result
+            MoteLog.i(
+                logComponent,
+                MoteLog.event(
+                    "本地工具调用完成",
+                    "tool" to toolCall.name,
+                    "toolCallId" to MoteLog.shortId(toolCall.id),
+                    "resultLength" to result.content.length
+                )
+            )
         }
         return ToolExecutionBatch(results = results, cancelled = false)
     }
@@ -1100,6 +1368,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 assistantId = assistantId,
                 content = buildAssistantContent(assistantParts),
                 assistantParts = assistantParts
+            )
+            MoteLog.i(
+                logComponent,
+                MoteLog.event(
+                    "已展示 Shell 确认 UI",
+                    "confirmationId" to MoteLog.shortId(confirmation.confirmationId),
+                    "background" to confirmation.background,
+                    "risk" to confirmation.risk
+                )
             )
         }
 
@@ -1196,6 +1473,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (discardToken && confirmationId != null) {
             LocalAiTools.discardPendingShellConfirmation(confirmationId)
         }
+        if (confirmationId != null) {
+            MoteLog.d(
+                logComponent,
+                MoteLog.event(
+                    "清理待确认 Shell 命令",
+                    "confirmationId" to MoteLog.shortId(confirmationId),
+                    "discardToken" to discardToken,
+                    "cancelDecision" to cancelDecision
+                )
+            )
+        }
         pendingShellConfirmationId = null
         _shellConfirmation.value = null
         val decision = pendingShellConfirmationDecision
@@ -1236,6 +1524,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         contextSummariesInternal.clear()
         contextSummariesInternal.addAll(filteredSummaries)
         clearContextTokenUsageAnchor()
+        MoteLog.d(
+            logComponent,
+            MoteLog.event(
+                "UI 消息变更后已重建上下文",
+                "affectedMessages" to affectedMessageIds.size,
+                "conversationMessages" to conversationMessagesInternal.size,
+                "contextSummaries" to contextSummariesInternal.size
+            )
+        )
     }
 
     private suspend fun prepareConversationForSending(
@@ -1259,9 +1556,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val tokenCount = resolveConversationTokenCount(requestMessages)
         val plan = buildContextCompressionPlan(settings, requestMessages, tokenCount)
         if (plan == null) {
+            MoteLog.d(
+                logComponent,
+                MoteLog.event(
+                    "上下文无需压缩",
+                    "messages" to requestMessages.size,
+                    "tokens" to tokenCount.tokens,
+                    "source" to tokenCount.sourceLabel
+                )
+            )
             throwIfContextExceedsHardLimitWithoutCompression(settings, tokenCount)
             return ContextCompressionResult(requestMessages = requestMessages, compressed = false)
         }
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "开始压缩聊天上下文",
+                "messagesToCompress" to plan.messagesToCompress.size,
+                "recentMessages" to plan.recentMessages.size,
+                "tokens" to plan.tokenCount.tokens,
+                "source" to plan.tokenCount.sourceLabel,
+                "maxSummaryTokens" to plan.maxSummaryTokens
+            )
+        )
         val summary = try {
             val summary = ChatApiClient.compressConversation(
                 settings = settings,
@@ -1275,15 +1592,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            Log.e("Mote", "压缩聊天上下文失败", error)
+            MoteLog.e(logComponent, "压缩聊天上下文失败", error)
             null
         }
 
         if (summary != null) {
             appendContextSummary(summary)
-            Log.i(
-                "Mote",
-                "已压缩聊天上下文：${plan.tokenCount.sourceLabel} ${plan.tokenCount.tokens} tokens，压缩 ${plan.messagesToCompress.size} 条消息，保留 ${plan.recentMessages.size} 条消息。"
+            MoteLog.i(
+                logComponent,
+                MoteLog.event(
+                    "已压缩聊天上下文",
+                    "source" to plan.tokenCount.sourceLabel,
+                    "tokens" to plan.tokenCount.tokens,
+                    "compressedMessages" to plan.messagesToCompress.size,
+                    "recentMessages" to plan.recentMessages.size,
+                    "contextSummaries" to contextSummariesInternal.size
+                )
             )
             clearContextTokenUsageAnchor()
             return ContextCompressionResult(
@@ -1294,6 +1618,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val hardLimit = settings.modelContextLength.takeIf { it > 0 }
         if (hardLimit == null || plan.tokenCount.tokens <= hardLimit) {
+            MoteLog.w(
+                logComponent,
+                MoteLog.event(
+                    "上下文压缩失败，继续使用原始上下文",
+                    "tokens" to plan.tokenCount.tokens,
+                    "hardLimit" to hardLimit
+                )
+            )
             _userNotice.value = "上下文压缩失败，已临时使用原始上下文继续发送。"
             return ContextCompressionResult(requestMessages = requestMessages, compressed = false)
         }
@@ -1315,6 +1647,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
         return listOf(ChatMessage(role = ChatRole.System, content = buildSystemPrompt())) + messages
+    }
+
+    private fun TokenUsage?.usageLogFields(): Array<Pair<String, Any?>> {
+        return arrayOf(
+            "inputTokens" to this?.inputTokens,
+            "outputTokens" to this?.outputTokens,
+            "totalTokens" to this?.totalTokens,
+            "cachedInputTokens" to this?.cachedInputTokens,
+            "reasoningOutputTokens" to this?.reasoningOutputTokens
+        )
     }
 
     private fun buildContextCompressionPlan(
@@ -1432,11 +1774,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val conversationSnapshot = conversationMessagesInternal.toList()
         val contextSummarySnapshot = contextSummariesInternal.toList()
         val saveVersion = registerSaveSnapshot(conversationIdSnapshot)
+        MoteLog.d(
+            logComponent,
+            MoteLog.event(
+                "已注册保存快照",
+                "conversationId" to MoteLog.shortId(conversationIdSnapshot),
+                "saveVersion" to saveVersion,
+                "uiMessages" to uiSnapshot.size,
+                "conversationMessages" to conversationSnapshot.size,
+                "contextSummaries" to contextSummarySnapshot.size
+            )
+        )
 
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 persistenceMutex.withLock {
                     if (shouldSkipSave(conversationIdSnapshot, saveVersion)) {
+                        MoteLog.d(
+                            logComponent,
+                            MoteLog.event(
+                                "跳过过期保存快照",
+                                "conversationId" to MoteLog.shortId(conversationIdSnapshot),
+                                "saveVersion" to saveVersion
+                            )
+                        )
                         return@runCatching ChatHistoryStore.listConversations(appContext)
                     }
                     val effectiveTitle = synchronized(persistenceStateLock) {
@@ -1454,10 +1815,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ChatHistoryStore.listConversations(appContext)
                 }
             }.onFailure { error ->
-                Log.e("Mote", "保存聊天记录失败", error)
+                MoteLog.e(logComponent, "保存聊天记录失败", error)
                 clearSaveSnapshot(conversationIdSnapshot, saveVersion)
             }.onSuccess { summaries ->
                 clearSaveSnapshot(conversationIdSnapshot, saveVersion)
+                MoteLog.d(
+                    logComponent,
+                    MoteLog.event(
+                        "聊天记录保存任务完成",
+                        "conversationId" to MoteLog.shortId(conversationIdSnapshot),
+                        "summaries" to summaries.size
+                    )
+                )
                 withContext(Dispatchers.Main) {
                     _conversationSummaries.value = summaries
                 }
@@ -1467,21 +1836,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun generateConversationTitleAsync(settings: ApiSettings, firstUserMessage: String) {
         if (settings.titleModel.isBlank() || firstUserMessage.isBlank()) {
+            MoteLog.d(
+                logComponent,
+                MoteLog.event(
+                    "跳过模型标题生成",
+                    "titleModelConfigured" to settings.titleModel.isNotBlank(),
+                    "firstUserMessageBlank" to firstUserMessage.isBlank()
+                )
+            )
             refreshConversationSummariesAsync()
             return
         }
 
         val conversationIdSnapshot = _currentConversationId.value.orEmpty()
         if (conversationIdSnapshot.isBlank()) {
+            MoteLog.w(logComponent, "跳过模型标题生成：当前对话 ID 为空。")
             refreshConversationSummariesAsync()
             return
         }
 
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "开始异步生成对话标题",
+                "conversationId" to MoteLog.shortId(conversationIdSnapshot),
+                "firstUserMessageLength" to firstUserMessage.length
+            )
+        )
         viewModelScope.launch(Dispatchers.IO) {
             val generatedTitle = runCatching {
                 ChatApiClient.generateConversationTitle(settings, firstUserMessage)
             }.onFailure { error ->
-                Log.e("Mote", "生成对话标题失败", error)
+                MoteLog.e(logComponent, "生成对话标题失败", error)
             }.getOrNull()
 
             val normalizedTitle = generatedTitle
@@ -1494,6 +1880,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         conversationIdSnapshot in deletedConversationIds
                     }
                     if (deleted) {
+                        MoteLog.d(
+                            logComponent,
+                            MoteLog.event(
+                                "跳过保存标题：对话已删除",
+                                "conversationId" to MoteLog.shortId(conversationIdSnapshot)
+                            )
+                        )
                         return@withLock ChatHistoryStore.listConversations(appContext)
                     }
                     synchronized(persistenceStateLock) {
@@ -1508,8 +1901,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ChatHistoryStore.listConversations(appContext)
                 }
             }.onFailure { error ->
-                Log.e("Mote", "保存对话标题失败", error)
+                MoteLog.e(logComponent, "保存对话标题失败", error)
             }.getOrDefault(emptyList())
+
+            MoteLog.i(
+                logComponent,
+                MoteLog.event(
+                    "对话标题生成流程完成",
+                    "conversationId" to MoteLog.shortId(conversationIdSnapshot),
+                    "generatedByModel" to (generatedTitle != null),
+                    "titleLength" to normalizedTitle.length
+                )
+            )
 
             withContext(Dispatchers.Main) {
                 if (_currentConversationId.value == conversationIdSnapshot) {
@@ -1525,8 +1928,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val summaries = runCatching {
                 ChatHistoryStore.listConversations(appContext)
             }.onFailure { error ->
-                Log.e("Mote", "刷新对话列表失败", error)
+                MoteLog.e(logComponent, "刷新对话列表失败", error)
             }.getOrDefault(emptyList())
+
+            MoteLog.d(logComponent, MoteLog.event("对话列表刷新完成", "summaries" to summaries.size))
 
             withContext(Dispatchers.Main) {
                 _conversationSummaries.value = summaries
@@ -1620,7 +2025,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }.onFailure { error ->
-                Log.e("Mote", "保存当前对话索引失败", error)
+                MoteLog.e(logComponent, "保存当前对话索引失败", error)
+            }.onSuccess {
+                MoteLog.d(
+                    logComponent,
+                    MoteLog.event(
+                        "当前对话索引保存任务完成",
+                        "conversationId" to MoteLog.shortId(conversationId),
+                        "allowMissingConversation" to allowMissingConversation
+                    )
+                )
             }
         }
     }
