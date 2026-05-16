@@ -2,6 +2,8 @@ package com.mukapp.mote.ui
 
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.AssistantMarkdownPart
+import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ContextSummary
@@ -70,6 +72,64 @@ class ChatConversationContextHelperTest {
         assertFalse(payload.has("ok"))
         assertEquals(true, payload.getBoolean("truncated"))
         assertEquals("text", payload.getString("original_format"))
+    }
+
+    @Test
+    fun limitToolResultsForContextReturnsTruncatedCopiesWithoutMutatingOriginals() {
+        val original = "x".repeat(ChatConversationContextHelper.MaxToolResultContextChars + 1)
+        val shortContent = "短结果"
+        val longToolMessage = ChatMessage(
+            id = "t1",
+            role = ChatRole.Tool,
+            content = original,
+            toolCallId = "call_1",
+            toolName = "read_file"
+        )
+        val shortToolMessage = ChatMessage(
+            id = "t2",
+            role = ChatRole.Tool,
+            content = shortContent,
+            toolCallId = "call_2",
+            toolName = "list_path"
+        )
+
+        val limited = ChatConversationContextHelper.limitToolResultsForContext(
+            listOf(longToolMessage, shortToolMessage)
+        )
+
+        assertEquals(original, longToolMessage.content)
+        assertEquals(shortContent, shortToolMessage.content)
+        assertEquals(2, limited.size)
+        assertTrue(JSONObject(limited[0].content).getBoolean("truncated"))
+        assertEquals(shortToolMessage, limited[1])
+    }
+
+    @Test
+    fun replaceLoadingToolPartsFillsFullResultBeforeLaterContextCompression() {
+        val fullResult = "完整工具结果".repeat(2_000)
+        val parts = listOf(
+            AssistantMarkdownPart(id = "text_1", text = "先读取文件"),
+            AssistantToolPart(
+                id = "call_1",
+                toolName = "read_file",
+                toolArguments = "{}",
+                result = "",
+                isLoading = true
+            )
+        )
+        val toolResult = ChatMessage(
+            role = ChatRole.Tool,
+            content = fullResult,
+            toolCallId = "call_1",
+            toolName = "read_file"
+        )
+
+        val replaced = ChatConversationContextHelper.replaceLoadingToolParts(parts, listOf(toolResult))
+        val replacedToolPart = replaced[1] as AssistantToolPart
+
+        assertEquals(parts[0], replaced[0])
+        assertEquals(false, replacedToolPart.isLoading)
+        assertEquals(fullResult, replacedToolPart.result)
     }
 
     @Test

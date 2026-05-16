@@ -1,8 +1,10 @@
 package com.mukapp.mote.ui
 
+import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.AssistantPart
+import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
-import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.TokenUsage
 import org.json.JSONObject
@@ -218,6 +220,28 @@ internal object ChatConversationContextHelper {
                 put("tail", content.takeLast(tailLength))
             }.toString(2)
         )
+    }
+
+    fun limitToolResultsForContext(messages: List<ChatMessage>): List<ChatMessage> {
+        return messages.map { message -> limitToolResultForContext(message) }
+    }
+
+    fun replaceLoadingToolParts(
+        parts: List<AssistantPart>,
+        toolResults: List<ChatMessage>
+    ): List<AssistantPart> {
+        val resultById = toolResults.associateBy { result -> result.toolCallId }
+        return parts.map { part ->
+            if (part is AssistantToolPart && part.isLoading) {
+                val result = resultById[part.id]
+                part.copy(
+                    result = result?.content.orEmpty(),
+                    isLoading = false
+                )
+            } else {
+                part
+            }
+        }
     }
 
     fun detectToolResultFormat(content: String): String {

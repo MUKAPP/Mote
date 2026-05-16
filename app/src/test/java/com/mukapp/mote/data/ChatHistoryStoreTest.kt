@@ -81,4 +81,30 @@ class ChatHistoryStoreTest {
             restored
         )
     }
+
+    @Test
+    fun serializeMessagesDoesNotPersistLoadingToolPartState() {
+        val messages = listOf(
+            ChatMessage(
+                id = "a1",
+                role = ChatRole.Assistant,
+                content = "",
+                assistantParts = listOf(
+                    AssistantToolPart(
+                        id = "call_1",
+                        toolName = "read_file",
+                        toolArguments = "{}",
+                        result = "",
+                        isLoading = true
+                    )
+                )
+            )
+        )
+
+        val restored = ChatHistoryStore.deserializeMessages(ChatHistoryStore.serializeMessages(messages))
+        val restoredToolPart = restored.single().assistantParts.single() as AssistantToolPart
+
+        assertEquals(false, restoredToolPart.isLoading)
+        assertEquals("", restoredToolPart.result)
+    }
 }

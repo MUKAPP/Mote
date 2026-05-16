@@ -421,11 +421,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantId = assistantId
                     )
                     val toolResults = toolBatch.results
-                    val limitedToolResults = toolResults.map { result ->
-                        ChatConversationContextHelper.limitToolResultForContext(result)
-                    }
+                    replaceLoadingToolParts(assistantParts, toolResults)
+                    updateStreamingAssistantMessage(
+                        assistantIndex = assistantIndex,
+                        assistantId = assistantId,
+                        content = buildAssistantContent(assistantParts),
+                        assistantParts = assistantParts
+                    )
+
+                    val limitedToolResults = ChatConversationContextHelper.limitToolResultsForContext(toolResults)
                     workingConversation.addAll(limitedToolResults)
-                    workingRawConversation.addAll(limitedToolResults)
+                    workingRawConversation.addAll(toolResults)
                     commitRawConversationSnapshot()
                     workingConversation = prepareConversationForSending(
                         settings = settings,
@@ -433,9 +439,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ).toMutableList()
                     hasCommittedToolContextInCurrentTurn = true
                     skipStoppedAssistantContextCommit = false
-
-                    // 用实际结果替换 loading 占位
-                    replaceLoadingToolParts(assistantParts, toolResults)
 
                     if (toolBatch.cancelled) {
                         appendAssistantMarkdown(assistantParts, "已取消执行高风险 shell 命令。")
@@ -849,16 +852,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         toolResults: List<ChatMessage>
     ) {
         cachedAssistantContent = null
-        val resultById = toolResults.associateBy { it.toolCallId }
-        for (index in parts.indices) {
-            val part = parts[index]
-            if (part is AssistantToolPart && part.isLoading) {
-                val result = resultById[part.id]
-                parts[index] = part.copy(
-                    result = result?.content.orEmpty(),
-                    isLoading = false
-                )
-            }
+        val replacedParts = ChatConversationContextHelper.replaceLoadingToolParts(
+            parts = parts,
+            toolResults = toolResults
+        )
+        for (index in replacedParts.indices) {
+            parts[index] = replacedParts[index]
         }
     }
 
@@ -1247,9 +1246,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             settings = settings,
             rawMessages = rawMessages
         )
-        if (result.compressed) {
-            persistConversationAsync()
-        }
         return result.requestMessages
     }
 
@@ -1259,10 +1255,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ): ContextCompressionResult {
         val normalizedMessages = ChatConversationContextHelper.filterConversationMessages(rawMessages)
             .filterNot { it.isContextSummary }
-        val requestMessages = ChatConversationContextHelper.applyContextSummariesForRequest(
-            conversationMessages = normalizedMessages,
-            contextSummaries = contextSummariesInternal
-        )
+        val requestMessages = buildLimitedRequestContextMessages(normalizedMessages)
         val tokenCount = resolveConversationTokenCount(requestMessages)
         val plan = buildContextCompressionPlan(settings, requestMessages, tokenCount)
         if (plan == null) {
@@ -1294,10 +1287,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             clearContextTokenUsageAnchor()
             return ContextCompressionResult(
-                requestMessages = ChatConversationContextHelper.applyContextSummariesForRequest(
-                    conversationMessages = normalizedMessages,
-                    contextSummaries = contextSummariesInternal
-                ),
+                requestMessages = buildLimitedRequestContextMessages(normalizedMessages),
                 compressed = true
             )
         }
@@ -1312,6 +1302,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun appendContextSummary(newSummary: ContextSummary) {
         contextSummariesInternal += newSummary
+    }
+
+    private fun buildLimitedRequestContextMessages(rawMessages: List<ChatMessage>): List<ChatMessage> {
+        return ChatConversationContextHelper.limitToolResultsForContext(
+            ChatConversationContextHelper.applyContextSummariesForRequest(
+                conversationMessages = rawMessages,
+                contextSummaries = contextSummariesInternal
+            )
+        )
     }
 
     private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
@@ -1413,10 +1412,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val anchoredMessages = contextTokenUsageAnchor?.messages
         if (anchoredMessages != null &&
             !ChatConversationContextHelper.hasMessagePrefix(
-                ChatConversationContextHelper.applyContextSummariesForRequest(
-                    conversationMessages = conversationMessagesInternal,
-                    contextSummaries = contextSummariesInternal
-                ),
+                buildLimitedRequestContextMessages(conversationMessagesInternal),
                 anchoredMessages
             )
         ) {
