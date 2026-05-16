@@ -49,6 +49,22 @@ class LocalAiToolsTest {
     }
 
     @Test
+    fun shellToolDefinitionDescribesDefaultAiTempDirectory() {
+        val shellDefinition = LocalAiTools.toolDefinitions().findTool("shell")
+        val function = shellDefinition.getJSONObject("function")
+        val workDirDescription = function
+            .getJSONObject("parameters")
+            .getJSONObject("properties")
+            .getJSONObject("work_dir")
+            .getString("description")
+
+        assertTrue(function.getString("description").contains("Android/data/包名/files/ai_tmp"))
+        assertTrue(function.getString("description").contains("\$TMPDIR"))
+        assertTrue(function.getString("description").contains("\$MOTE_AI_TMPDIR"))
+        assertTrue(workDirDescription.contains("Android/data/包名/files/ai_tmp"))
+    }
+
+    @Test
     fun webSearchRejectsBlankSearxngUrl() {
         val error = assertThrows(IllegalArgumentException::class.java) {
             LocalAiTools.webSearch(
@@ -485,13 +501,22 @@ class LocalAiToolsTest {
     }
 
     private fun JSONArray.hasTool(name: String): Boolean {
+        return findToolOrNull(name) != null
+    }
+
+    private fun JSONArray.findTool(name: String): JSONObject {
+        return findToolOrNull(name) ?: error("未找到工具定义：$name")
+    }
+
+    private fun JSONArray.findToolOrNull(name: String): JSONObject? {
         for (index in 0 until length()) {
-            val function = optJSONObject(index)?.optJSONObject("function") ?: continue
+            val definition = optJSONObject(index) ?: continue
+            val function = definition.optJSONObject("function") ?: continue
             if (function.optString("name") == name) {
-                return true
+                return definition
             }
         }
-        return false
+        return null
     }
 
     private fun parseQuery(rawQuery: String): Map<String, String> {

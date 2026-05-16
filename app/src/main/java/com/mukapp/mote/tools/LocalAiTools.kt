@@ -1362,8 +1362,9 @@ object LocalAiTools {
             }.toString(2)
         }
 
-        BusyBoxManager.ensureInitialized(context)
-        val id = ShellProcessManager.start(command, workDir, BusyBoxManager.environmentOverrides())
+        val aiTempDir = BusyBoxManager.ensureAiTempDir(context)
+        val effectiveWorkDir = workDir ?: aiTempDir.path
+        val id = ShellProcessManager.start(command, effectiveWorkDir, BusyBoxManager.environmentOverrides(context))
         onShellProcessStarted?.invoke(id, background)
         MoteLog.i(
             Component,
@@ -1372,7 +1373,8 @@ object LocalAiTools {
                 "id" to id,
                 "commandHash" to MoteLog.fingerprint(command),
                 "background" to background,
-                "hasWorkDir" to (workDir != null),
+                "hasCustomWorkDir" to (workDir != null),
+                "workDir" to effectiveWorkDir,
                 "riskConfirmed" to (risk != null)
             )
         )
@@ -1837,7 +1839,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ShellToolName)
-                    put("description", "在设备上执行 shell 命令。短命令会等待完成并返回输出；长命令可设为后台运行，用 shell_status 查询状态。如果命令超过 30 秒未完成会自动转为后台运行。")
+                    put("description", "在设备上执行 shell 命令。短命令会等待完成并返回输出；长命令可设为后台运行，用 shell_status 查询状态。如果命令超过 30 秒未完成会自动转为后台运行。未提供工作目录时默认使用 Android/data/包名/files/ai_tmp，临时文件请保存到当前目录、\$TMPDIR 或 \$MOTE_AI_TMPDIR。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -1857,7 +1859,7 @@ object LocalAiTools {
                                         "work_dir",
                                         JSONObject().apply {
                                             put("type", "string")
-                                            put("description", "工作目录，不提供则使用默认目录")
+                                            put("description", "工作目录，不提供则使用 Android/data/包名/files/ai_tmp 作为默认目录")
                                         }
                                     )
                                     put(

@@ -11,7 +11,7 @@ class BusyBoxManagerTest {
         val environment = BusyBoxManager.BusyBoxEnvironment(
             shellDir = File("/data/user/0/com.mukapp.mote/files/shell"),
             binDir = File("/data/user/0/com.mukapp.mote/files/shell/bin"),
-            tmpDir = File("/data/user/0/com.mukapp.mote/files/shell/tmp"),
+            tmpDir = File("/storage/emulated/0/Android/data/com.mukapp.mote/files/ai_tmp"),
             busyBox = File("/data/user/0/com.mukapp.mote/files/shell/busybox"),
             abi = "arm64-v8a",
             sourceId = "asset:busybox/arm64-v8a/busybox:1"
@@ -28,6 +28,7 @@ class BusyBoxManagerTest {
         )
         assertEquals(environment.busyBox.path.normalizedSeparators(), variables["BUSYBOX"]?.normalizedSeparators())
         assertEquals(environment.shellDir.path.normalizedSeparators(), variables["MOTE_SHELL_DIR"]?.normalizedSeparators())
+        assertEquals(environment.tmpDir.path.normalizedSeparators(), variables["MOTE_AI_TMPDIR"]?.normalizedSeparators())
         assertEquals(environment.tmpDir.path.normalizedSeparators(), variables["TMPDIR"]?.normalizedSeparators())
     }
 
@@ -51,6 +52,20 @@ class BusyBoxManagerTest {
             "/data/user/0/com.mukapp.mote/files/shell/bin:/data/user/0/com.mukapp.mote/files/shell:/system/bin",
             variables["PATH"]?.normalizedSeparators()
         )
+    }
+
+    @Test
+    fun buildFallbackEnvironmentVariablesExposeAiTempDirectoryWithoutBusyBox() {
+        val tmpDir = File("/storage/emulated/0/Android/data/com.mukapp.mote/files/ai_tmp")
+
+        val variables = BusyBoxManager.buildFallbackEnvironmentVariables(
+            tmpDir = tmpDir,
+            inheritedPath = "/system/bin:/vendor/bin"
+        )
+
+        assertEquals("/system/bin:/vendor/bin", variables["PATH"]?.normalizedSeparators())
+        assertEquals(tmpDir.path.normalizedSeparators(), variables["MOTE_AI_TMPDIR"]?.normalizedSeparators())
+        assertEquals(tmpDir.path.normalizedSeparators(), variables["TMPDIR"]?.normalizedSeparators())
     }
 
     @Test

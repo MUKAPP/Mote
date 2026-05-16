@@ -93,8 +93,9 @@ app/src/main/java/com/mukapp/mote/
 ## Shell 与 BusyBox
 
 - BusyBox 以 `jniLibs/<abi>/libbusybox.so` 打包，覆盖 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64`。
-- `BusyBoxManager.initialize()` 在应用启动后后台初始化，并创建 `filesDir/shell/busybox` 与 applet 软链接。
-- Shell 执行前会调用 `BusyBoxManager.ensureInitialized()`，并注入 `PATH`、`BUSYBOX`、`MOTE_SHELL_DIR`、`TMPDIR`。
+- `BusyBoxManager.initialize()` 在应用启动后后台初始化，创建 AI 临时目录，并创建 `filesDir/shell/busybox` 与 applet 软链接。
+- AI 临时目录优先使用应用专属外部存储 `Android/data/<包名>/files/ai_tmp`；外部目录不可用时回退到 `filesDir/shell/tmp`。
+- Shell 执行前会准备 AI 临时目录并调用 `BusyBoxManager.ensureInitialized()`；未显式传入 `work_dir` 时默认在 AI 临时目录执行，并注入 `PATH`、`BUSYBOX`、`MOTE_SHELL_DIR`、`MOTE_AI_TMPDIR`、`TMPDIR`。
 - 若原生库不可用，会尝试 `assets/busybox/<abi>/busybox`，再退回系统 `PATH`。
 - 前台和后台 Shell 由 `ShellProcessManager` 管理，后台进程支持状态查询和停止，最多保留 20 个。
 

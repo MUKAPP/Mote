@@ -14,6 +14,7 @@ object BusyBoxManager {
     private const val ShellDirName = "shell"
     private const val BinDirName = "bin"
     private const val TmpDirName = "tmp"
+    private const val AiTempDirName = "ai_tmp"
     private const val BusyBoxFileName = "busybox"
     private const val NativeBusyBoxFileName = "libbusybox.so"
     private const val InstallStampFileName = ".busybox_install"
@@ -28,6 +29,9 @@ object BusyBoxManager {
     private var cachedEnvironment: BusyBoxEnvironment? = null
 
     @Volatile
+    private var cachedAiTempDir: File? = null
+
+    @Volatile
     private var hasLoggedUnavailable = false
 
     data class BusyBoxEnvironment(
@@ -40,7 +44,9 @@ object BusyBoxManager {
     )
 
     fun initialize(context: Context) {
-        ensureInitialized(context)
+        val appContext = context.applicationContext
+        ensureAiTempDir(appContext)
+        ensureInitialized(appContext)
     }
 
     fun ensureInitialized(context: Context): BusyBoxEnvironment? {
@@ -85,9 +91,42 @@ object BusyBoxManager {
         }
     }
 
+    fun ensureAiTempDir(context: Context): File {
+        cachedAiTempDir?.let { return it }
+
+        synchronized(initLock) {
+            cachedAiTempDir?.let { return it }
+
+            val appContext = context.applicationContext
+            val directory = resolveAiTempDir(appContext)
+            cachedAiTempDir = directory
+            MoteLog.i(
+                Component,
+                MoteLog.event("AI 临时目录已准备", "path" to directory.path)
+            )
+            return directory
+        }
+    }
+
+    fun environmentOverrides(context: Context): Map<String, String> {
+        val appContext = context.applicationContext
+        val environment = ensureInitialized(appContext)
+        val aiTempDir = ensureAiTempDir(appContext)
+        return if (environment != null) {
+            buildEnvironmentVariables(environment, System.getenv("PATH"))
+        } else {
+            buildFallbackEnvironmentVariables(aiTempDir, System.getenv("PATH"))
+        }
+    }
+
     fun environmentOverrides(): Map<String, String> {
-        val environment = cachedEnvironment ?: return emptyMap()
-        return buildEnvironmentVariables(environment, System.getenv("PATH"))
+        val environment = cachedEnvironment
+        val aiTempDir = cachedAiTempDir
+        return when {
+            environment != null -> buildEnvironmentVariables(environment, System.getenv("PATH"))
+            aiTempDir != null -> buildFallbackEnvironmentVariables(aiTempDir, System.getenv("PATH"))
+            else -> emptyMap()
+        }
     }
 
     internal fun buildEnvironmentVariables(
@@ -101,7 +140,19 @@ object BusyBoxManager {
             ),
             "BUSYBOX" to environment.busyBox.path,
             "MOTE_SHELL_DIR" to environment.shellDir.path,
+            "MOTE_AI_TMPDIR" to environment.tmpDir.path,
             "TMPDIR" to environment.tmpDir.path
+        )
+    }
+
+    internal fun buildFallbackEnvironmentVariables(
+        tmpDir: File,
+        inheritedPath: String?
+    ): Map<String, String> {
+        return mapOf(
+            "PATH" to buildPath(prefixes = emptyList(), inheritedPath = inheritedPath),
+            "MOTE_AI_TMPDIR" to tmpDir.path,
+            "TMPDIR" to tmpDir.path
         )
     }
 
@@ -130,10 +181,9 @@ object BusyBoxManager {
         )
         val shellDir = File(context.filesDir, ShellDirName)
         val binDir = File(shellDir, BinDirName)
-        val tmpDir = File(shellDir, TmpDirName)
+        val tmpDir = ensureAiTempDir(context)
         prepareDirectory(shellDir)
         prepareDirectory(binDir)
-        prepareDirectory(tmpDir)
 
         val busyBox = when (source) {
             is BusyBoxSource.NativeLibrary -> ensureNativeBusyBoxLauncher(shellDir, source.file)
@@ -185,6 +235,33 @@ object BusyBoxManager {
         }
 
         return environment
+    }
+
+    private fun resolveAiTempDir(context: Context): File {
+        resolveExternalAiTempDir(context)?.let { return it }
+
+        val fallback = File(File(context.filesDir, ShellDirName), TmpDirName)
+        prepareDirectory(fallback)
+        MoteLog.w(
+            Component,
+            "无法使用应用专属外部临时目录，已回退到内部临时目录：${fallback.path}"
+        )
+        return fallback
+    }
+
+    private fun resolveExternalAiTempDir(context: Context): File? {
+        val externalRoot = runCatching { context.getExternalFilesDir(null) }
+            .onFailure { error -> MoteLog.w(Component, "获取应用专属外部目录失败。", error) }
+            .getOrNull()
+            ?: return null
+
+        val directory = File(externalRoot, AiTempDirName)
+        return runCatching {
+            prepareDirectory(directory)
+            directory
+        }.onFailure { error ->
+            MoteLog.w(Component, "创建应用专属外部临时目录失败：${directory.path}", error)
+        }.getOrNull()
     }
 
     private fun resolveBusyBoxSource(context: Context): BusyBoxSource? {
