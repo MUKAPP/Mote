@@ -10,6 +10,7 @@ import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.View.MeasureSpec
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -782,9 +783,20 @@ class MarkdownView @JvmOverloads constructor(
         nested: Boolean,
         isLastInContainer: Boolean
     ): View {
+        val tableView = MarkdownTableView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setTableData(table.headers, table.rows, table.alignments, linkDefs, isStreaming)
+        }
+
         val scrollView = object : HorizontalScrollView(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 isFillViewport = false
+                val viewportWidth = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+                    0
+                } else {
+                    (MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight).coerceAtLeast(0)
+                }
+                tableView.setAvailableViewportWidth(viewportWidth)
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
             }
         }
@@ -792,10 +804,6 @@ class MarkdownView @JvmOverloads constructor(
         scrollView.isHorizontalScrollBarEnabled = false
         scrollView.overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
 
-        val tableView = MarkdownTableView(context).apply {
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setTableData(table.headers, table.rows, table.alignments, linkDefs, isStreaming)
-        }
         scrollView.addView(tableView)
         return scrollView
     }

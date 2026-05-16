@@ -6,8 +6,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.icu.text.BreakIterator
 import android.text.Layout
-import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -19,8 +19,10 @@ import android.view.ViewConfiguration
 import androidx.core.text.buildSpannedString
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.sp
+import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.min
 
 class MarkdownTableView @JvmOverloads constructor(
     context: Context,
@@ -31,8 +33,13 @@ class MarkdownTableView @JvmOverloads constructor(
     private data class CellContent(
         val text: CharSequence,
         val layout: StaticLayout,
-        val width: Float,
         val height: Float
+    )
+
+    private data class IntrinsicCellContent(
+        val text: CharSequence,
+        val minContentWidth: Float,
+        val maxContentWidth: Float
     )
 
     private data class LinkRenderInfo(
@@ -85,6 +92,8 @@ class MarkdownTableView @JvmOverloads constructor(
     private var cachedTotalWidth: Float = 0f
     private var cachedTotalHeight: Float = 0f
     private var metricsDirty: Boolean = true
+    private var availableViewportWidth: Int = 0
+    private var metricsAvailableContentWidth: Int = -1
     private val linkRenderInfos = mutableListOf<LinkRenderInfo>()
     private var pressedLinkSpan: URLSpan? = null
     private var pressedX: Float = 0f
@@ -151,8 +160,15 @@ class MarkdownTableView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun setAvailableViewportWidth(width: Int) {
+        val normalizedWidth = width.coerceAtLeast(0)
+        if (availableViewportWidth == normalizedWidth) return
+        availableViewportWidth = normalizedWidth
+        metricsDirty = true
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        ensureMetrics()
+        ensureMetrics(resolveAvailableContentWidth(widthMeasureSpec))
 
         val desiredWidth = ceil(cachedTotalWidth + paddingLeft + paddingRight).toInt()
         val desiredHeight = ceil(cachedTotalHeight + paddingTop + paddingBottom).toInt()
@@ -183,7 +199,7 @@ class MarkdownTableView @JvmOverloads constructor(
         super.onDraw(canvas)
         if (headers.isEmpty()) return
 
-        ensureMetrics()
+        ensureMetrics(resolveCurrentAvailableContentWidth())
         linkRenderInfos.clear()
         val totalW = cachedTotalWidth
         val totalH = cachedTotalHeight
@@ -266,18 +282,12 @@ class MarkdownTableView @JvmOverloads constructor(
         ) {
         val contentLeft = cellLeft + cellPaddingH
         val contentTop = cellTop + cellPaddingV
-        val availableWidth = (cellWidth - cellPaddingH * 2).coerceAtLeast(1f)
-        val translateX = when (alignments.getOrNull(columnIndex) ?: MdBlock.Alignment.LEFT) {
-            MdBlock.Alignment.LEFT -> contentLeft
-            MdBlock.Alignment.RIGHT -> contentLeft + availableWidth - cell.layout.width
-            MdBlock.Alignment.CENTER -> contentLeft + (availableWidth - cell.layout.width) / 2f
-        }
         val translateY = contentTop + max(0f, (rowHeight - cellPaddingV * 2 - cell.height) / 2f)
 
-        maybeRegisterClickableText(cell, translateX, translateY)
+        maybeRegisterClickableText(cell, contentLeft, translateY)
 
         canvas.save()
-        canvas.translate(translateX, translateY)
+        canvas.translate(contentLeft, translateY)
         cell.layout.draw(canvas)
         canvas.restore()
     }
@@ -331,7 +341,7 @@ class MarkdownTableView @JvmOverloads constructor(
         return super.performClick()
     }
 
-    private fun recalculateMetrics() {
+    private fun recalculateMetrics(availableContentWidth: Int) {
         if (headers.isEmpty()) {
             headerCells = emptyList()
             rowCells = emptyList()
@@ -341,43 +351,59 @@ class MarkdownTableView @JvmOverloads constructor(
             cachedTotalHeight = 0f
             headerHeight = 0f
             metricsDirty = false
+            metricsAvailableContentWidth = availableContentWidth
             return
         }
 
-        headerCells = headers.map { createCellContent(it, headerPaint) }
-        rowCells = rows.map { row ->
+        val intrinsicHeaderCells = headers.map { createIntrinsicCellContent(it, headerPaint) }
+        val intrinsicRowCells = rows.map { row ->
             headers.indices.map { columnIndex ->
-                createCellContent(row.getOrNull(columnIndex).orEmpty(), cellPaint)
+                createIntrinsicCellContent(row.getOrNull(columnIndex).orEmpty(), cellPaint)
             }
         }
 
-        columnWidths = calculateColumnWidths()
+        columnWidths = calculateColumnWidths(intrinsicHeaderCells, intrinsicRowCells, availableContentWidth)
+        headerCells = createLaidOutCells(intrinsicHeaderCells, headerPaint)
+        rowCells = intrinsicRowCells.map { row -> createLaidOutCells(row, cellPaint) }
         headerHeight = calculateRowHeight(headerCells)
         rowHeights = FloatArray(rowCells.size) { index -> calculateRowHeight(rowCells[index]) }
         cachedTotalWidth = columnWidths.sum()
         cachedTotalHeight = headerHeight + rowHeights.sum()
         metricsDirty = false
+        metricsAvailableContentWidth = availableContentWidth
     }
 
-    private fun ensureMetrics() {
-        if (metricsDirty) {
-            recalculateMetrics()
+    private fun ensureMetrics(availableContentWidth: Int = availableViewportWidth) {
+        val normalizedWidth = availableContentWidth.coerceAtLeast(0)
+        if (metricsDirty || metricsAvailableContentWidth != normalizedWidth) {
+            recalculateMetrics(normalizedWidth)
         }
     }
 
-    private fun calculateColumnWidths(): FloatArray {
-        val widths = FloatArray(headers.size)
-        for (index in headers.indices) {
-            widths[index] = headerCells[index].width + cellPaddingH * 2
-        }
-        for (row in rowCells) {
-            for (index in headers.indices) {
-                val width = row.getOrNull(index)?.width ?: 0f
-                val desiredWidth = width + cellPaddingH * 2
-                if (desiredWidth > widths[index]) widths[index] = desiredWidth
+    private fun calculateColumnWidths(
+        headerCells: List<IntrinsicCellContent>,
+        rowCells: List<List<IntrinsicCellContent>>,
+        availableContentWidth: Int
+    ): FloatArray {
+        val columns = headers.indices.map { index ->
+            var minWidth = headerCells[index].minContentWidth + cellPaddingH * 2
+            var maxWidth = headerCells[index].maxContentWidth + cellPaddingH * 2
+            for (row in rowCells) {
+                val cell = row.getOrNull(index) ?: continue
+                minWidth = max(minWidth, cell.minContentWidth + cellPaddingH * 2)
+                maxWidth = max(maxWidth, cell.maxContentWidth + cellPaddingH * 2)
             }
+            MarkdownAutoTableLayout.ColumnIntrinsic(
+                min = minWidth,
+                max = maxWidth,
+                hasOriginatingCell = true
+            )
         }
-        return widths
+        return MarkdownAutoTableLayout.compute(
+            columns = columns,
+            parentWidth = availableContentWidth.takeIf { it > 0 }?.toFloat(),
+            fillParentWhenPossible = false
+        ).columnWidths
     }
 
     private fun calculateRowHeight(cells: List<CellContent>): Float {
@@ -385,33 +411,177 @@ class MarkdownTableView @JvmOverloads constructor(
         return contentHeight + cellPaddingV * 2
     }
 
-    private fun createCellContent(text: String, paint: TextPaint): CellContent {
-        val spanned = spannedBuilder.buildInlineText(text, isStreaming, linkDefs)
-        return createCellContent(spanned, paint)
+    private fun createLaidOutCells(cells: List<IntrinsicCellContent>, paint: TextPaint): List<CellContent> {
+        return cells.mapIndexed { index, cell ->
+            val contentWidth = (columnWidths.getOrNull(index) ?: 0f) - cellPaddingH * 2
+            createCellContent(cell.text, paint, contentWidth, alignments.getOrNull(index) ?: MdBlock.Alignment.LEFT)
+        }
     }
 
-    private fun createCellContent(text: CharSequence, paint: TextPaint): CellContent {
-        val layout = createStaticLayout(text, paint)
+    private fun createIntrinsicCellContent(text: String, paint: TextPaint): IntrinsicCellContent {
+        val spanned = spannedBuilder.buildInlineText(text, isStreaming, linkDefs)
+        return createIntrinsicCellContent(spanned, paint)
+    }
+
+    private fun createIntrinsicCellContent(text: CharSequence, paint: TextPaint): IntrinsicCellContent {
+        return IntrinsicCellContent(
+            text = text,
+            minContentWidth = measureMinContentWidth(text, paint),
+            maxContentWidth = measureMaxContentWidth(text, paint)
+        )
+    }
+
+    private fun createCellContent(
+        text: CharSequence,
+        paint: TextPaint,
+        contentWidth: Float,
+        alignment: MdBlock.Alignment
+    ): CellContent {
+        val layout = createStaticLayout(text, paint, contentWidth, alignment)
         return CellContent(
             text = text,
             layout = layout,
-            width = layout.width.toFloat(),
             height = layout.height.toFloat()
         )
     }
 
-    private fun createStaticLayout(text: CharSequence, paint: TextPaint): StaticLayout {
-        val desiredWidth = ceil(max(1f, Layout.getDesiredWidth(text, paint))).toInt().coerceAtLeast(1)
+    private fun createStaticLayout(
+        text: CharSequence,
+        paint: TextPaint,
+        contentWidth: Float,
+        alignment: MdBlock.Alignment
+    ): StaticLayout {
+        val desiredWidth = ceil(max(1f, contentWidth)).toInt().coerceAtLeast(1)
+        val layoutAlignment = when (alignment) {
+            MdBlock.Alignment.LEFT -> Layout.Alignment.ALIGN_NORMAL
+            MdBlock.Alignment.CENTER -> Layout.Alignment.ALIGN_CENTER
+            MdBlock.Alignment.RIGHT -> Layout.Alignment.ALIGN_OPPOSITE
+        }
         return StaticLayout.Builder
             .obtain(text, 0, text.length, paint, desiredWidth)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setAlignment(layoutAlignment)
             .setIncludePad(false)
             .setLineSpacing(0f, 1.08f)
+            .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)
+            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NORMAL)
             .build()
     }
 
     private fun emptyCell(paint: TextPaint): CellContent {
-        return createCellContent(buildSpannedString { append("") }, paint)
+        return createCellContent(buildSpannedString { append("") }, paint, 1f, MdBlock.Alignment.LEFT)
+    }
+
+    private fun resolveAvailableContentWidth(widthMeasureSpec: Int): Int {
+        val viewportWidth = when {
+            availableViewportWidth > 0 -> availableViewportWidth
+            MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED -> MeasureSpec.getSize(widthMeasureSpec)
+            else -> 0
+        }
+        return (viewportWidth - paddingLeft - paddingRight).coerceAtLeast(0)
+    }
+
+    private fun resolveCurrentAvailableContentWidth(): Int {
+        val viewportWidth = availableViewportWidth.takeIf { it > 0 } ?: width
+        return (viewportWidth - paddingLeft - paddingRight).coerceAtLeast(0)
+    }
+
+    private fun measureMaxContentWidth(text: CharSequence, paint: TextPaint): Float {
+        if (text.isEmpty()) return 0f
+        var maxWidth = 0f
+        var lineStart = 0
+        for (index in 0..text.length) {
+            if (index == text.length || text[index] == '\n') {
+                maxWidth = max(maxWidth, measureDesiredWidth(text, lineStart, index, paint))
+                lineStart = index + 1
+            }
+        }
+        return maxWidth
+    }
+
+    private fun measureMinContentWidth(text: CharSequence, paint: TextPaint): Float {
+        if (text.isEmpty()) return 0f
+        val rawText = text.toString()
+        val iterator = BreakIterator.getLineInstance(Locale.getDefault())
+        iterator.setText(rawText)
+
+        var maxSegmentWidth = 0f
+        var segmentStart = iterator.first()
+        var segmentEnd = iterator.next()
+        while (segmentEnd != BreakIterator.DONE) {
+            val trimmedStart = trimSegmentStart(rawText, segmentStart, segmentEnd)
+            val trimmedEnd = trimSegmentEnd(rawText, trimmedStart, segmentEnd)
+            if (trimmedStart < trimmedEnd) {
+                maxSegmentWidth = max(
+                    maxSegmentWidth,
+                    measureBreakAwareSegmentWidth(text, trimmedStart, trimmedEnd, paint)
+                )
+            }
+            segmentStart = segmentEnd
+            segmentEnd = iterator.next()
+        }
+
+        return maxSegmentWidth
+    }
+
+    private fun measureBreakAwareSegmentWidth(
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        paint: TextPaint
+    ): Float {
+        var maxWidth = 0f
+        var currentStart = start
+        var hasExtraBreak = false
+        for (index in start until end) {
+            if (isUrlBreakCharacter(text[index])) {
+                val breakEnd = index + 1
+                maxWidth = max(maxWidth, measureDesiredWidth(text, currentStart, breakEnd, paint))
+                currentStart = breakEnd
+                hasExtraBreak = true
+            }
+        }
+
+        if (!hasExtraBreak) {
+            return measureDesiredWidth(text, start, end, paint)
+        }
+
+        if (currentStart < end) {
+            maxWidth = max(maxWidth, measureDesiredWidth(text, currentStart, end, paint))
+        }
+        return maxWidth
+    }
+
+    private fun measureDesiredWidth(text: CharSequence, start: Int, end: Int, paint: TextPaint): Float {
+        if (start >= end) return 0f
+        return Layout.getDesiredWidth(text, start, end, paint)
+    }
+
+    private fun trimSegmentStart(text: String, start: Int, end: Int): Int {
+        var index = start
+        while (index < end && text[index].isWhitespace()) {
+            index++
+        }
+        return index
+    }
+
+    private fun trimSegmentEnd(text: String, start: Int, end: Int): Int {
+        var index = end
+        while (index > start && text[index - 1].isWhitespace()) {
+            index--
+        }
+        return index
+    }
+
+    private fun isUrlBreakCharacter(char: Char): Boolean {
+        return char == '/' ||
+            char == '?' ||
+            char == '&' ||
+            char == '=' ||
+            char == '-' ||
+            char == '_' ||
+            char == '.' ||
+            char == '#' ||
+            char == ':'
     }
 
     private fun maybeRegisterClickableText(cell: CellContent, left: Float, top: Float) {
@@ -434,6 +604,9 @@ class MarkdownTableView @JvmOverloads constructor(
         val relativeX = x - info.left
         val relativeY = y - info.top
         val line = info.layout.getLineForVertical(relativeY.toInt().coerceAtLeast(0))
+        val lineLeft = min(info.layout.getLineLeft(line), info.layout.getLineRight(line))
+        val lineRight = max(info.layout.getLineLeft(line), info.layout.getLineRight(line))
+        if (relativeX < lineLeft || relativeX > lineRight) return null
         val offset = info.layout.getOffsetForHorizontal(line, relativeX)
             .coerceIn(0, (info.text.length - 1).coerceAtLeast(0))
         return info.text.getSpans(offset, offset, URLSpan::class.java).firstOrNull()
