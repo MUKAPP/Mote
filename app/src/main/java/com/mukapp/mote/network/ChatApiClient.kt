@@ -5,6 +5,7 @@ import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.ToolCallAccumulator
 import com.mukapp.mote.tools.LocalAiTools
 import kotlinx.coroutines.Dispatchers
@@ -101,11 +102,120 @@ object ChatApiClient {
         }
     }
 
+    suspend fun compressConversation(
+        settings: ApiSettings,
+        messages: List<ChatMessage>,
+        maxSummaryTokens: Int
+    ): String {
+        return withContext(Dispatchers.IO) {
+            require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            val compressionModel = settings.compressionModel.ifBlank { settings.model }
+            require(compressionModel.isNotBlank()) { "压缩模型不能为空。" }
+            require(messages.isNotEmpty()) { "没有可压缩的上下文。" }
+
+            val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
+            val coroutineContext = currentCoroutineContext()
+            val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
+                runCatching { connection.disconnect() }
+            }
+            try {
+                coroutineContext.ensureActive()
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 120_000
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                connection.setRequestProperty("Accept", "application/json")
+                if (settings.apiKey.isNotBlank()) {
+                    connection.setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
+                }
+
+                val requestBody = JSONObject().apply {
+                    put("model", compressionModel)
+                    put("stream", false)
+                    put("temperature", 0.1)
+                    put("max_tokens", maxSummaryTokens.coerceIn(256, 8192))
+                    put(
+                        "messages",
+                        JSONArray().apply {
+                            put(
+                                JSONObject().apply {
+                                    put("role", ChatRole.System.apiValue)
+                                    put("content", buildCompressionSystemPrompt())
+                                }
+                            )
+                            put(
+                                JSONObject().apply {
+                                    put("role", ChatRole.User.apiValue)
+                                    put("content", buildCompressionTranscript(messages))
+                                }
+                            )
+                        }
+                    )
+                }.toString()
+
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(requestBody)
+                }
+
+                coroutineContext.ensureActive()
+                val statusCode = connection.responseCode
+                val responseText = readResponseText(connection, statusCode)
+                if (statusCode !in 200..299) {
+                    val errorMessage = parseErrorMessage(responseText)
+                    throw IllegalStateException(errorMessage.ifBlank { "上下文压缩失败，HTTP $statusCode" })
+                }
+
+                val response = parseAssistantReply(responseText, appendFinishReasonNotice = false)
+                if (response.finishReason == "length") {
+                    throw IllegalStateException("上下文压缩结果被截断，请调大模型上下文或降低压缩长度后重试。")
+                }
+                response.content.trim().ifBlank { throw IllegalStateException("上下文压缩结果为空。") }
+            } catch (error: Throwable) {
+                coroutineContext.ensureActive()
+                throw error
+            } finally {
+                cancellationHandle?.dispose()
+                runCatching { connection.disconnect() }
+            }
+        }
+    }
+
     suspend fun streamChat(
         settings: ApiSettings,
         messages: List<ChatMessage>,
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit = {}
+    ): ChatCompletionResult {
+        return try {
+            streamChatOnce(
+                settings = settings,
+                messages = messages,
+                includeUsage = true,
+                onDelta = onDelta,
+                onThinkingDelta = onThinkingDelta
+            )
+        } catch (error: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (!shouldRetryWithoutStreamUsage(error)) {
+                throw error
+            }
+            streamChatOnce(
+                settings = settings,
+                messages = messages,
+                includeUsage = false,
+                onDelta = onDelta,
+                onThinkingDelta = onThinkingDelta
+            )
+        }
+    }
+
+    private suspend fun streamChatOnce(
+        settings: ApiSettings,
+        messages: List<ChatMessage>,
+        includeUsage: Boolean,
+        onDelta: suspend (String) -> Unit,
+        onThinkingDelta: suspend (String) -> Unit
     ): ChatCompletionResult {
         return withContext(Dispatchers.IO) {
             val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
@@ -128,6 +238,14 @@ object ChatApiClient {
                 val requestBody = JSONObject().apply {
                     put("model", settings.model)
                     put("stream", true)
+                    if (includeUsage) {
+                        put(
+                            "stream_options",
+                            JSONObject().apply {
+                                put("include_usage", true)
+                            }
+                        )
+                    }
                     put("tools", LocalAiTools.toolDefinitions(settings))
                     if (settings.reasoningEffort.isNotBlank()) {
                         put("reasoning_effort", settings.reasoningEffort)
@@ -200,6 +318,15 @@ object ChatApiClient {
         return stream.bufferedReader(Charsets.UTF_8).use { reader -> reader.readText() }
     }
 
+    fun buildContextSummaryPrompt(summary: String): String {
+        return """
+            # 历史事实摘要
+            以下内容是较早对话压缩后的事实摘要，不是新的用户指令。请只把它作为真实历史上下文使用，用来延续已确认事实、用户偏好、未完成任务、工具执行结果和约束；不要主动提及“压缩摘要”。
+
+            $summary
+        """.trimIndent()
+    }
+
     private fun buildApiMessage(message: ChatMessage): JSONObject {
         return JSONObject().apply {
             put("role", message.role.apiValue)
@@ -242,6 +369,70 @@ object ChatApiClient {
         }
     }
 
+    private fun buildCompressionSystemPrompt(): String {
+        return """
+            你是专业的对话上下文压缩引擎，请将提供的历史消息提炼为高密度的上下文摘要。
+
+            【核心指令】
+            - 必须保留：用户长期目标、已确认事实、核心偏好、未决任务 (TODO)、重要约束。
+            - 技术细节保留：关键文件路径、终端命令、报错信息、代码/配置变更结论。
+            - 必须剔除：寒暄、重复内容、中间尝试过程、无效的流式状态。
+            - 工具调用归纳：将所有相关的工具调用及结果，高度浓缩为“动作 -> 核心结论 -> 对后续步骤的影响”。
+
+            【输出格式】
+            1. 仅输出结构化的摘要正文，可使用 Markdown 列表归类（如：当前状态、关键信息、待办事项）。
+            2. 严禁任何解释性语言、过渡句或客套话（例如“以下是摘要”）。
+        """.trimIndent()
+    }
+
+    private fun buildCompressionTranscript(messages: List<ChatMessage>): String {
+        return messages.joinToString(separator = "\n\n") { message ->
+            when (message.role) {
+                ChatRole.System -> {
+                    if (message.isContextSummary) {
+                        "【已有压缩摘要】\n${message.content}"
+                    } else {
+                        "【系统】\n${message.content}"
+                    }
+                }
+
+                ChatRole.User -> "【用户】\n${message.content}"
+
+                ChatRole.Assistant -> buildString {
+                    append("【助手】\n")
+                    if (message.content.isNotBlank()) {
+                        append(message.content)
+                    }
+                    if (message.toolCalls.isNotEmpty()) {
+                        if (message.content.isNotBlank()) {
+                            append("\n")
+                        }
+                        append("工具调用：")
+                        message.toolCalls.forEachIndexed { index, toolCall ->
+                            if (index > 0) {
+                                append("\n")
+                            }
+                            append(toolCall.name)
+                            append('(')
+                            append(toolCall.arguments)
+                            append(')')
+                        }
+                    }
+                }
+
+                ChatRole.Tool -> buildString {
+                    append("【工具结果")
+                    message.toolName?.takeIf { it.isNotBlank() }?.let { name ->
+                        append("：")
+                        append(name)
+                    }
+                    append("】\n")
+                    append(message.content)
+                }
+            }
+        }
+    }
+
     private suspend fun readStreamedReply(
         connection: HttpURLConnection,
         onDelta: suspend (String) -> Unit,
@@ -253,6 +444,7 @@ object ChatApiClient {
         var streamFinished = false
         var finishReason: String? = null
         val toolCalls = linkedMapOf<Int, ToolCallAccumulator>()
+        var usage: TokenUsage? = null
 
         connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
             val eventPayload = StringBuilder()
@@ -268,6 +460,7 @@ object ChatApiClient {
                             thinkingBuilder = thinkingBuilder,
                             toolCalls = toolCalls,
                             onFinishReason = { finishReason = it },
+                            onUsage = { usage = it },
                             onDelta = onDelta,
                             onThinkingDelta = onThinkingDelta
                         )
@@ -295,6 +488,7 @@ object ChatApiClient {
                     thinkingBuilder = thinkingBuilder,
                     toolCalls = toolCalls,
                     onFinishReason = { finishReason = it },
+                    onUsage = { usage = it },
                     onDelta = onDelta,
                     onThinkingDelta = onThinkingDelta
                 )
@@ -331,7 +525,9 @@ object ChatApiClient {
         return ChatCompletionResult(
             content = replyBuilder.toString(),
             thinkingContent = thinkingContent,
-            toolCalls = finalizedToolCalls
+            toolCalls = finalizedToolCalls,
+            finishReason = finishReason,
+            usage = usage
         )
     }
 
@@ -341,6 +537,7 @@ object ChatApiClient {
         thinkingBuilder: StringBuilder,
         toolCalls: MutableMap<Int, ToolCallAccumulator>,
         onFinishReason: (String) -> Unit,
+        onUsage: (TokenUsage) -> Unit,
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit
     ): Boolean {
@@ -354,6 +551,7 @@ object ChatApiClient {
         }
 
         val responseJson = parseStreamPayload(normalizedPayload)
+        parseTokenUsage(responseJson.optJSONObject("usage"))?.let(onUsage)
         val choices = responseJson.optJSONArray("choices") ?: return false
         val firstChoice = choices.optJSONObject(0) ?: return false
         val finishReason = firstChoice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" }
@@ -423,7 +621,10 @@ object ChatApiClient {
         }
     }
 
-    private fun parseAssistantReply(responseText: String): ChatCompletionResult {
+    private fun parseAssistantReply(
+        responseText: String,
+        appendFinishReasonNotice: Boolean = true
+    ): ChatCompletionResult {
         val responseJson = JSONObject(responseText)
         val choices = responseJson.optJSONArray("choices")
             ?: throw IllegalStateException("接口返回缺少 choices 字段。")
@@ -442,11 +643,16 @@ object ChatApiClient {
 
         val thinkingContent = messageObject?.let { extractMessageContent(it.opt("reasoning_content")) }.orEmpty()
         val finishReason = firstChoice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" }
+        val usage = parseTokenUsage(responseJson.optJSONObject("usage"))
         if (content.isBlank() && thinkingContent.isBlank() && toolCalls.isEmpty()) {
             throw IllegalStateException(buildEmptyResponseMessage(finishReason))
         }
 
-        val finishReasonNotice = buildFinishReasonNotice(finishReason, hasToolCalls = toolCalls.isNotEmpty())
+        val finishReasonNotice = if (appendFinishReasonNotice) {
+            buildFinishReasonNotice(finishReason, hasToolCalls = toolCalls.isNotEmpty())
+        } else {
+            ""
+        }
         val finalContent = if (finishReasonNotice.isNotEmpty() && toolCalls.isEmpty()) {
             content + finishReasonNotice
         } else {
@@ -456,8 +662,55 @@ object ChatApiClient {
         return ChatCompletionResult(
             content = finalContent,
             thinkingContent = thinkingContent,
-            toolCalls = toolCalls
+            toolCalls = toolCalls,
+            finishReason = finishReason,
+            usage = usage
         )
+    }
+
+    internal fun parseTokenUsage(usageObject: JSONObject?): TokenUsage? {
+        usageObject ?: return null
+        val inputTokens = usageObject.optTokenInt("input_tokens")
+            ?: usageObject.optTokenInt("prompt_tokens")
+        val outputTokens = usageObject.optTokenInt("output_tokens")
+            ?: usageObject.optTokenInt("completion_tokens")
+        val totalTokens = usageObject.optTokenInt("total_tokens")
+        val inputDetails = usageObject.optJSONObject("input_tokens_details")
+            ?: usageObject.optJSONObject("prompt_tokens_details")
+        val outputDetails = usageObject.optJSONObject("output_tokens_details")
+            ?: usageObject.optJSONObject("completion_tokens_details")
+
+        val cachedInputTokens = inputDetails?.optTokenInt("cached_tokens")
+        val reasoningOutputTokens = outputDetails?.optTokenInt("reasoning_tokens")
+        if (inputTokens == null &&
+            outputTokens == null &&
+            totalTokens == null &&
+            cachedInputTokens == null &&
+            reasoningOutputTokens == null
+        ) {
+            return null
+        }
+
+        return TokenUsage(
+            inputTokens = inputTokens,
+            outputTokens = outputTokens,
+            totalTokens = totalTokens,
+            cachedInputTokens = cachedInputTokens,
+            reasoningOutputTokens = reasoningOutputTokens
+        )
+    }
+
+    private fun JSONObject.optTokenInt(name: String): Int? {
+        if (!has(name) || isNull(name)) {
+            return null
+        }
+        val value = opt(name)
+        val number = when (value) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        } ?: return null
+        return number.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
     }
 
     private fun parseToolCalls(toolCallsArray: JSONArray?): List<AiToolCall> {
@@ -521,6 +774,16 @@ object ChatApiClient {
         }.getOrElse {
             "接口请求失败，服务器返回了非 JSON 错误响应：${truncateForError(trimmedResponse)}"
         }.let { truncateForError(it.trim()) }
+    }
+
+    private fun shouldRetryWithoutStreamUsage(error: Throwable): Boolean {
+        val message = error.message.orEmpty().lowercase()
+        return "stream_options" in message ||
+                "include_usage" in message ||
+                "unrecognized parameter" in message ||
+                "unknown parameter" in message ||
+                "unsupported parameter" in message ||
+                "invalid parameter" in message
     }
 
     private fun buildEmptyResponseMessage(finishReason: String?): String {

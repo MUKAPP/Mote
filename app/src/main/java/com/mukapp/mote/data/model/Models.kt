@@ -18,7 +18,17 @@ data class ChatMessage(
     val toolArguments: String? = null,
     val toolCalls: List<AiToolCall> = emptyList(),
     val assistantParts: List<AssistantPart> = emptyList(),
-    val excludeFromConversation: Boolean = false
+    val excludeFromConversation: Boolean = false,
+    val isContextSummary: Boolean = false,
+    val contextSummarySourceIds: List<String> = emptyList()
+)
+
+data class ContextSummary(
+    val id: String = UUID.randomUUID().toString(),
+    val content: String,
+    val sourceMessageIds: List<String>,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = createdAt
 )
 
 sealed interface AssistantPart {
@@ -48,6 +58,9 @@ data class ApiSettings(
     val apiKey: String = "",
     val model: String = "",
     val titleModel: String = "",
+    val compressionModel: String = "",
+    val modelContextLength: Int = 0,
+    val compressionTriggerLength: Int = 0,
     val searxngUrl: String = "",
     val reasoningEffort: String = "high"
 )
@@ -61,12 +74,23 @@ data class AiToolCall(
 data class ChatCompletionResult(
     val content: String,
     val thinkingContent: String = "",
-    val toolCalls: List<AiToolCall> = emptyList()
+    val toolCalls: List<AiToolCall> = emptyList(),
+    val finishReason: String? = null,
+    val usage: TokenUsage? = null
+)
+
+data class TokenUsage(
+    val inputTokens: Int? = null,
+    val outputTokens: Int? = null,
+    val totalTokens: Int? = null,
+    val cachedInputTokens: Int? = null,
+    val reasoningOutputTokens: Int? = null
 )
 
 data class SavedConversationState(
     val uiMessages: List<ChatMessage>,
     val conversationMessages: List<ChatMessage>,
+    val contextSummaries: List<ContextSummary> = emptyList(),
     val conversationId: String = "",
     val title: String = ""
 )

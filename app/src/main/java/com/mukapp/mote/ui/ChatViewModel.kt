@@ -19,7 +19,9 @@ import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
+import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.SavedConversationState
+import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.tools.ShellProcessManager
@@ -67,11 +69,25 @@ private data class StreamChatAttemptResult(
     val accumulatedThinking: String
 )
 
+private data class ContextCompressionPlan(
+    val messagesToCompress: List<ChatMessage>,
+    val recentMessages: List<ChatMessage>,
+    val tokenCount: ChatConversationContextHelper.ContextTokenCount,
+    val maxSummaryTokens: Int,
+    val sourceMessageIds: List<String>
+)
+
+private data class ContextCompressionResult(
+    val requestMessages: List<ChatMessage>,
+    val compressed: Boolean
+)
+
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
 
     private val uiMessagesInternal = mutableListOf<ChatMessage>()
     private val conversationMessagesInternal = mutableListOf<ChatMessage>()
+    private val contextSummariesInternal = mutableListOf<ContextSummary>()
 
     private val _savedSettings = MutableLiveData(ApiSettingsStore.load(appContext))
     val savedSettings: LiveData<ApiSettings> = _savedSettings
@@ -119,6 +135,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     // 流式阶段用 StringBuilder 累积文本，避免每个 delta 都重新分配 String
     private val streamingBuilders = mutableMapOf<String, StringBuilder>()
     private var cachedAssistantContent: String? = null
+    private var contextTokenUsageAnchor: ChatConversationContextHelper.ContextTokenUsageAnchor? = null
 
     init {
         loadHistory()
@@ -149,6 +166,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val requestVersion = markStateChanged()
         uiMessagesInternal.clear()
         conversationMessagesInternal.clear()
+        contextSummariesInternal.clear()
+        clearContextTokenUsageAnchor()
         currentConversationTitle = DefaultConversationTitle
         val newConversationId = ChatHistoryStore.newConversationId()
         setCurrentConversationId(newConversationId)
@@ -242,6 +261,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     uiMessagesInternal.clear()
                     conversationMessagesInternal.clear()
+                    contextSummariesInternal.clear()
+                    clearContextTokenUsageAnchor()
                     currentConversationTitle = DefaultConversationTitle
                     val newConversationId = ChatHistoryStore.newConversationId()
                     setCurrentConversationId(newConversationId)
@@ -300,24 +321,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var skipStoppedAssistantContextCommit = false
             var hasCommittedToolContextInCurrentTurn = false
             val result = runCatching {
-                val workingConversation = conversationMessagesInternal
-                    .filter { message ->
-                        message.role != ChatRole.System && !message.excludeFromConversation
-                    }
+                var workingConversation = prepareConversationForSending(settings)
                     .toMutableList()
-                    .apply {
-                        add(0, ChatMessage(role = ChatRole.System, content = buildSystemPrompt()))
-                    }
+                var workingRawConversation = ChatConversationContextHelper
+                    .filterConversationMessages(conversationMessagesInternal)
+                    .filterNot { it.isContextSummary }
+                    .toMutableList()
                 val assistantParts = mutableListOf<AssistantPart>()
 
-                fun commitWorkingConversationSnapshot() {
-                    commitWorkingConversation(workingConversation)
+                fun commitRawConversationSnapshot() {
+                    commitRawConversation(workingRawConversation)
                 }
 
                 repeat(MaxToolRounds) { roundIndex ->
                     val streamResult = streamChatWithRetries(
                         settings = settings,
-                        messages = workingConversation,
+                        messages = buildRequestMessages(workingConversation),
                         assistantParts = assistantParts,
                         assistantIndex = assistantIndex,
                         assistantId = assistantId
@@ -337,6 +356,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             ?: finalReply
                         finalConversationContent.takeIf { it.isNotBlank() }
                                 ?: throw IllegalStateException("接口返回内容为空。")
+                        updateContextTokenUsageAnchor(
+                            requestedMessages = workingConversation,
+                            usage = response.usage
+                        )
 
                         uiMessagesInternal[assistantIndex] = ChatMessage(
                             id = assistantId,
@@ -344,12 +367,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             content = finalReply,
                             assistantParts = assistantParts.toList()
                         )
-                        workingConversation += ChatMessage(
+                        workingRawConversation += ChatMessage(
                             role = ChatRole.Assistant,
                             content = finalConversationContent
                         )
 
-                        commitWorkingConversationSnapshot()
+                        commitRawConversationSnapshot()
                         publishMessagesImmediately()
                         persistConversationAsync()
                         if (isFirstUserMessage) {
@@ -358,11 +381,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         return@runCatching finalReply
                     }
 
-                    workingConversation += ChatMessage(
+                    updateContextTokenUsageAnchor(
+                        requestedMessages = workingConversation,
+                        usage = response.usage
+                    )
+                    val toolCallMessage = ChatMessage(
                         role = ChatRole.Assistant,
                         content = response.content,
                         toolCalls = response.toolCalls
                     )
+                    workingConversation += toolCallMessage
+                    workingRawConversation += toolCallMessage
 
                     // 先插入 loading 占位工具块，立即推送 UI
                     val loadingToolParts = response.toolCalls.map { toolCall ->
@@ -392,8 +421,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         assistantId = assistantId
                     )
                     val toolResults = toolBatch.results
-                    workingConversation.addAll(toolResults)
-                    commitWorkingConversationSnapshot()
+                    val limitedToolResults = toolResults.map { result ->
+                        ChatConversationContextHelper.limitToolResultForContext(result)
+                    }
+                    workingConversation.addAll(limitedToolResults)
+                    workingRawConversation.addAll(limitedToolResults)
+                    commitRawConversationSnapshot()
+                    workingConversation = prepareConversationForSending(
+                        settings = settings,
+                        rawMessages = workingRawConversation
+                    ).toMutableList()
                     hasCommittedToolContextInCurrentTurn = true
                     skipStoppedAssistantContextCommit = false
 
@@ -409,11 +446,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             content = finalContent,
                             assistantParts = assistantParts.toList()
                         )
-                        workingConversation += ChatMessage(
+                        workingRawConversation += ChatMessage(
                             role = ChatRole.Assistant,
                             content = finalContent
                         )
-                        commitWorkingConversationSnapshot()
+                        commitRawConversationSnapshot()
                         publishMessagesImmediately()
                         persistConversationAsync()
                         if (isFirstUserMessage) {
@@ -556,11 +593,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         markStateChanged()
+        val affectedUserMessageIds = uiMessagesInternal
+            .drop(index)
+            .filter { it.role == ChatRole.User }
+            .map { it.id }
+            .toSet()
         _draftMessage.value = message.content
         repeat(uiMessagesInternal.size - index) {
             uiMessagesInternal.removeAt(uiMessagesInternal.lastIndex)
         }
-        rebuildConversationFromUiMessages()
+        rebuildConversationAfterUiMutation(affectedUserMessageIds)
         publishMessagesImmediately()
         persistConversationAsync()
     }
@@ -576,11 +618,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         markStateChanged()
+        val affectedUserMessageIds = setOf(message.id)
         uiMessagesInternal.removeAt(index)
         if (index < uiMessagesInternal.size && uiMessagesInternal[index].role == ChatRole.Assistant) {
             uiMessagesInternal.removeAt(index)
         }
-        rebuildConversationFromUiMessages()
+        rebuildConversationAfterUiMutation(affectedUserMessageIds)
         publishMessagesImmediately()
         persistConversationAsync()
     }
@@ -597,13 +640,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         markStateChanged()
         uiMessagesInternal.removeAt(index)
-        rebuildConversationFromUiMessages()
+        rebuildConversationAfterUiMutation(emptySet())
         val userIndex = uiMessagesInternal.lastIndex
         if (userIndex >= 0 && uiMessagesInternal[userIndex].role == ChatRole.User) {
             val userContent = uiMessagesInternal[userIndex].content
+            val affectedUserMessageIds = setOf(uiMessagesInternal[userIndex].id)
             _draftMessage.value = userContent
             uiMessagesInternal.removeAt(userIndex)
-            rebuildConversationFromUiMessages()
+            rebuildConversationAfterUiMutation(affectedUserMessageIds)
             publishMessagesImmediately()
             sendMessage()
         } else {
@@ -647,10 +691,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         uiMessagesInternal.addAll(historyState.uiMessages)
         conversationMessagesInternal.clear()
         conversationMessagesInternal.addAll(
-            historyState.conversationMessages.filter { message ->
-                message.role != ChatRole.System && !message.excludeFromConversation
-            }
+            ChatConversationContextHelper.filterConversationMessages(historyState.conversationMessages)
+                .filterNot { it.isContextSummary }
         )
+        contextSummariesInternal.clear()
+        contextSummariesInternal.addAll(historyState.contextSummaries)
+        clearContextTokenUsageAnchor()
         currentConversationTitle = historyState.title.ifBlank { DefaultConversationTitle }
         setCurrentConversationId(
             historyState.conversationId.ifBlank {
@@ -714,6 +760,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 role = ChatRole.Assistant,
                 content = assistantContent
             )
+            clearContextTokenUsageAnchor()
         }
         publishMessagesImmediately()
         persistConversationAsync()
@@ -1099,6 +1146,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return payload.toString()
     }
 
+    private fun resolveConversationTokenCount(messages: List<ChatMessage>): ChatConversationContextHelper.ContextTokenCount {
+        return ChatConversationContextHelper.resolveConversationTokenCount(
+            messages = messages,
+            usageAnchor = contextTokenUsageAnchor
+        )
+    }
+
+    private fun updateContextTokenUsageAnchor(
+        requestedMessages: List<ChatMessage>,
+        usage: TokenUsage?
+    ) {
+        val anchor = ChatConversationContextHelper.buildTokenUsageAnchor(
+            messages = requestedMessages,
+            usage = usage
+        ) ?: return
+        contextTokenUsageAnchor = anchor
+    }
+
+    private fun clearContextTokenUsageAnchor() {
+        contextTokenUsageAnchor = null
+    }
+
     private fun buildCancelledShellToolResult(
         toolCall: AiToolCall,
         confirmation: ShellConfirmationRequest
@@ -1141,22 +1210,218 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun rebuildConversationFromUiMessages() {
         conversationMessagesInternal.clear()
+        conversationMessagesInternal.addAll(ChatConversationContextHelper.rebuildConversationFromUiMessages(uiMessagesInternal))
+        contextSummariesInternal.clear()
+        clearContextTokenUsageAnchor()
+    }
+
+    private fun rebuildConversationAfterUiMutation(affectedMessageIds: Set<String>) {
+        val currentConversation = conversationMessagesInternal.toList()
+        val affectedConversationIds = ChatConversationContextHelper.collectConversationTurnMessageIds(
+            conversationMessages = currentConversation,
+            userMessageIds = affectedMessageIds
+        )
+        val allAffectedIds = affectedMessageIds + affectedConversationIds
+        conversationMessagesInternal.clear()
         conversationMessagesInternal.addAll(
-            uiMessagesInternal.filter { message ->
-                message.role != ChatRole.Tool &&
-                        message.role != ChatRole.System &&
-                        !message.excludeFromConversation
+            ChatConversationContextHelper.rebuildConversationAfterUiMutation(
+                uiMessages = uiMessagesInternal,
+                conversationMessages = currentConversation,
+                affectedUserMessageIds = affectedMessageIds
+            )
+        )
+        val filteredSummaries = ChatConversationContextHelper.filterContextSummariesAfterMessagesRemoved(
+            summaries = contextSummariesInternal,
+            removedMessageIds = allAffectedIds
+        )
+        contextSummariesInternal.clear()
+        contextSummariesInternal.addAll(filteredSummaries)
+        clearContextTokenUsageAnchor()
+    }
+
+    private suspend fun prepareConversationForSending(
+        settings: ApiSettings,
+        rawMessages: List<ChatMessage> = conversationMessagesInternal
+    ): List<ChatMessage> {
+        val result = compressConversationForContext(
+            settings = settings,
+            rawMessages = rawMessages
+        )
+        if (result.compressed) {
+            persistConversationAsync()
+        }
+        return result.requestMessages
+    }
+
+    private suspend fun compressConversationForContext(
+        settings: ApiSettings,
+        rawMessages: List<ChatMessage>
+    ): ContextCompressionResult {
+        val normalizedMessages = ChatConversationContextHelper.filterConversationMessages(rawMessages)
+            .filterNot { it.isContextSummary }
+        val requestMessages = ChatConversationContextHelper.applyContextSummariesForRequest(
+            conversationMessages = normalizedMessages,
+            contextSummaries = contextSummariesInternal
+        )
+        val tokenCount = resolveConversationTokenCount(requestMessages)
+        val plan = buildContextCompressionPlan(settings, requestMessages, tokenCount)
+        if (plan == null) {
+            throwIfContextExceedsHardLimitWithoutCompression(settings, tokenCount)
+            return ContextCompressionResult(requestMessages = requestMessages, compressed = false)
+        }
+        val summary = try {
+            val summary = ChatApiClient.compressConversation(
+                settings = settings,
+                messages = plan.messagesToCompress,
+                maxSummaryTokens = plan.maxSummaryTokens
+            )
+            ContextSummary(
+                content = summary,
+                sourceMessageIds = plan.sourceMessageIds.distinct()
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e("Mote", "压缩聊天上下文失败", error)
+            null
+        }
+
+        if (summary != null) {
+            appendContextSummary(summary)
+            Log.i(
+                "Mote",
+                "已压缩聊天上下文：${plan.tokenCount.sourceLabel} ${plan.tokenCount.tokens} tokens，压缩 ${plan.messagesToCompress.size} 条消息，保留 ${plan.recentMessages.size} 条消息。"
+            )
+            clearContextTokenUsageAnchor()
+            return ContextCompressionResult(
+                requestMessages = ChatConversationContextHelper.applyContextSummariesForRequest(
+                    conversationMessages = normalizedMessages,
+                    contextSummaries = contextSummariesInternal
+                ),
+                compressed = true
+            )
+        }
+
+        val hardLimit = settings.modelContextLength.takeIf { it > 0 }
+        if (hardLimit == null || plan.tokenCount.tokens <= hardLimit) {
+            _userNotice.value = "上下文压缩失败，已临时使用原始上下文继续发送。"
+            return ContextCompressionResult(requestMessages = requestMessages, compressed = false)
+        }
+        throw IllegalStateException("上下文压缩失败，且当前上下文长度已超过模型上下文长度，请调大压缩模型配置或删除部分历史消息后重试。")
+    }
+
+    private fun appendContextSummary(newSummary: ContextSummary) {
+        contextSummariesInternal += newSummary
+    }
+
+    private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
+        return listOf(ChatMessage(role = ChatRole.System, content = buildSystemPrompt())) + messages
+    }
+
+    private fun buildContextCompressionPlan(
+        settings: ApiSettings,
+        messages: List<ChatMessage>,
+        tokenCount: ChatConversationContextHelper.ContextTokenCount = resolveConversationTokenCount(messages)
+    ): ContextCompressionPlan? {
+        val triggerLength = calculateEffectiveCompressionTrigger(settings) ?: return null
+        if (messages.size < 2) {
+            return null
+        }
+        if (tokenCount.tokens < triggerLength) {
+            return null
+        }
+
+        val userIndices = messages.indices.filter { index -> messages[index].role == ChatRole.User }
+        if (userIndices.size < 2) {
+            return null
+        }
+
+        val recentBudget = calculateRecentContextBudget(settings)
+        var splitIndex = userIndices.last()
+        for (candidate in userIndices.asReversed()) {
+            val tailTokens = ChatConversationContextHelper.estimateConversationTokens(
+                messages.subList(candidate, messages.size)
+            )
+            if (tailTokens <= recentBudget) {
+                splitIndex = candidate
+            } else {
+                break
             }
+        }
+        if (splitIndex <= 0) {
+            splitIndex = userIndices.getOrNull(1) ?: return null
+        }
+
+        val messagesToCompress = messages.take(splitIndex)
+        val recentMessages = messages.drop(splitIndex)
+        if (messagesToCompress.isEmpty() || recentMessages.none { it.role == ChatRole.User }) {
+            return null
+        }
+
+        return ContextCompressionPlan(
+            messagesToCompress = messagesToCompress,
+            recentMessages = recentMessages,
+            tokenCount = tokenCount,
+            maxSummaryTokens = calculateSummaryTokenBudget(settings),
+            sourceMessageIds = messagesToCompress.map { message -> message.id }
         )
     }
 
-    private fun commitWorkingConversation(workingConversation: List<ChatMessage>) {
+    private fun throwIfContextExceedsHardLimitWithoutCompression(
+        settings: ApiSettings,
+        tokenCount: ChatConversationContextHelper.ContextTokenCount
+    ) {
+        ChatConversationContextHelper.requireWithinModelContextLength(settings, tokenCount.tokens)
+    }
+
+    private fun calculateEffectiveCompressionTrigger(settings: ApiSettings): Int? {
+        val configuredTrigger = settings.compressionTriggerLength.takeIf { it > 0 } ?: return null
+        val contextSoftLimit = settings.modelContextLength
+            .takeIf { it > 0 }
+            ?.let { (it * ModelContextCompressionRatio).toInt().coerceAtLeast(1) }
+        return minPositive(configuredTrigger, contextSoftLimit ?: 0)
+    }
+
+    private fun calculateRecentContextBudget(settings: ApiSettings): Int {
+        val referenceLimit = minPositive(settings.modelContextLength, settings.compressionTriggerLength)
+            ?: settings.compressionTriggerLength.takeIf { it > 0 }
+            ?: DefaultRecentContextBudget
+        return (referenceLimit * RecentContextBudgetRatio)
+            .toInt()
+            .coerceIn(MinRecentContextBudget, MaxRecentContextBudget)
+    }
+
+    private fun calculateSummaryTokenBudget(settings: ApiSettings): Int {
+        val referenceLimit = minPositive(settings.modelContextLength, settings.compressionTriggerLength)
+            ?: settings.compressionTriggerLength.takeIf { it > 0 }
+            ?: DefaultRecentContextBudget
+        return (referenceLimit * SummaryBudgetRatio)
+            .toInt()
+            .coerceIn(MinSummaryTokenBudget, MaxSummaryTokenBudget)
+    }
+
+    private fun minPositive(first: Int, second: Int): Int? {
+        return listOf(first, second).filter { it > 0 }.minOrNull()
+    }
+
+    private fun commitRawConversation(workingConversation: List<ChatMessage>) {
         conversationMessagesInternal.clear()
         conversationMessagesInternal.addAll(
-            workingConversation.filter { message ->
-                message.role != ChatRole.System
-            }
+            ChatConversationContextHelper.filterConversationMessages(workingConversation)
+                .filterNot { it.isContextSummary }
         )
+        val anchoredMessages = contextTokenUsageAnchor?.messages
+        if (anchoredMessages != null &&
+            !ChatConversationContextHelper.hasMessagePrefix(
+                ChatConversationContextHelper.applyContextSummariesForRequest(
+                    conversationMessages = conversationMessagesInternal,
+                    contextSummaries = contextSummariesInternal
+                ),
+                anchoredMessages
+            )
+        ) {
+            clearContextTokenUsageAnchor()
+        }
     }
 
     private fun persistConversationAsync() {
@@ -1169,6 +1434,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         val uiSnapshot = uiMessagesInternal.toList()
         val conversationSnapshot = conversationMessagesInternal.toList()
+        val contextSummarySnapshot = contextSummariesInternal.toList()
         val saveVersion = registerSaveSnapshot(conversationIdSnapshot)
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -1186,7 +1452,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         conversationId = conversationIdSnapshot,
                         title = effectiveTitle,
                         uiMessages = uiSnapshot,
-                        conversationMessages = conversationSnapshot
+                        conversationMessages = conversationSnapshot,
+                        contextSummaries = contextSummarySnapshot
                     )
                     ChatHistoryStore.listConversations(appContext)
                 }
@@ -1392,6 +1659,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         const val DefaultConversationTitle = "新对话"
         const val MaxToolRounds = 200
         const val MaxStreamRetryAttempts = 3
+        const val DefaultRecentContextBudget = 16_000
+        const val MinRecentContextBudget = 1_024
+        const val MaxRecentContextBudget = 32_000
+        const val MinSummaryTokenBudget = 512
+        const val MaxSummaryTokenBudget = 8_192
+        const val RecentContextBudgetRatio = 0.35f
+        const val SummaryBudgetRatio = 0.12f
+        const val ModelContextCompressionRatio = 0.8f
 
         fun buildFallbackTitle(message: String): String {
             return normalizeTitle(message).ifBlank { DefaultConversationTitle }

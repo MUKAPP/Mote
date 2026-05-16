@@ -82,11 +82,28 @@ class SettingsActivity : AppCompatActivity() {
             openManageAllFilesAccessSettings(this)
         }
         binding.settingsContent.buttonSaveSettings.setOnClickListener {
+            val modelContextLength = parseLengthInput(
+                rawValue = binding.settingsContent.editModelContextLength.text?.toString(),
+                onError = { binding.settingsContent.inputModelContextLength.error = it }
+            ) ?: return@setOnClickListener
+            val compressionTriggerLength = parseLengthInput(
+                rawValue = binding.settingsContent.editCompressionTriggerLength.text?.toString(),
+                onError = { binding.settingsContent.inputCompressionTriggerLength.error = it }
+            ) ?: return@setOnClickListener
+            if (modelContextLength > 0 && compressionTriggerLength > modelContextLength) {
+                binding.settingsContent.inputCompressionTriggerLength.error =
+                    getString(R.string.settings_compression_trigger_too_large)
+                return@setOnClickListener
+            }
+
             val settings = ApiSettings(
                 baseUrl = binding.settingsContent.editBaseUrl.text?.toString().orEmpty().trim(),
                 apiKey = binding.settingsContent.editApiKey.text?.toString().orEmpty().trim(),
                 model = binding.settingsContent.editModel.text?.toString().orEmpty().trim(),
                 titleModel = binding.settingsContent.editTitleModel.text?.toString().orEmpty().trim(),
+                compressionModel = binding.settingsContent.editCompressionModel.text?.toString().orEmpty().trim(),
+                modelContextLength = modelContextLength,
+                compressionTriggerLength = compressionTriggerLength,
                 searxngUrl = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim(),
                 reasoningEffort = selectedReasoningEffort
             )
@@ -110,10 +127,18 @@ class SettingsActivity : AppCompatActivity() {
         val hideSavedMessage = {
             binding.settingsContent.textSaveMessage.isVisible = false
         }
+        val clearLengthErrors = {
+            binding.settingsContent.inputModelContextLength.error = null
+            binding.settingsContent.inputCompressionTriggerLength.error = null
+            hideSavedMessage()
+        }
         binding.settingsContent.editBaseUrl.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editApiKey.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editModel.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editTitleModel.doAfterTextChanged { hideSavedMessage() }
+        binding.settingsContent.editCompressionModel.doAfterTextChanged { hideSavedMessage() }
+        binding.settingsContent.editModelContextLength.doAfterTextChanged { clearLengthErrors() }
+        binding.settingsContent.editCompressionTriggerLength.doAfterTextChanged { clearLengthErrors() }
         binding.settingsContent.editSearxngUrl.doAfterTextChanged { hideSavedMessage() }
     }
 
@@ -129,6 +154,17 @@ class SettingsActivity : AppCompatActivity() {
         }
         if (binding.settingsContent.editTitleModel.text?.toString() != settings.titleModel) {
             binding.settingsContent.editTitleModel.setText(settings.titleModel)
+        }
+        if (binding.settingsContent.editCompressionModel.text?.toString() != settings.compressionModel) {
+            binding.settingsContent.editCompressionModel.setText(settings.compressionModel)
+        }
+        val modelContextLength = settings.modelContextLength.coerceAtLeast(0).toString()
+        if (binding.settingsContent.editModelContextLength.text?.toString() != modelContextLength) {
+            binding.settingsContent.editModelContextLength.setText(modelContextLength)
+        }
+        val compressionTriggerLength = settings.compressionTriggerLength.coerceAtLeast(0).toString()
+        if (binding.settingsContent.editCompressionTriggerLength.text?.toString() != compressionTriggerLength) {
+            binding.settingsContent.editCompressionTriggerLength.setText(compressionTriggerLength)
         }
         if (binding.settingsContent.editSearxngUrl.text?.toString() != settings.searxngUrl) {
             binding.settingsContent.editSearxngUrl.setText(settings.searxngUrl)
@@ -164,5 +200,22 @@ class SettingsActivity : AppCompatActivity() {
         binding.settingsContent.buttonOpenPermissionSettings.text = getString(
             if (granted) R.string.settings_permission_reopen else R.string.settings_permission_open
         )
+    }
+
+    private fun parseLengthInput(rawValue: String?, onError: (String?) -> Unit): Int? {
+        val value = rawValue.orEmpty().trim()
+        if (value.isBlank()) {
+            onError(null)
+            return 0
+        }
+
+        val number = value.toLongOrNull()
+        if (number == null || number !in 0..Int.MAX_VALUE.toLong()) {
+            onError(getString(R.string.settings_number_invalid))
+            return null
+        }
+
+        onError(null)
+        return number.toInt()
     }
 }

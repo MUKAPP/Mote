@@ -41,12 +41,12 @@ app/src/main/java/com/mukapp/mote/
 ```text
 用户输入
 → ChatViewModel.sendMessage()
-→ 构建 workingConversation，并临时插入 System Prompt
+→ 构建原始 workingRawConversation，并基于独立 contextSummaries 临时生成请求用 workingConversation
 → ChatApiClient.streamChat() 发起流式请求
 → 按顺序累积 content、reasoning_content、tool_calls 到 assistantParts
-→ 有工具调用时执行 LocalAiTools，并把 assistant tool_calls 与 tool 结果写回上下文后继续请求
+→ 有工具调用时执行 LocalAiTools，并把 assistant tool_calls 与 tool 结果写回原始上下文后继续请求
 → Shell 命中高风险命令时暂停，等待用户确认或取消
-→ 无工具调用时完成回复，去除 System 消息后持久化 UI 消息和 API 上下文
+→ 无工具调用时完成回复，持久化 UI 消息、原始 API 上下文和独立上下文摘要
 → 首轮对话结束后可用 titleModel 异步生成标题
 ```
 
@@ -55,10 +55,14 @@ app/src/main/java/com/mukapp/mote/
 - UI 层为 `ChatFragment`、`SettingsActivity`，通过 ViewBinding 和 LiveData 更新界面。
 - 业务层集中在 `ChatViewModel`，负责发送消息、工具循环、Shell 确认、历史切换、编辑、删除、重试和停止生成。
 - 数据层包括 `ApiSettingsStore`、`ChatHistoryStore`、`ChatApiClient`。
-- 聊天消息分为 `uiMessagesInternal` 和 `conversationMessagesInternal`。前者面向展示，后者面向 API 上下文。
+- 聊天消息分为 `uiMessagesInternal`、`conversationMessagesInternal` 和 `contextSummariesInternal`。前者面向展示，后者保留原始 API 上下文，`contextSummariesInternal` 单独保存可替换旧上下文的压缩摘要。
 - `conversationMessagesInternal` 通常不含 System 消息；工具链路完成后会保留真实 assistant `toolCalls` 消息和 Tool 消息。
+- 上下文压缩不会删除或替换 `conversationMessagesInternal` 中的原始消息；压缩成功会向 `contextSummariesInternal` 追加新摘要并保留旧摘要，后续摘要可把旧摘要 ID 作为 `sourceMessageIds` 的一部分（如 `S2(source=S1/U2/A2)`）。
+- 发送请求时只用最新可用摘要；如果最新摘要依赖旧摘要，会递归解析其覆盖的原始消息，并临时把最新摘要作为 User 消息放在未压缩消息前面一起发送。
+- 删除、编辑或重试消息时，如果被影响的消息 ID 命中某条摘要的 `sourceMessageIds`，会删除命中的独立摘要及依赖它的后续摘要；如果最新摘要被删而旧摘要仍有效，后续请求会自动回退使用旧摘要，不从 UI 反向恢复原始上下文。
 - `assistantParts` 按实际顺序保存 `markdown`、`thinking`、`tool` 片段，`AssistantToolPart.isLoading` 只用于运行时展示，不写入历史。
 - 多对话历史保存在 `chat_history/conversations/{conversationId}.json`，索引保存在 `chat_history/index.json`。
+- 多对话历史文件同时保存 `uiMessages`、原始 `conversationMessages` 和独立 `contextSummaries`；旧版内嵌在 `conversationMessages` 的 `isContextSummary` 会在加载时迁移为独立摘要。
 - 首次加载会尝试迁移旧版 `chat_history/history.json`，并用 `legacy_migrated.json` 标记迁移状态。
 
 ## AI 工具
@@ -140,6 +144,7 @@ app/src/main/java/com/mukapp/mote/
 - 修改数据模型时，同步更新 `ChatHistoryStore` 的序列化和反序列化。
 - 修改 `ApiSettings.titleModel`、`ApiSettings.searxngUrl` 或其他设置字段时，同步更新 `ApiSettingsStore`。
 - 修改 `ConversationSummary`、`SavedConversationState` 或历史根字段时，同步多对话索引、旧历史迁移和侧栏刷新逻辑。
+- 修改 `ContextSummary` 或上下文压缩策略时，同步请求时摘要替换、摘要失效规则、历史迁移和 `ChatConversationContextHelperTest`。
 - 修改 `AssistantPart` 字段时，同步 `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter` 和工具结果展开状态。
 - 新增 AI 工具时，同步 `LocalAiTools` 的工具定义、执行逻辑和 `IntermediateStepsHelper.parseToolSummary`。
 - 修改 Shell 风险检测时，同步测试，且不要把 `confirmation_id` 暴露为模型可构造的可信输入。

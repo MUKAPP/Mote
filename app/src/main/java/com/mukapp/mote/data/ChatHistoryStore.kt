@@ -11,6 +11,7 @@ import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
+import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.util.toChatRoleOrNull
 import org.json.JSONArray
@@ -24,6 +25,7 @@ import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 object ChatHistoryStore {
+    private const val SchemaVersion = 2
     private const val DirectoryName = "chat_history"
     private const val ConversationsDirectoryName = "conversations"
     private const val IndexFileName = "index.json"
@@ -47,7 +49,8 @@ object ChatHistoryStore {
         conversationId: String,
         title: String,
         uiMessages: List<ChatMessage>,
-        conversationMessages: List<ChatMessage>
+        conversationMessages: List<ChatMessage>,
+        contextSummaries: List<ContextSummary> = emptyList()
     ): File {
         val conversationsDir = ensureConversationsDir(context)
         val safeConversationId = conversationId.ifBlank { newConversationId() }
@@ -66,6 +69,7 @@ object ChatHistoryStore {
         }.ifBlank { fallbackTitle }
 
         val payload = JSONObject().apply {
+            put("schemaVersion", SchemaVersion)
             put("id", safeConversationId)
             put("title", savedTitle)
             put("createdAt", createdAt)
@@ -74,8 +78,10 @@ object ChatHistoryStore {
             put("model", settings.model)
             put("uiMessageCount", uiMessages.size)
             put("conversationMessageCount", conversationMessages.size)
+            put("contextSummaryCount", contextSummaries.size)
             put("uiMessages", serializeMessages(uiMessages))
             put("conversationMessages", serializeMessages(conversationMessages))
+            put("contextSummaries", serializeContextSummaries(contextSummaries))
         }
         writeJsonAtomically(historyFile, payload)
         if (loadCurrentConversationId(context) == safeConversationId) {
@@ -298,6 +304,7 @@ object ChatHistoryStore {
             val legacyTitle = buildFallbackTitle(legacyState.uiMessages)
             val timestamp = legacyFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
             val migratedRoot = JSONObject().apply {
+                put("schemaVersion", SchemaVersion)
                 put("id", conversationId)
                 put("title", legacyTitle)
                 put("createdAt", timestamp)
@@ -306,8 +313,10 @@ object ChatHistoryStore {
                 put("model", legacyRoot.optString("model"))
                 put("uiMessageCount", legacyState.uiMessages.size)
                 put("conversationMessageCount", legacyState.conversationMessages.size)
+                put("contextSummaryCount", legacyState.contextSummaries.size)
                 put("uiMessages", serializeMessages(legacyState.uiMessages))
                 put("conversationMessages", serializeMessages(legacyState.conversationMessages))
+                put("contextSummaries", serializeContextSummaries(legacyState.contextSummaries))
             }
             writeJsonAtomically(conversationFile(conversationsDir, conversationId), migratedRoot)
             if (loadCurrentConversationId(context).isBlank()) {
@@ -328,21 +337,32 @@ object ChatHistoryStore {
     private fun deserializeLegacyConversation(root: JSONObject): SavedConversationState {
         val uiMessageArray = root.optJSONArray("uiMessages")
         val conversationMessageArray = root.optJSONArray("conversationMessages")
+        val contextSummaryArray = root.optJSONArray("contextSummaries")
         val legacyMessages = root.optJSONArray("messages")
 
         return when {
             uiMessageArray != null || conversationMessageArray != null -> {
+                val conversationMessages = deserializeMessages(conversationMessageArray)
+                val separated = separateEmbeddedContextSummaries(conversationMessages)
                 SavedConversationState(
                     uiMessages = deserializeMessages(uiMessageArray),
-                    conversationMessages = deserializeMessages(conversationMessageArray)
+                    conversationMessages = separated.messages,
+                    contextSummaries = mergeContextSummaries(
+                        deserializeContextSummaries(contextSummaryArray),
+                        separated.summaries
+                    )
                 )
             }
 
             legacyMessages != null -> {
                 val legacyList = deserializeMessages(legacyMessages)
+                val separated = separateEmbeddedContextSummaries(
+                    legacyList.filter { it.role != ChatRole.Tool }
+                )
                 SavedConversationState(
                     uiMessages = legacyList,
-                    conversationMessages = legacyList.filter { it.role != ChatRole.Tool }
+                    conversationMessages = separated.messages,
+                    contextSummaries = separated.summaries
                 )
             }
 
@@ -352,14 +372,48 @@ object ChatHistoryStore {
 
     private fun deserializeConversation(file: File, root: JSONObject): SavedConversationState {
         val uiMessages = deserializeMessages(root.optJSONArray("uiMessages"))
-        val conversationMessages = deserializeMessages(root.optJSONArray("conversationMessages"))
+        val rawConversationMessages = deserializeMessages(root.optJSONArray("conversationMessages"))
+        val separated = separateEmbeddedContextSummaries(rawConversationMessages)
+        val savedContextSummaries = deserializeContextSummaries(root.optJSONArray("contextSummaries"))
         val conversationId = file.nameWithoutExtension
         return SavedConversationState(
             uiMessages = uiMessages,
-            conversationMessages = conversationMessages,
+            conversationMessages = separated.messages,
+            contextSummaries = mergeContextSummaries(savedContextSummaries, separated.summaries),
             conversationId = conversationId,
             title = root.optString("title").ifBlank { buildFallbackTitle(uiMessages) }
         )
+    }
+
+    private data class SeparatedContextSummaries(
+        val messages: List<ChatMessage>,
+        val summaries: List<ContextSummary>
+    )
+
+    private fun separateEmbeddedContextSummaries(messages: List<ChatMessage>): SeparatedContextSummaries {
+        val summaries = messages
+            .filter { it.isContextSummary }
+            .filter { it.content.isNotBlank() && it.contextSummarySourceIds.isNotEmpty() }
+            .map { message ->
+                ContextSummary(
+                    id = message.id,
+                    content = message.content,
+                    sourceMessageIds = message.contextSummarySourceIds.distinct()
+                )
+            }
+        return SeparatedContextSummaries(
+            messages = messages.filterNot { it.isContextSummary },
+            summaries = summaries
+        )
+    }
+
+    private fun mergeContextSummaries(
+        first: List<ContextSummary>,
+        second: List<ContextSummary>
+    ): List<ContextSummary> {
+        return (first + second)
+            .distinctBy { it.id }
+            .filter { it.content.isNotBlank() && it.sourceMessageIds.isNotEmpty() }
     }
 
     private fun parseConversationSummary(file: File, root: JSONObject): ConversationSummary? {
@@ -529,7 +583,7 @@ object ChatHistoryStore {
         )
     }
 
-    private fun serializeMessages(messages: List<ChatMessage>): JSONArray {
+    internal fun serializeMessages(messages: List<ChatMessage>): JSONArray {
         return JSONArray().apply {
             messages.forEach { message ->
                 put(
@@ -541,6 +595,15 @@ object ChatHistoryStore {
                         message.toolName?.let { put("toolName", it) }
                         message.toolArguments?.let { put("toolArguments", it) }
                         put("excludeFromConversation", message.excludeFromConversation)
+                        put("isContextSummary", message.isContextSummary)
+                        if (message.contextSummarySourceIds.isNotEmpty()) {
+                            put(
+                                "contextSummarySourceIds",
+                                JSONArray().apply {
+                                    message.contextSummarySourceIds.forEach { sourceId -> put(sourceId) }
+                                }
+                            )
+                        }
                         if (message.toolCalls.isNotEmpty()) {
                             put(
                                 "toolCalls",
@@ -560,6 +623,34 @@ object ChatHistoryStore {
                         if (message.assistantParts.isNotEmpty()) {
                             put("assistantParts", serializeAssistantParts(message.assistantParts))
                         }
+                    }
+                )
+            }
+        }
+    }
+
+    internal fun serializeContextSummaries(summaries: List<ContextSummary>): JSONArray {
+        return JSONArray().apply {
+            summaries.forEach { summary ->
+                if (summary.content.isBlank() || summary.sourceMessageIds.isEmpty()) {
+                    return@forEach
+                }
+                put(
+                    JSONObject().apply {
+                        put("id", summary.id)
+                        put("content", summary.content)
+                        put(
+                            "sourceMessageIds",
+                            JSONArray().apply {
+                                summary.sourceMessageIds.distinct().forEach { sourceId ->
+                                    if (sourceId.isNotBlank()) {
+                                        put(sourceId)
+                                    }
+                                }
+                            }
+                        )
+                        put("createdAt", summary.createdAt)
+                        put("updatedAt", summary.updatedAt)
                     }
                 )
             }
@@ -596,7 +687,7 @@ object ChatHistoryStore {
         }
     }
 
-    private fun deserializeMessages(messageArray: JSONArray?): List<ChatMessage> {
+    internal fun deserializeMessages(messageArray: JSONArray?): List<ChatMessage> {
         if (messageArray == null) {
             return emptyList()
         }
@@ -615,9 +706,53 @@ object ChatHistoryStore {
                         toolArguments = item.optString("toolArguments").takeIf { it.isNotBlank() },
                         toolCalls = deserializeToolCalls(item.optJSONArray("toolCalls")),
                         assistantParts = deserializeAssistantParts(item.optJSONArray("assistantParts")),
-                        excludeFromConversation = item.optBoolean("excludeFromConversation", false)
+                        excludeFromConversation = item.optBoolean("excludeFromConversation", false),
+                        isContextSummary = item.optBoolean("isContextSummary", false),
+                        contextSummarySourceIds = deserializeStringList(item.optJSONArray("contextSummarySourceIds"))
                     )
                 )
+            }
+        }
+    }
+
+    internal fun deserializeContextSummaries(summaryArray: JSONArray?): List<ContextSummary> {
+        if (summaryArray == null) {
+            return emptyList()
+        }
+
+        return buildList {
+            for (index in 0 until summaryArray.length()) {
+                val item = summaryArray.optJSONObject(index) ?: continue
+                val content = item.optString("content").takeIf { it.isNotBlank() } ?: continue
+                val sourceIds = deserializeStringList(item.optJSONArray("sourceMessageIds"))
+                    .distinct()
+                if (sourceIds.isEmpty()) {
+                    continue
+                }
+                val createdAt = item.optLong("createdAt", 0L).takeIf { it > 0L }
+                    ?: System.currentTimeMillis()
+                add(
+                    ContextSummary(
+                        id = item.optString("id", UUID.randomUUID().toString()),
+                        content = content,
+                        sourceMessageIds = sourceIds,
+                        createdAt = createdAt,
+                        updatedAt = item.optLong("updatedAt", createdAt).takeIf { it > 0L }
+                            ?: createdAt
+                    )
+                )
+            }
+        }
+    }
+
+    private fun deserializeStringList(array: JSONArray?): List<String> {
+        if (array == null) {
+            return emptyList()
+        }
+
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
             }
         }
     }
