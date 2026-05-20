@@ -45,23 +45,23 @@ class BottomFadeRecyclerView @JvmOverloads constructor(
     }
 
     override fun draw(canvas: Canvas) {
-        // 使用离屏缓冲绘制整个 RecyclerView，以便后续进行 DST_OUT 擦除
+        // 不需要渐变时跳过 saveLayer，避免每帧分配离屏缓冲区
+        if (!canScrollVertically(1)) {
+            super.draw(canvas)
+            return
+        }
+
+        // 仅在需要底部渐变时使用离屏缓冲 + DST_OUT 擦除
         val saveCount = canvas.saveLayer(
             0f, 0f, width.toFloat(), height.toFloat(),
             null
         )
-        
         super.draw(canvas)
-
-        // 如果能向下滚动，则在最底部绘制擦除渐变
-        if (canScrollVertically(1)) {
-            canvas.drawRect(
-                0f, (height - fadeHeight).toFloat(),
-                width.toFloat(), height.toFloat(),
-                fadePaint
-            )
-        }
-
+        canvas.drawRect(
+            0f, (height - fadeHeight).toFloat(),
+            width.toFloat(), height.toFloat(),
+            fadePaint
+        )
         canvas.restoreToCount(saveCount)
     }
 }

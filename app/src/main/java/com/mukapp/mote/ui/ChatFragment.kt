@@ -22,15 +22,17 @@ import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
-import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.FragmentChatBinding
+import com.mukapp.mote.ui.markdown.MarkdownParseCache
 import com.mukapp.mote.util.dpInt
 import kotlin.math.max
 import androidx.core.view.isVisible
@@ -42,6 +44,7 @@ class ChatFragment : Fragment() {
 
     private val viewModel: ChatViewModel by activityViewModels()
     private lateinit var adapter: ChatMessageAdapter
+    private val parseCache = MarkdownParseCache()
 
     private var latestMessages: List<ChatMessage> = emptyList()
     private var latestSettings: ApiSettings = ApiSettings()
@@ -52,6 +55,7 @@ class ChatFragment : Fragment() {
     private var updatingDraft: Boolean = false
     private var pendingImmediateScrollToBottom: Boolean = false
     private var observedConversationId: String? = null
+    private var renderMessagesPending: Boolean = false
     private var lastRenderedMessageCount: Int = 0
     private var lastStreamingMessageSignature: String? = null
     private var lastStreamingScrollUptime: Long = 0L
@@ -216,6 +220,7 @@ class ChatFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        parseCache.clear()
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
@@ -247,6 +252,7 @@ class ChatFragment : Fragment() {
                 ) { viewModel.retryMessage(index) }
             }
         )
+        adapter.parseCache = parseCache
 
         binding.recyclerMessages.layoutManager = object : LinearLayoutManager(requireContext()) {
             override fun smoothScrollToPosition(
@@ -266,6 +272,16 @@ class ChatFragment : Fragment() {
         }
         binding.recyclerMessages.adapter = adapter
         binding.recyclerMessages.itemAnimator = null
+
+        // 增大离屏缓存：在最近 6 条消息间来回滚动时，ViewHolder 完全不经过 onBindViewHolder
+        binding.recyclerMessages.setItemViewCacheSize(6)
+        // 增大回收池上限，减少 ViewHolder 重建频率
+        binding.recyclerMessages.recycledViewPool.apply {
+            setMaxRecycledViews(0, 10) // Assistant 类型
+            setMaxRecycledViews(1, 6)  // User 类型
+        }
+        // RecyclerView 大小由父布局约束，不随数据条数变化
+        binding.recyclerMessages.setHasFixedSize(true)
         binding.recyclerMessages.addOnScrollListener(object :
             androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
             override fun onScrollStateChanged(
@@ -334,7 +350,7 @@ class ChatFragment : Fragment() {
     private fun observeViewModel() {
         viewModel.uiMessages.observe(viewLifecycleOwner) { messages ->
             latestMessages = messages
-            renderMessages()
+            scheduleRenderMessages()
             renderEmptyState()
         }
 
@@ -345,7 +361,7 @@ class ChatFragment : Fragment() {
 
         viewModel.isSending.observe(viewLifecycleOwner) { sending ->
             latestIsSending = sending
-            renderMessages()
+            scheduleRenderMessages()
             renderSendButton()
         }
 
@@ -469,10 +485,31 @@ class ChatFragment : Fragment() {
         }
     }
 
+    /**
+     * 合并同帧内的多次 renderMessages 调用（如 uiMessages 和 isSending 同时更新），
+     * 通过 post 延迟到当前消息循环结束后再执行一次。
+     */
+    private fun scheduleRenderMessages() {
+        if (renderMessagesPending) return
+        renderMessagesPending = true
+        val binding = _binding ?: run {
+            renderMessagesPending = false
+            return
+        }
+        binding.recyclerMessages.post {
+            renderMessagesPending = false
+            renderMessages()
+        }
+    }
+
     private fun renderMessages() {
         val previousMessageCount = lastRenderedMessageCount
         val previousStreamingSignature = lastStreamingMessageSignature
         adapter.submitMessages(latestMessages, latestIsSending)
+
+        // 在后台预解析所有可见消息的 Markdown，让 MarkdownView 在绑定时直接命中缓存
+        preparseVisibleMessages()
+
         val currentStreamingSignature = currentStreamingMessageSignature()
         val isStreamingContentUpdate = latestIsSending &&
                 latestMessages.size == previousMessageCount &&
@@ -491,6 +528,43 @@ class ChatFragment : Fragment() {
             pendingImmediateScrollToBottom = false
             postScrollToBottom(animated, throttle = animated && isStreamingContentUpdate)
         }
+    }
+
+    /**
+     * 从当前消息列表中提取所有 assistant markdown 片段文本，
+     * 在后台线程预解析 AST，使 MarkdownView 在 onBind 时能直接命中全局缓存。
+     *
+     * - 非流式消息全部预解析（切换对话、历史加载）
+     * - 流式消息仅预解析已完成的 part（最后一个 part 变化频繁，由 MarkdownView 同步解析）
+     */
+    private fun preparseVisibleMessages() {
+        val messages = latestMessages
+        val isStreaming = latestIsSending
+        val streamingMsgId = if (isStreaming) {
+            messages.lastOrNull { it.role == ChatRole.Assistant }?.id
+        } else null
+
+        val entries = mutableListOf<Pair<String, Boolean>>()
+        for (message in messages) {
+            if (message.role != ChatRole.Assistant) continue
+            val msgIsStreaming = message.id == streamingMsgId
+            val parts = message.assistantParts
+            if (parts.isEmpty() && message.content.isNotBlank()) {
+                entries.add(message.content to msgIsStreaming)
+                continue
+            }
+            for ((index, part) in parts.withIndex()) {
+                if (part !is AssistantMarkdownPart || part.text.isBlank()) continue
+                // 流式消息的最后一个 part 变化频繁，跳过预解析
+                if (msgIsStreaming && index == parts.lastIndex) continue
+                entries.add(part.text to msgIsStreaming)
+            }
+        }
+        if (entries.isEmpty()) return
+        // 淘汰不再使用的缓存条目，防止内存无限增长
+        val activeTexts = entries.mapTo(HashSet()) { it.first }
+        parseCache.evict(activeTexts)
+        parseCache.preparseAll(viewLifecycleOwner.lifecycleScope, entries)
     }
 
     private fun postScrollToBottom(animated: Boolean, throttle: Boolean = false) {

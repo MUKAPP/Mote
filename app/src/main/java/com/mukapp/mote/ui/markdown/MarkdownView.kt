@@ -130,6 +130,14 @@ class MarkdownView @JvmOverloads constructor(
     /** 每个 markdown 片段单独缓存的 (text, isStreaming) -> ParseResult，用于 setParts 路径下避免重复解析 */
     private val partParseCache = HashMap<String, CachedParseEntry>()
 
+    /** 外部注入的全局解析缓存，用于跨 ViewHolder 复用后台预解析结果 */
+    private var globalParseCache: MarkdownParseCache? = null
+
+    /** 设置全局解析缓存引用，由 ChatMessageAdapter 在创建 ViewHolder 时注入 */
+    fun setGlobalParseCache(cache: MarkdownParseCache?) {
+        globalParseCache = cache
+    }
+
     /**
      * 为 setParts 路径中每个 markdown part 缓存上一次渲染的 block 列表和 linkDefs，
      * 以便在内容变化时对其容器 LinearLayout 执行 block 级增量更新而非整体重建。
@@ -178,7 +186,7 @@ class MarkdownView @JvmOverloads constructor(
             return
         }
 
-        val parseResult = blockParser.parseWithLinkDefs(text, isStreaming)
+        val parseResult = obtainParseResultGlobal(text, isStreaming)
         val blocks = parseResult.blocks
         val linkDefs = parseResult.linkDefs
 
@@ -318,15 +326,28 @@ class MarkdownView @JvmOverloads constructor(
         partBlocksCache[part.id] = PartBlocksCache(blocks, linkDefs, isStreaming)
     }
 
-    /** 优先复用 partParseCache 中的解析结果，避免对相同文本的重复解析 */
+    /** 优先复用 partParseCache / 全局缓存中的解析结果，避免对相同文本的重复解析 */
     private fun obtainParseResult(text: String, isStreaming: Boolean): BlockParser.ParseResult {
         val cached = partParseCache[text]
         if (cached != null && cached.text == text && cached.isStreaming == isStreaming) {
             return BlockParser.ParseResult(cached.blocks, cached.linkDefs)
         }
+        // 查询全局预解析缓存
+        val globalCached = globalParseCache?.get(text, isStreaming)
+        if (globalCached != null) {
+            partParseCache[text] = CachedParseEntry(text, isStreaming, globalCached.blocks, globalCached.linkDefs)
+            return globalCached
+        }
         val parsed = blockParser.parseWithLinkDefs(text, isStreaming)
         partParseCache[text] = CachedParseEntry(text, isStreaming, parsed.blocks, parsed.linkDefs)
         return parsed
+    }
+
+    /** setMarkdown 路径使用的全局缓存优先解析 */
+    private fun obtainParseResultGlobal(text: String, isStreaming: Boolean): BlockParser.ParseResult {
+        val globalCached = globalParseCache?.get(text, isStreaming)
+        if (globalCached != null) return globalCached
+        return blockParser.parseWithLinkDefs(text, isStreaming)
     }
 
     /**

@@ -14,6 +14,7 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
+import com.mukapp.mote.ui.markdown.MarkdownParseCache
 
 class ChatMessageAdapter(
     private val onCopyMessage: (ChatMessage) -> Unit,
@@ -28,6 +29,9 @@ class ChatMessageAdapter(
 
     private var isSending: Boolean = false
     private var streamingMessageId: String? = null
+
+    /** 全局 Markdown 解析缓存，由 ChatFragment 设置 */
+    var parseCache: MarkdownParseCache? = null
 
     init {
         setHasStableIds(true)
@@ -50,7 +54,10 @@ class ChatMessageAdapter(
         return if (viewType == ViewTypeUser) {
             UserViewHolder(ItemChatMessageUserBinding.inflate(inflater, parent, false))
         } else {
-            AssistantViewHolder(ItemChatMessageBinding.inflate(inflater, parent, false))
+            val binding = ItemChatMessageBinding.inflate(inflater, parent, false)
+            // 注入全局解析缓存，让 MarkdownView 在绑定时优先使用预解析结果
+            binding.markdownContent.setGlobalParseCache(parseCache)
+            AssistantViewHolder(binding)
         }
     }
 
@@ -62,7 +69,14 @@ class ChatMessageAdapter(
             return
         }
         when (holder) {
-            is AssistantViewHolder -> holder.bind(messages[position], position)
+            is AssistantViewHolder -> {
+                if (STREAMING_PAYLOAD in payloads) {
+                    // 流式更新走精简路径：只更新内容和状态，跳过按钮和 layoutActions 等
+                    holder.bindStreaming(messages[position])
+                } else {
+                    holder.bind(messages[position], position)
+                }
+            }
         }
     }
 
@@ -117,7 +131,7 @@ class ChatMessageAdapter(
             messages.addAll(filteredMessages)
             when {
                 changedIndices.isEmpty() -> Unit
-                changedIndices.size <= 4 -> changedIndices.forEach {
+                changedIndices.size <= 8 -> changedIndices.forEach {
                     val isStreamingUpdate = filteredMessages[it].id == streamingMessageId
                     notifyItemChanged(it, if (isStreamingUpdate) STREAMING_PAYLOAD else null)
                 }
@@ -160,8 +174,29 @@ class ChatMessageAdapter(
     private inner class AssistantViewHolder(
         private val binding: ItemChatMessageBinding
     ) : RecyclerView.ViewHolder(binding.root) {
+        init {
+            // OnClickListener 在创建时设置一次，通过 bindingAdapterPosition 动态获取位置
+            binding.btnCopy.setOnClickListener {
+                currentMessageOrNull()?.let(onCopyMessage)
+            }
+            binding.btnEdit.setOnClickListener {
+                currentPositionOrNull()?.let(onEditMessage)
+            }
+            binding.btnDelete.setOnClickListener {
+                currentPositionOrNull()?.let(onDeleteMessage)
+            }
+            binding.btnRetry.setOnClickListener {
+                currentPositionOrNull()?.let(onRetryMessage)
+            }
+        }
+
         fun clear() {
             binding.markdownContent.clearMarkdown()
+            binding.typingIndicator.setAnimating(false)
+        }
+
+        /** 仅停止动画，保留 MarkdownView 渲染结果以便复用 */
+        fun stopAnimations() {
             binding.typingIndicator.setAnimating(false)
         }
 
@@ -200,18 +235,30 @@ class ChatMessageAdapter(
             binding.layoutActions.isVisible = !isStreamingMessage && (hasContent || hasParts)
             binding.btnCopy.isEnabled = hasCopyableContent
             binding.btnRetry.isVisible = isLastAiMessage && !isStreamingMessage
-            binding.btnCopy.setOnClickListener {
-                currentMessageOrNull()?.let(onCopyMessage)
+        }
+
+        /** 流式更新精简路径：只更新 MarkdownView 内容和实时状态 */
+        fun bindStreaming(message: ChatMessage) {
+            val hasContent = message.content.isNotBlank()
+            val hasParts = message.assistantParts.isNotEmpty()
+            syncThinkingPartExpansion(message, true)
+
+            binding.markdownContent.isVisible = hasParts || hasContent
+            if (hasParts) {
+                binding.markdownContent.setParts(
+                    parts = message.assistantParts,
+                    isStreaming = true,
+                    expandedThinkingPartIds = expandedThinkingPartIds,
+                    expandedToolPartIds = expandedToolPartIds
+                )
+            } else if (hasContent) {
+                binding.markdownContent.setMarkdown(message.content, true)
             }
-            binding.btnEdit.setOnClickListener {
-                currentPositionOrNull()?.let(onEditMessage)
-            }
-            binding.btnDelete.setOnClickListener {
-                currentPositionOrNull()?.let(onDeleteMessage)
-            }
-            binding.btnRetry.setOnClickListener {
-                currentPositionOrNull()?.let(onRetryMessage)
-            }
+
+            val showGeneratingStatus = !hasContent && !hasParts
+            binding.textStatus.isVisible = showGeneratingStatus
+            binding.typingIndicator.isVisible = true
+            binding.typingIndicator.setAnimating(true)
         }
 
         private fun currentPositionOrNull(): Int? {
@@ -250,7 +297,9 @@ class ChatMessageAdapter(
 
     override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
         if (holder is AssistantViewHolder) {
-            holder.clear()
+            // 只停止动画，不清除 MarkdownView 渲染结果；
+            // 保留视图树让 ViewHolder 复用时可以走增量更新路径，避免从零重建
+            holder.stopAnimations()
         }
         super.onViewRecycled(holder)
     }
@@ -258,9 +307,7 @@ class ChatMessageAdapter(
     private inner class UserViewHolder(
         private val binding: ItemChatMessageUserBinding
     ) : RecyclerView.ViewHolder(binding.root) {
-        fun bind(message: ChatMessage, position: Int) {
-            binding.textContent.text = message.content
-            binding.btnCopy.isEnabled = message.content.isNotBlank()
+        init {
             binding.btnCopy.setOnClickListener {
                 currentMessageOrNull()?.let(onCopyMessage)
             }
@@ -270,6 +317,11 @@ class ChatMessageAdapter(
             binding.btnDelete.setOnClickListener {
                 currentPositionOrNull()?.let(onDeleteMessage)
             }
+        }
+
+        fun bind(message: ChatMessage, position: Int) {
+            binding.textContent.text = message.content
+            binding.btnCopy.isEnabled = message.content.isNotBlank()
         }
 
         private fun currentPositionOrNull(): Int? {
