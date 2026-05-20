@@ -322,6 +322,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 删除指定的非当前对话 */
+    fun deleteConversation(conversationId: String) {
+        if (conversationId.isBlank()) return
+        if (conversationId == _currentConversationId.value) {
+            deleteCurrentConversation()
+            return
+        }
+
+        markConversationDeleted(conversationId)
+        MoteLog.i(
+            logComponent,
+            MoteLog.event("开始删除指定对话", "conversationId" to MoteLog.shortId(conversationId))
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val deleteResult = runCatching {
+                persistenceMutex.withLock {
+                    ChatHistoryStore.deleteConversation(appContext, conversationId)
+                }
+            }.onFailure { error ->
+                MoteLog.e(logComponent, "删除指定对话失败", error)
+            }
+            if (deleteResult.isFailure) {
+                unmarkConversationDeleted(conversationId)
+                withContext(Dispatchers.Main) {
+                    _userNotice.value =
+                        appContext.getString(R.string.error_delete_conversation_failed)
+                }
+                return@launch
+            }
+            val summaries = runCatching {
+                ChatHistoryStore.listConversations(appContext)
+            }.getOrDefault(emptyList())
+            clearDeletedConversation(conversationId)
+
+            withContext(Dispatchers.Main) {
+                _conversationSummaries.value = summaries
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event(
+                        "已删除指定对话",
+                        "conversationId" to MoteLog.shortId(conversationId)
+                    )
+                )
+            }
+        }
+    }
+
     fun sendMessage() {
         val content = _draftMessage.value.orEmpty().trim()
         if (content.isEmpty() || _isSending.value == true) {

@@ -15,7 +15,7 @@
         android:layout_width="72dp"
         android:layout_height="72dp"
         app:cardBackgroundColor="?attr/colorPrimaryContainer"
-        app:cardCornerRadius="20dp">
+        app:cardCornerRadius="16dp">
 
         <ImageView
             android:layout_width="match_parent"

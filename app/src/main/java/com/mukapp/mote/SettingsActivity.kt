@@ -194,6 +194,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.settingsContent.cardPermission.setCardBackgroundColor(cardColor)
         binding.settingsContent.textPermissionTitle.setTextColor(titleColor)
         binding.settingsContent.textPermissionDescription.setTextColor(titleColor)
+        binding.settingsContent.iconPermission.setColorFilter(titleColor)
         binding.settingsContent.textPermissionDescription.text = getString(
             if (granted) R.string.settings_permission_granted else R.string.settings_permission_denied
         )

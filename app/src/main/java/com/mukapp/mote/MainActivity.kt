@@ -132,10 +132,15 @@ class MainActivity : AppCompatActivity() {
         binding.drawerPanel.layoutParams = binding.drawerPanel.layoutParams.apply {
             width = min(resources.displayMetrics.widthPixels - 56.dpInt, 320.dpInt)
         }
-        conversationAdapter = ConversationSummaryAdapter { summary ->
-            viewModel.switchConversation(summary.id)
-            binding.drawerLayout.closeDrawer(GravityCompat.START)
-        }
+        conversationAdapter = ConversationSummaryAdapter(
+            onConversationClick = { summary ->
+                viewModel.switchConversation(summary.id)
+                binding.drawerLayout.closeDrawer(GravityCompat.START)
+            },
+            onConversationLongClick = { summary ->
+                showDeleteConversationDialog(summary.id, summary.title)
+            }
+        )
         binding.recyclerConversations.adapter = conversationAdapter
         binding.recyclerConversations.layoutManager = LinearLayoutManager(this)
         binding.recyclerConversations.itemAnimator = null
@@ -175,6 +180,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 删除当前对话（工具栏菜单触发） */
     private fun showDeleteConversationDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.dialog_delete_conversation_title)
@@ -182,6 +188,23 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(R.string.action_cancel, null)
             .setPositiveButton(R.string.action_delete) { _, _ ->
                 viewModel.deleteCurrentConversation()
+            }
+            .show()
+    }
+
+    /** 删除指定对话（长按列表项触发） */
+    private fun showDeleteConversationDialog(conversationId: String, title: String) {
+        val displayTitle = title.ifBlank { getString(R.string.nav_untitled_chat) }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.dialog_delete_conversation_title)
+            .setMessage(getString(R.string.dialog_delete_specific_conversation_message, displayTitle))
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.action_delete) { _, _ ->
+                if (conversationId == latestConversationId) {
+                    viewModel.deleteCurrentConversation()
+                } else {
+                    viewModel.deleteConversation(conversationId)
+                }
             }
             .show()
     }

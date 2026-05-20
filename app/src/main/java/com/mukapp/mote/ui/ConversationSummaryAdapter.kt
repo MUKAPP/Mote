@@ -1,5 +1,6 @@
 package com.mukapp.mote.ui
 
+import android.text.format.DateUtils
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
@@ -10,7 +11,8 @@ import com.mukapp.mote.databinding.ItemConversationSummaryBinding
 import java.util.UUID
 
 class ConversationSummaryAdapter(
-    private val onConversationClick: (ConversationSummary) -> Unit
+    private val onConversationClick: (ConversationSummary) -> Unit,
+    private val onConversationLongClick: ((ConversationSummary) -> Unit)? = null
 ) : RecyclerView.Adapter<ConversationSummaryAdapter.ViewHolder>() {
     private val items = mutableListOf<ConversationSummary>()
     private var currentConversationId: String = ""
@@ -81,13 +83,37 @@ class ConversationSummaryAdapter(
             } else {
                 com.google.android.material.R.attr.colorOnSurface
             }
+            val subtextAttr = if (selected) {
+                com.google.android.material.R.attr.colorOnSecondaryContainer
+            } else {
+                com.google.android.material.R.attr.colorOnSurfaceVariant
+            }
             binding.cardConversation.setCardBackgroundColor(
                 MaterialColors.getColor(binding.cardConversation, backgroundAttr)
             )
             binding.textTitle.setTextColor(MaterialColors.getColor(binding.textTitle, textAttr))
             binding.textTitle.text = item.title.ifBlank { context.getString(R.string.nav_untitled_chat) }
+
+            // 显示相对时间
+            val timeText = if (item.updatedAt > 0) {
+                DateUtils.getRelativeTimeSpanString(
+                    item.updatedAt,
+                    System.currentTimeMillis(),
+                    DateUtils.MINUTE_IN_MILLIS,
+                    DateUtils.FORMAT_ABBREV_RELATIVE
+                )
+            } else {
+                ""
+            }
+            binding.textTime.text = timeText
+            binding.textTime.setTextColor(MaterialColors.getColor(binding.textTime, subtextAttr))
+
             binding.root.isSelected = selected
             binding.root.setOnClickListener { onConversationClick(item) }
+            binding.root.setOnLongClickListener {
+                onConversationLongClick?.invoke(item)
+                onConversationLongClick != null
+            }
         }
     }
 
