@@ -829,8 +829,7 @@ object ChatApiClient {
         if (!has(name) || isNull(name)) {
             return null
         }
-        val value = opt(name)
-        val number = when (value) {
+        val number = when (val value = opt(name)) {
             is Number -> value.toLong()
             is String -> value.toLongOrNull()
             else -> null

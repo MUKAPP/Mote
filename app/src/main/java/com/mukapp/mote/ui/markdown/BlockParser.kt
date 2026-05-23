@@ -417,7 +417,7 @@ class BlockParser {
         isStreaming: Boolean,
         linkDefs: Map<String, Pair<String, String>>,
         tailLineComplete: Boolean
-    ): BlockquoteResult? {
+    ): BlockquoteResult {
         val quoteLines = mutableListOf<String>()
         var offset = startOffset
         var i = startIndex

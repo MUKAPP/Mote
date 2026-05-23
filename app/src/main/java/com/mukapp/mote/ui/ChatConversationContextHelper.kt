@@ -331,7 +331,7 @@ internal object ChatConversationContextHelper {
         messages.forEach { message ->
             if (message.role == ChatRole.User) {
                 currentUserId = message.id
-                turns[currentUserId.orEmpty()] = mutableListOf(message)
+                turns[currentUserId] = mutableListOf(message)
             } else {
                 currentUserId?.let { userId -> turns[userId]?.add(message) }
             }
@@ -342,11 +342,10 @@ internal object ChatConversationContextHelper {
     private fun copyToolResultMetadata(source: JSONObject, target: JSONObject) {
         val keys = source.keys()
         while (keys.hasNext()) {
-            val key = keys.next()
-            when {
-                key == "truncated" -> target.put("original_truncated", source.opt(key))
-                key == "message" -> copyStringMetadata(source, target, key, "original_message")
-                key in LargePayloadKeys -> Unit
+            when (val key = keys.next()) {
+                "truncated" -> target.put("original_truncated", source.opt(key))
+                "message" -> copyStringMetadata(source, target, key, "original_message")
+                in LargePayloadKeys -> Unit
                 else -> copyScalarMetadata(source, target, key)
             }
         }

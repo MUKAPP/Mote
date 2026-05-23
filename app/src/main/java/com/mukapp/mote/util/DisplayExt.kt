@@ -1,6 +1,7 @@
 package com.mukapp.mote.util
 
 import android.content.res.Resources
+import android.util.TypedValue
 
 /** 获取系统屏幕参数 */
 private val metrics get() = Resources.getSystem().displayMetrics
@@ -17,10 +18,10 @@ val Number.dpInt: Int
 /** * sp 转 px (常用于字体大小)
  */
 val Number.sp: Float
-    get() = this.toFloat() * metrics.scaledDensity
+    get() = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, this.toFloat(), metrics)
 
 val Number.spInt: Int
-    get() = (this.toFloat() * metrics.scaledDensity + 0.5f).toInt()
+    get() = (TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, this.toFloat(), metrics) + 0.5f).toInt()
 
 /** * px 转 dp
  */

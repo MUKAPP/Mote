@@ -1,19 +1,20 @@
 package com.mukapp.mote
 
-import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.ColorUtils
+import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
-import androidx.core.view.isVisible
 import com.google.android.material.color.MaterialColors
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.databinding.ActivitySettingsBinding
+import com.mukapp.mote.util.dpInt
 import com.mukapp.mote.util.hasManageAllFilesPermission
 import com.mukapp.mote.util.openManageAllFilesAccessSettings
 
@@ -51,7 +52,7 @@ class SettingsActivity : AppCompatActivity() {
             binding.root,
             com.google.android.material.R.attr.colorSurface
         )
-        val frameClearDrawable = window.decorView.background ?: ColorDrawable(fallbackSurfaceColor)
+        val frameClearDrawable = window.decorView.background ?: fallbackSurfaceColor.toDrawable()
         val blurBaseColor = MaterialColors.getColor(
             binding.root,
             com.google.android.material.R.attr.colorSurfaceContainerLow
@@ -67,10 +68,10 @@ class SettingsActivity : AppCompatActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val toolbarHeight = binding.toolbar.minimumHeight.takeIf { it > 0 }
-                ?: (56 * resources.displayMetrics.density).toInt()
+                ?: 56.dpInt
             binding.blurViewToolbar.updatePadding(top = systemBars.top)
             binding.settingsContent.root.updatePadding(
-                top = systemBars.top + toolbarHeight,
+                top = systemBars.top + toolbarHeight + 16.dpInt,
                 bottom = systemBars.bottom
             )
             insets
@@ -100,11 +101,14 @@ class SettingsActivity : AppCompatActivity() {
                 baseUrl = binding.settingsContent.editBaseUrl.text?.toString().orEmpty().trim(),
                 apiKey = binding.settingsContent.editApiKey.text?.toString().orEmpty().trim(),
                 model = binding.settingsContent.editModel.text?.toString().orEmpty().trim(),
-                titleModel = binding.settingsContent.editTitleModel.text?.toString().orEmpty().trim(),
-                compressionModel = binding.settingsContent.editCompressionModel.text?.toString().orEmpty().trim(),
+                titleModel = binding.settingsContent.editTitleModel.text?.toString().orEmpty()
+                    .trim(),
+                compressionModel = binding.settingsContent.editCompressionModel.text?.toString()
+                    .orEmpty().trim(),
                 modelContextLength = modelContextLength,
                 compressionTriggerLength = compressionTriggerLength,
-                searxngUrl = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim(),
+                searxngUrl = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty()
+                    .trim(),
                 reasoningEffort = selectedReasoningEffort
             )
             ApiSettingsStore.save(this, settings)

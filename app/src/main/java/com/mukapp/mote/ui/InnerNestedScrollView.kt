@@ -3,6 +3,7 @@ package com.mukapp.mote.ui
 import android.content.Context
 import android.util.AttributeSet
 import android.view.MotionEvent
+import androidx.core.content.withStyledAttributes
 import androidx.core.widget.NestedScrollView
 import com.mukapp.mote.R
 
@@ -14,9 +15,11 @@ class InnerNestedScrollView @JvmOverloads constructor(
     private val maxHeight: Int
 
     init {
-        val typedArray = context.obtainStyledAttributes(attrs, R.styleable.InnerNestedScrollView)
-        maxHeight = typedArray.getDimensionPixelSize(R.styleable.InnerNestedScrollView_maxHeight, 0)
-        typedArray.recycle()
+        var resolvedMaxHeight = 0
+        context.withStyledAttributes(attrs, R.styleable.InnerNestedScrollView) {
+            resolvedMaxHeight = getDimensionPixelSize(R.styleable.InnerNestedScrollView_maxHeight, 0)
+        }
+        maxHeight = resolvedMaxHeight
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

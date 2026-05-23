@@ -228,16 +228,17 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
-                isVariableAssignment(arg) -> index += 1
+            index += when {
+                isVariableAssignment(arg) -> 1
                 arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
                 arg == "-S" && index + 1 < args.size -> {
                     return detectCommandString(args.drop(index + 1).joinToString(" "), nestedDepth + 1)
                 }
-                arg == "-u" || arg == "--unset" || arg == "-C" || arg == "--chdir" -> index += 2
-                arg == "-i" || arg == "-" || arg == "--ignore-environment" -> index += 1
-                arg.startsWith("--unset=") || arg.startsWith("--chdir=") -> index += 1
-                arg.startsWith("-") -> index += 1
+
+                arg == "-u" || arg == "--unset" || arg == "-C" || arg == "--chdir" -> 2
+                arg == "-i" || arg == "-" || arg == "--ignore-environment" -> 1
+                arg.startsWith("--unset=") || arg.startsWith("--chdir=") -> 1
+                arg.startsWith("-") -> 1
                 else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
             }
         }
@@ -255,10 +256,10 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
+            index += when {
                 arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
-                arg == "-a" -> index += 2
-                arg.startsWith("-") -> index += 1
+                arg == "-a" -> 2
+                arg.startsWith("-") -> 1
                 else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
             }
         }
@@ -300,12 +301,12 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
+            index += when {
                 arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
-                arg == "-n" || arg == "--adjustment" -> index += 2
-                arg.startsWith("--adjustment=") -> index += 1
-                isNicePriorityShortcut(arg) -> index += 1
-                arg.startsWith("-") -> index += 1
+                arg == "-n" || arg == "--adjustment" -> 2
+                arg.startsWith("--adjustment=") -> 1
+                isNicePriorityShortcut(arg) -> 1
+                arg.startsWith("-") -> 1
                 else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
             }
         }
@@ -316,12 +317,12 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
+            index += when {
                 arg == "--" -> return detectWords(args.drop(index + 1), nestedDepth + 1, hasExternalStdin)
-                arg == "-c" || arg == "--class" || arg == "-n" || arg == "--classdata" || arg == "-p" || arg == "--pid" -> index += 2
-                arg.startsWith("--class=") || arg.startsWith("--classdata=") || arg.startsWith("--pid=") -> index += 1
-                isIoniceAttachedOption(arg) -> index += 1
-                arg.startsWith("-") -> index += 1
+                arg == "-c" || arg == "--class" || arg == "-n" || arg == "--classdata" || arg == "-p" || arg == "--pid" -> 2
+                arg.startsWith("--class=") || arg.startsWith("--classdata=") || arg.startsWith("--pid=") -> 1
+                isIoniceAttachedOption(arg) -> 1
+                arg.startsWith("-") -> 1
                 else -> return detectWords(args.drop(index), nestedDepth + 1, hasExternalStdin)
             }
         }
@@ -415,10 +416,10 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
-                arg == "--user" -> index += 2
-                arg.startsWith("--user=") -> index += 1
-                arg.startsWith("-") -> index += 1
+            index += when {
+                arg == "--user" -> 2
+                arg.startsWith("--user=") -> 1
+                arg.startsWith("-") -> 1
                 else -> break
             }
         }
@@ -653,13 +654,13 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
+            index += when {
                 arg == "--" -> return args.drop(index + 1)
-                arg in longOptionsWithValue -> index += 2
-                longOptionsWithValue.any { option -> arg.startsWith("$option=") } -> index += 1
-                isShortOptionWithSeparatedValue(arg, shortOptionsWithValue) -> index += 2
-                isShortOptionWithAttachedValue(arg, shortOptionsWithValue) -> index += 1
-                arg.startsWith("-") -> index += 1
+                arg in longOptionsWithValue -> 2
+                longOptionsWithValue.any { option -> arg.startsWith("$option=") } -> 1
+                isShortOptionWithSeparatedValue(arg, shortOptionsWithValue) -> 2
+                isShortOptionWithAttachedValue(arg, shortOptionsWithValue) -> 1
+                arg.startsWith("-") -> 1
                 else -> return args.drop(index)
             }
         }
@@ -737,12 +738,12 @@ internal object ShellRiskDetector {
         var index = 0
         while (index < args.size) {
             val arg = args[index]
-            when {
+            index += when {
                 arg == "--" -> return args.drop(index + 1).takeIf { it.isNotEmpty() }
                 !arg.startsWith("-") || arg == "-" -> return args.drop(index)
-                xargsOptionConsumesNextValue(arg) -> index += 2
-                xargsOptionHasAttachedValue(arg) -> index += 1
-                else -> index += 1
+                xargsOptionConsumesNextValue(arg) -> 2
+                xargsOptionHasAttachedValue(arg) -> 1
+                else -> 1
             }
         }
         return null
@@ -1051,10 +1052,10 @@ internal object ShellRiskDetector {
     private fun findBacktickSubstitutionEnd(command: String, startIndex: Int): Int {
         var index = startIndex
         while (index < command.length) {
-            when (command[index]) {
-                '\\' -> index += 2
+            index += when (command[index]) {
+                '\\' -> 2
                 '`' -> return index
-                else -> index += 1
+                else -> 1
             }
         }
         return -1
@@ -1202,10 +1203,10 @@ internal object ShellRiskDetector {
             if (isSeparator(char)) {
                 flushWord()
                 val next = command.getOrNull(index + 1)
-                val separator = when {
-                    char == '&' && next == '&' -> "&&"
-                    char == '|' && next == '|' -> "||"
-                    char == '|' && next == '&' -> "|&"
+                val separator = when (char) {
+                    '&' if next == '&' -> "&&"
+                    '|' if next == '|' -> "||"
+                    '|' if next == '&' -> "|&"
                     else -> char.toString()
                 }
                 index += separator.length
@@ -1244,8 +1245,7 @@ internal object ShellRiskDetector {
     }
 
     private fun readAnsiEscape(command: String, escapedIndex: Int): QuotedString {
-        val escaped = command[escapedIndex]
-        return when (escaped) {
+        return when (val escaped = command[escapedIndex]) {
             'a' -> QuotedString("\u0007", escapedIndex + 1)
             'b' -> QuotedString("\b", escapedIndex + 1)
             'e', 'E' -> QuotedString("\u001B", escapedIndex + 1)

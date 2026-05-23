@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.util.MoteLog
+import androidx.core.content.edit
 
 object ApiSettingsStore {
     private const val PrefName = "mote_api_settings"
@@ -43,17 +44,20 @@ object ApiSettingsStore {
     }
 
     internal fun save(preferences: SharedPreferences, settings: ApiSettings) {
-        preferences.edit()
-            .putString(KeyBaseUrl, settings.baseUrl)
-            .putString(KeyApiKey, settings.apiKey)
-            .putString(KeyModel, settings.model)
-            .putString(KeyTitleModel, settings.titleModel)
-            .putString(KeyCompressionModel, settings.compressionModel)
-            .putInt(KeyModelContextLength, settings.modelContextLength.coerceAtLeast(0))
-            .putInt(KeyCompressionTriggerLength, settings.compressionTriggerLength.coerceAtLeast(0))
-            .putString(KeySearxngUrl, settings.searxngUrl)
-            .putString(KeyReasoningEffort, settings.reasoningEffort)
-            .apply()
+        preferences.edit {
+            putString(KeyBaseUrl, settings.baseUrl)
+                .putString(KeyApiKey, settings.apiKey)
+                .putString(KeyModel, settings.model)
+                .putString(KeyTitleModel, settings.titleModel)
+                .putString(KeyCompressionModel, settings.compressionModel)
+                .putInt(KeyModelContextLength, settings.modelContextLength.coerceAtLeast(0))
+                .putInt(
+                    KeyCompressionTriggerLength,
+                    settings.compressionTriggerLength.coerceAtLeast(0)
+                )
+                .putString(KeySearxngUrl, settings.searxngUrl)
+                .putString(KeyReasoningEffort, settings.reasoningEffort)
+        }
         MoteLog.i("Settings", MoteLog.event("已保存 API 设置", *settings.safeLogFields()))
     }
 

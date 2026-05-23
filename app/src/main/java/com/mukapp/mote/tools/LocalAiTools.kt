@@ -954,7 +954,25 @@ object LocalAiTools {
     private data class HttpResponseBody(
         val bytes: ByteArray,
         val truncated: Boolean
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+
+            other as HttpResponseBody
+
+            if (truncated != other.truncated) return false
+            if (!bytes.contentEquals(other.bytes)) return false
+
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = truncated.hashCode()
+            result = 31 * result + bytes.contentHashCode()
+            return result
+        }
+    }
 
     private fun readHttpResponseBody(
         connection: HttpURLConnection,
@@ -1225,7 +1243,7 @@ object LocalAiTools {
             params += "safesearch" to value.toString()
         }
 
-        return endpoint + "?" + params.joinToString(separator = "&") { (key, value) ->
+        return "$endpoint?" + params.joinToString(separator = "&") { (key, value) ->
             "${urlEncode(key)}=${urlEncode(value)}"
         }
     }
@@ -1245,7 +1263,7 @@ object LocalAiTools {
                     break
                 }
                 val remaining = maxChars - output.length
-                output.append(buffer, 0, minOf(read, remaining.coerceAtLeast(0)))
+                output.appendRange(buffer, 0, minOf(read, remaining.coerceAtLeast(0)))
                 if (read > remaining) {
                     break
                 }
@@ -1519,7 +1537,7 @@ object LocalAiTools {
         return JSONObject().apply {
             put("ok", true)
             put("wait_seconds", seconds)
-            put("message", "将在 ${seconds} 秒后继续对话，届时可查询后台进程状态")
+            put("message", "将在 $seconds 秒后继续对话，届时可查询后台进程状态")
         }.toString(2)
     }
 
@@ -1839,7 +1857,9 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ShellToolName)
-                    put("description", "在设备上执行 shell 命令。短命令会等待完成并返回输出；长命令可设为后台运行，用 shell_status 查询状态。如果命令超过 30 秒未完成会自动转为后台运行。未提供工作目录时默认使用 Android/data/包名/files/ai_tmp，临时文件请保存到当前目录、\$TMPDIR 或 \$MOTE_AI_TMPDIR。")
+                    put("description",
+                        $$"在设备上执行 shell 命令。短命令会等待完成并返回输出；长命令可设为后台运行，用 shell_status 查询状态。如果命令超过 30 秒未完成会自动转为后台运行。未提供工作目录时默认使用 Android/data/包名/files/ai_tmp，临时文件请保存到当前目录、$TMPDIR 或 $MOTE_AI_TMPDIR。"
+                    )
                     put(
                         "parameters",
                         JSONObject().apply {
