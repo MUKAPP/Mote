@@ -126,8 +126,7 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     init {
         radius = 12.dpInt.toFloat()
         cardElevation = 0f
-        strokeWidth = 1.dpInt
-        strokeColor = strokeLineColor
+        strokeWidth = 0
         setCardBackgroundColor(blockBackgroundColor)
         preventCornerOverlap = false
         useCompatPadding = false

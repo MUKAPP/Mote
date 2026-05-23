@@ -111,10 +111,8 @@ class SettingsActivity : AppCompatActivity() {
             binding.settingsContent.textSaveMessage.text = getString(R.string.settings_saved)
             binding.settingsContent.textSaveMessage.isVisible = true
         }
-        binding.settingsContent.toggleReasoningEffort.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (!isChecked) {
-                return@addOnButtonCheckedListener
-            }
+        binding.settingsContent.toggleReasoningEffort.setOnCheckedStateChangeListener { _, checkedIds ->
+            val checkedId = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
             selectedReasoningEffort = when (checkedId) {
                 R.id.button_effort_low -> "low"
                 R.id.button_effort_medium -> "medium"
@@ -183,17 +181,16 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun refreshPermissionState() {
         val granted = hasManageAllFilesPermission()
-        val cardColor = MaterialColors.getColor(
-            binding.settingsContent.cardPermission,
-            if (granted) com.google.android.material.R.attr.colorSecondaryContainer else com.google.android.material.R.attr.colorErrorContainer
-        )
-        val titleColor = MaterialColors.getColor(
-            binding.settingsContent.cardPermission,
-            if (granted) com.google.android.material.R.attr.colorOnSecondaryContainer else com.google.android.material.R.attr.colorOnErrorContainer
-        )
-        binding.settingsContent.cardPermission.setCardBackgroundColor(cardColor)
+        val view = binding.settingsContent.cardPermission
+        val titleColor = if (granted) {
+            MaterialColors.getColor(view, com.google.android.material.R.attr.colorOnSurface)
+        } else {
+            androidx.core.content.ContextCompat.getColor(this, R.color.mote_error)
+        }
         binding.settingsContent.textPermissionTitle.setTextColor(titleColor)
-        binding.settingsContent.textPermissionDescription.setTextColor(titleColor)
+        binding.settingsContent.textPermissionDescription.setTextColor(
+            MaterialColors.getColor(view, com.google.android.material.R.attr.colorOnSurfaceVariant)
+        )
         binding.settingsContent.iconPermission.setColorFilter(titleColor)
         binding.settingsContent.textPermissionDescription.text = getString(
             if (granted) R.string.settings_permission_granted else R.string.settings_permission_denied

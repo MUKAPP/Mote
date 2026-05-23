@@ -593,8 +593,8 @@ class MarkdownView @JvmOverloads constructor(
         return MaterialCardView(context).apply {
             layoutParams = createBlockLayoutParams()
             radius = 12.dp
-            strokeWidth = 1.dpInt.coerceAtLeast(1)
-            strokeColor = thinkingCardStrokeColor
+            strokeWidth = 0
+            cardElevation = 0f
             setCardBackgroundColor(thinkingCardBgColor)
             addView(
                 LinearLayout(context).apply {
@@ -843,12 +843,6 @@ class MarkdownView @JvmOverloads constructor(
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = quoteCornerRadius
                 setColor(quoteBackgroundColor)
-            }
-            foreground = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = quoteCornerRadius
-                setColor(Color.TRANSPARENT)
-                setStroke(1.dpInt.coerceAtLeast(1), quoteStrokeColor)
             }
             clipToOutline = true
         }

@@ -3,14 +3,47 @@
     <style name="Widget.Mote" parent="">
     </style>
 
-    <style name="Widget.Mote.MessageCard.Assistant" parent="Widget.Material3.CardView.Outlined">
-        <!-- <item name="cardBackgroundColor">?attr/colorSurfaceVariant</item> -->
+    <!-- AI 消息卡片：中性 Card 色背景，无边框 -->
+    <style name="Widget.Mote.MessageCard.Assistant" parent="Widget.Material3.CardView.Filled">
         <item name="cardCornerRadius">16dp</item>
+        <item name="cardBackgroundColor">@color/mote_card</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeWidth">0dp</item>
     </style>
 
-    <style name="Widget.Mote.MessageCard.User" parent="Widget.Material3.CardView.Outlined">
-        <item name="cardBackgroundColor">?attr/colorSurfaceContainer</item>
+    <!-- 用户消息卡片：Primary 透明度混合背景，无边框 -->
+    <style name="Widget.Mote.MessageCard.User" parent="Widget.Material3.CardView.Filled">
         <item name="cardCornerRadius">16dp</item>
+        <item name="cardBackgroundColor">@color/mote_user_message_card</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeWidth">0dp</item>
     </style>
 
+    <!-- Tonal 按钮：透明主题色背景 -->
+    <style name="Widget.Mote.Button.Tonal" parent="Widget.Material3.Button.TonalButton">
+        <item name="backgroundTint">@color/mote_primary_alpha_15</item>
+        <item name="android:textColor">@color/mote_primary</item>
+        <item name="iconTint">@color/mote_primary</item>
+    </style>
+
+    <!-- 思考强度选择 Chip -->
+    <style name="Widget.Mote.Chip.Choice" parent="Widget.Material3.Chip.Filter">
+        <item name="chipBackgroundColor">@color/mote_chip_background</item>
+        <item name="android:textColor">@color/mote_chip_text</item>
+        <item name="chipStrokeWidth">0dp</item>
+        <item name="chipMinHeight">36dp</item>
+        <item name="checkedIconVisible">false</item>
+        <item name="chipCornerRadius">18dp</item>
+    </style>
+
+    <!-- 设置页输入框 -->
+    <style name="Widget.Mote.TextInputLayout" parent="Widget.Material3.TextInputLayout.FilledBox">
+        <item name="boxBackgroundColor">@color/mote_card_nested</item>
+        <item name="boxCornerRadiusTopStart">12dp</item>
+        <item name="boxCornerRadiusTopEnd">12dp</item>
+        <item name="boxCornerRadiusBottomStart">12dp</item>
+        <item name="boxCornerRadiusBottomEnd">12dp</item>
+        <item name="boxStrokeWidth">0dp</item>
+        <item name="boxStrokeWidthFocused">0dp</item>
+    </style>
 </resources>

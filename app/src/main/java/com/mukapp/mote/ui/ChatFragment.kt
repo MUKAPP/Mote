@@ -271,7 +271,7 @@ class ChatFragment : Fragment() {
             }
         }
         binding.recyclerMessages.adapter = adapter
-        binding.recyclerMessages.itemAnimator = null
+        binding.recyclerMessages.itemAnimator = MessageItemAnimator()
 
         // 增大离屏缓存：在最近 6 条消息间来回滚动时，ViewHolder 完全不经过 onBindViewHolder
         binding.recyclerMessages.setItemViewCacheSize(6)

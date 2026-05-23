@@ -15,63 +15,16 @@
         android:paddingEnd="16dp"
         android:paddingBottom="32dp">
 
-        <!-- ==================== 介绍卡片 ==================== -->
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/card_intro"
-            style="@style/Widget.Material3.CardView.Filled"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            app:cardBackgroundColor="?attr/colorPrimaryContainer"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="0dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="20dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <ImageView
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:importantForAccessibility="no"
-                        android:src="@drawable/ic_tune"
-                        app:tint="?attr/colorOnPrimaryContainer" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="12dp"
-                        android:text="@string/settings_intro_title"
-                        android:textAppearance="?attr/textAppearanceTitleMedium"
-                        android:textColor="?attr/colorOnPrimaryContainer" />
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/settings_intro_body"
-                    android:textAppearance="?attr/textAppearanceBodySmall"
-                    android:textColor="?attr/colorOnPrimaryContainer" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
         <!-- ==================== 权限卡片 ==================== -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/card_permission"
             style="@style/Widget.Material3.CardView.Filled"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            app:cardBackgroundColor="?attr/colorSurfaceContainer"
             app:cardCornerRadius="16dp"
-            app:cardElevation="0dp">
+            app:cardElevation="0dp"
+            app:strokeWidth="0dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -111,7 +64,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/button_open_permission_settings"
-                    style="?attr/materialButtonOutlinedStyle"
+                    style="@style/Widget.Mote.Button.Tonal"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
@@ -121,15 +74,14 @@
 
         <!-- ==================== 接口配置卡片 ==================== -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/Widget.Material3.CardView.Filled"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            app:cardBackgroundColor="?attr/colorSurface"
+            app:cardBackgroundColor="?attr/colorSurfaceContainer"
             app:cardCornerRadius="16dp"
             app:cardElevation="0dp"
-            app:strokeColor="@color/mote_outline_variant"
-            app:strokeWidth="1dp">
+            app:strokeWidth="0dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -177,13 +129,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:hint="@string/settings_label_base_url"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_base_url">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_base_url"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_base_url"
                         android:inputType="textUri"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
@@ -193,14 +145,14 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:hint="@string/settings_label_api_key"
-                    app:boxBackgroundMode="outline"
-                    app:endIconMode="password_toggle">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:endIconMode="password_toggle"
+                    app:placeholderText="@string/hint_api_key">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_api_key"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_api_key"
                         android:inputType="textPassword|textNoSuggestions"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
@@ -219,13 +171,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:hint="@string/settings_label_model"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_model">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_model"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_model"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
 
@@ -234,13 +186,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:hint="@string/settings_label_title_model"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_title_model">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_title_model"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_title_model"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
 
@@ -257,13 +209,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:hint="@string/settings_label_compression_model"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_compression_model">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_compression_model"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_compression_model"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
 
@@ -290,13 +242,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:hint="@string/settings_label_model_context_length"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_model_context_length">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_model_context_length"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_model_context_length"
                         android:inputType="number"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
@@ -315,13 +267,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:hint="@string/settings_label_compression_trigger_length"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_compression_trigger_length">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_compression_trigger_length"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_compression_trigger_length"
                         android:inputType="number"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
@@ -348,13 +300,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:hint="@string/settings_label_searxng_url"
-                    app:boxBackgroundMode="outline">
+                    style="@style/Widget.Mote.TextInputLayout"
+                    app:placeholderText="@string/hint_searxng_url">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_searxng_url"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/hint_searxng_url"
                         android:inputType="textUri"
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
@@ -376,7 +328,7 @@
                     android:textAppearance="?attr/textAppearanceLabelMedium"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
-                <com.google.android.material.button.MaterialButtonToggleGroup
+                <com.google.android.material.chip.ChipGroup
                     android:id="@+id/toggle_reasoning_effort"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -384,34 +336,34 @@
                     app:selectionRequired="true"
                     app:singleSelection="true">
 
-                    <com.google.android.material.button.MaterialButton
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/button_effort_low"
-                        style="?attr/materialButtonOutlinedStyle"
+                        style="@style/Widget.Mote.Chip.Choice"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/settings_reasoning_low" />
 
-                    <com.google.android.material.button.MaterialButton
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/button_effort_medium"
-                        style="?attr/materialButtonOutlinedStyle"
+                        style="@style/Widget.Mote.Chip.Choice"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/settings_reasoning_medium" />
 
-                    <com.google.android.material.button.MaterialButton
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/button_effort_high"
-                        style="?attr/materialButtonOutlinedStyle"
+                        style="@style/Widget.Mote.Chip.Choice"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/settings_reasoning_high" />
 
-                    <com.google.android.material.button.MaterialButton
+                    <com.google.android.material.chip.Chip
                         android:id="@+id/button_effort_xhigh"
-                        style="?attr/materialButtonOutlinedStyle"
+                        style="@style/Widget.Mote.Chip.Choice"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/settings_reasoning_xhigh" />
-                </com.google.android.material.button.MaterialButtonToggleGroup>
+                </com.google.android.material.chip.ChipGroup>
 
                 <TextView
                     android:layout_width="match_parent"
@@ -442,15 +394,14 @@
 
         <!-- ==================== 接口约定卡片 ==================== -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/Widget.Material3.CardView.Filled"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            app:cardBackgroundColor="?attr/colorSurface"
+            app:cardBackgroundColor="?attr/colorSurfaceContainer"
             app:cardCornerRadius="16dp"
             app:cardElevation="0dp"
-            app:strokeColor="@color/mote_outline_variant"
-            app:strokeWidth="1dp">
+            app:strokeWidth="0dp">
 
             <LinearLayout
                 android:layout_width="match_parent"

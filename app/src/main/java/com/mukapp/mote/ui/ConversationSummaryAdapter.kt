@@ -76,7 +76,7 @@ class ConversationSummaryAdapter(
             val backgroundAttr = if (selected) {
                 com.google.android.material.R.attr.colorSecondaryContainer
             } else {
-                com.google.android.material.R.attr.colorSurfaceContainerHighest
+                com.google.android.material.R.attr.colorSurfaceContainer
             }
             val textAttr = if (selected) {
                 com.google.android.material.R.attr.colorOnSecondaryContainer

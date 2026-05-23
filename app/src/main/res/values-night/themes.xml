@@ -1,22 +1,42 @@
 <resources>
     <style name="Base.Theme.Mote" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/mote_primary_dark</item>
-        <item name="colorOnPrimary">@color/mote_on_primary_dark</item>
-        <item name="colorPrimaryContainer">@color/mote_primary_container_dark</item>
-        <item name="colorOnPrimaryContainer">@color/mote_on_primary_container_dark</item>
-        <item name="colorSecondary">@color/mote_secondary_dark</item>
-        <item name="colorOnSecondary">@color/mote_on_secondary_dark</item>
-        <item name="colorSecondaryContainer">@color/mote_secondary_container_dark</item>
-        <item name="colorOnSecondaryContainer">@color/mote_on_secondary_container_dark</item>
-        <item name="colorSurface">@color/mote_surface_dark</item>
-        <item name="colorOnSurface">@color/mote_on_surface_dark</item>
-        <item name="colorSurfaceVariant">@color/mote_surface_variant_dark</item>
-        <item name="colorOnSurfaceVariant">@color/mote_on_surface_variant_dark</item>
-        <item name="colorOutline">@color/mote_outline_dark</item>
+        <!-- Primary -->
+        <item name="colorPrimary">@color/mote_primary</item>
+        <item name="colorOnPrimary">@color/mote_on_primary</item>
+        <item name="colorPrimaryContainer">@color/mote_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/mote_on_primary_container</item>
+
+        <!-- Secondary = Primary -->
+        <item name="colorSecondary">@color/mote_primary</item>
+        <item name="colorOnSecondary">@color/mote_on_primary</item>
+        <item name="colorSecondaryContainer">@color/mote_primary_container</item>
+        <item name="colorOnSecondaryContainer">@color/mote_on_primary_container</item>
+
+        <!-- Surface / Background -->
+        <item name="colorSurface">@color/mote_background</item>
+        <item name="colorOnSurface">@color/mote_on_background</item>
+        <item name="colorSurfaceVariant">@color/mote_card</item>
+        <item name="colorOnSurfaceVariant">@color/mote_on_background_secondary</item>
+        <item name="colorSurfaceContainer">@color/mote_card</item>
+        <item name="colorSurfaceContainerHigh">@color/mote_card_nested</item>
+        <item name="colorSurfaceContainerLow">@color/mote_background</item>
+        <item name="android:colorBackground">@color/mote_background</item>
+
+        <!-- Outline -->
+        <item name="colorOutline">@color/mote_outline</item>
+        <item name="colorOutlineVariant">@color/mote_divider</item>
+
+        <!-- Error -->
+        <item name="colorError">@color/mote_error</item>
+        <item name="colorOnError">@color/mote_on_error</item>
+
+        <!-- System bars -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- Dialog -->
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.Mote.MaterialAlertDialog</item>
     </style>
 </resources>

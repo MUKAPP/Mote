@@ -44,7 +44,7 @@
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
         android:layout_gravity="start"
-        android:background="?attr/colorSurfaceContainerLow"
+        android:background="?attr/colorSurface"
         android:orientation="vertical">
 
         <!-- 头部品牌区域 -->
@@ -76,7 +76,7 @@
         <!-- 新对话按钮 -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/button_new_chat"
-            style="@style/Widget.Material3.Button.TonalButton"
+            style="@style/Widget.Mote.Button.Tonal"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
@@ -140,7 +140,8 @@
             android:layout_marginBottom="8dp"
             android:gravity="center_vertical|start"
             android:text="@string/nav_settings"
-            app:icon="@drawable/ic_settings" />
+            app:icon="@drawable/ic_settings"
+            app:iconPadding="12dp" />
     </LinearLayout>
 
 </androidx.drawerlayout.widget.DrawerLayout>

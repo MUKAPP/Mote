@@ -45,7 +45,7 @@ fun resolveMarkdownCodeColors(context: Context): MarkdownCodeColors {
         commentColor = commentColor,
         numberColor = numberColor,
         annotationColor = annotationColor,
-        inlineCodeBackgroundColor = blendWithAlpha(blockBackgroundColor, 0xCC),
+        inlineCodeBackgroundColor = blockBackgroundColor,
         inlineCodeTextColor = codeTextColor
     )
 }

@@ -24,7 +24,7 @@ Mote 是运行在 Android 设备上的 AI Agent 聊天客户端，通过 OpenAI 
 app/src/main/java/com/mukapp/mote/
 ├── MainActivity.kt                 # DrawerLayout 主界面
 ├── SettingsActivity.kt             # API 设置、权限管理
-├── MyApplication.kt                # Application、动态主题色、BusyBox 初始化
+├── MyApplication.kt                # Application、BusyBox 初始化
 ├── data/
 │   ├── model/Models.kt             # ChatMessage、ApiSettings、AssistantPart 等模型
 │   ├── ApiSettingsStore.kt         # API 设置持久化
@@ -179,5 +179,5 @@ app/src/main/java/com/mukapp/mote/
 - UI 消息和 API 上下文分离，避免展示型中间步骤污染请求上下文。
 - Shell 高风险命令必须经用户确认后才能执行。
 - Markdown 使用自研原生视图树，避免 WebView 渲染依赖。
-- 动态主题色由 `MyApplication` 应用 Material You DynamicColors。
+- 固定单主题色方案（日间 #57A2DB / 夜间 #88A8E8），不使用 Material You 动态取色。
 - `MANAGE_EXTERNAL_STORAGE` 权限必须由用户手动授予。

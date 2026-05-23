@@ -1,7 +1,7 @@
 package com.mukapp.mote
 
 import android.app.Application
-import com.google.android.material.color.DynamicColors
+
 import com.mukapp.mote.tools.BusyBoxManager
 import com.mukapp.mote.util.MoteLog
 
@@ -9,8 +9,7 @@ class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         MoteLog.i("App", "应用启动")
-        DynamicColors.applyToActivitiesIfAvailable(this)
-        MoteLog.d("App", "已请求应用动态主题色")
+
         Thread(
             {
                 MoteLog.i("App", "开始后台初始化 BusyBox")
