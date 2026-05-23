@@ -97,6 +97,15 @@ class SettingsActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
+            val searxngUrl = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim()
+            val tavilyApiKey = binding.settingsContent.editTavilyApiKey.text?.toString().orEmpty().trim()
+            if (searxngUrl.isNotBlank() && tavilyApiKey.isNotBlank()) {
+                val error = getString(R.string.settings_search_provider_conflict)
+                binding.settingsContent.inputSearxngUrl.error = error
+                binding.settingsContent.inputTavilyApiKey.error = error
+                return@setOnClickListener
+            }
+
             val settings = ApiSettings(
                 baseUrl = binding.settingsContent.editBaseUrl.text?.toString().orEmpty().trim(),
                 apiKey = binding.settingsContent.editApiKey.text?.toString().orEmpty().trim(),
@@ -107,8 +116,8 @@ class SettingsActivity : AppCompatActivity() {
                     .orEmpty().trim(),
                 modelContextLength = modelContextLength,
                 compressionTriggerLength = compressionTriggerLength,
-                searxngUrl = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty()
-                    .trim(),
+                searxngUrl = searxngUrl,
+                tavilyApiKey = tavilyApiKey,
                 reasoningEffort = selectedReasoningEffort
             )
             ApiSettingsStore.save(this, settings)
@@ -134,6 +143,11 @@ class SettingsActivity : AppCompatActivity() {
             binding.settingsContent.inputCompressionTriggerLength.error = null
             hideSavedMessage()
         }
+        val clearSearchProviderErrors = {
+            binding.settingsContent.inputSearxngUrl.error = null
+            binding.settingsContent.inputTavilyApiKey.error = null
+            hideSavedMessage()
+        }
         binding.settingsContent.editBaseUrl.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editApiKey.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editModel.doAfterTextChanged { hideSavedMessage() }
@@ -141,7 +155,8 @@ class SettingsActivity : AppCompatActivity() {
         binding.settingsContent.editCompressionModel.doAfterTextChanged { hideSavedMessage() }
         binding.settingsContent.editModelContextLength.doAfterTextChanged { clearLengthErrors() }
         binding.settingsContent.editCompressionTriggerLength.doAfterTextChanged { clearLengthErrors() }
-        binding.settingsContent.editSearxngUrl.doAfterTextChanged { hideSavedMessage() }
+        binding.settingsContent.editSearxngUrl.doAfterTextChanged { clearSearchProviderErrors() }
+        binding.settingsContent.editTavilyApiKey.doAfterTextChanged { clearSearchProviderErrors() }
     }
 
     private fun applySettings(settings: ApiSettings) {
@@ -170,6 +185,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         if (binding.settingsContent.editSearxngUrl.text?.toString() != settings.searxngUrl) {
             binding.settingsContent.editSearxngUrl.setText(settings.searxngUrl)
+        }
+        if (binding.settingsContent.editTavilyApiKey.text?.toString() != settings.tavilyApiKey) {
+            binding.settingsContent.editTavilyApiKey.setText(settings.tavilyApiKey)
         }
 
         selectedReasoningEffort = settings.reasoningEffort.ifBlank { "high" }

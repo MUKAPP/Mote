@@ -99,7 +99,7 @@ app/src/main/java/com/mukapp/mote/
 | `list_path` | 列出目录或文件信息（默认 100 项，最多 200 项） | `path`, `limit` |
 | `fetch_url` | HTTP(S) 获取网页内容（`max_chars` 默认 20000，最大 100000） | `url`, `output_format`, `max_chars` |
 | `fetch_webview` | 隐藏 WebView 渲染后提取内容（仅 `fetch_url` 无法获得动态内容时用） | `url`, `output_format`, `max_chars`, `timeout_seconds`, `settle_ms` |
-| `web_search` | SearXNG 搜索（仅 `searxngUrl` 非空时暴露） | `query`, `limit`, `page`, `language`, `categories` |
+| `web_search` | SearXNG 或 Tavily 搜索（仅 `searxngUrl` 或 `tavilyApiKey` 二选一非空时暴露） | 通用：`query`, `limit`；SearXNG：`page`, `language`, `categories`；Tavily：`search_depth`, `topic`, `time_range` |
 | `shell` | 执行 Shell 命令（超 30 秒自动转后台） | `command`, `work_dir`, `background` |
 | `shell_status` | 查询后台进程 | `id` |
 | `shell_stop` | 停止后台进程 | `id` |

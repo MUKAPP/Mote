@@ -16,6 +16,7 @@ object ApiSettingsStore {
     private const val KeyModelContextLength = "model_context_length"
     private const val KeyCompressionTriggerLength = "compression_trigger_length"
     private const val KeySearxngUrl = "searxng_url"
+    private const val KeyTavilyApiKey = "tavily_api_key"
     private const val KeyReasoningEffort = "reasoning_effort"
 
     fun load(context: Context): ApiSettings {
@@ -33,6 +34,7 @@ object ApiSettingsStore {
             modelContextLength = preferences.getInt(KeyModelContextLength, 0).coerceAtLeast(0),
             compressionTriggerLength = preferences.getInt(KeyCompressionTriggerLength, 0).coerceAtLeast(0),
             searxngUrl = preferences.getString(KeySearxngUrl, "").orEmpty(),
+            tavilyApiKey = preferences.getString(KeyTavilyApiKey, "").orEmpty(),
             reasoningEffort = preferences.getString(KeyReasoningEffort, "high").orEmpty()
         ).also { settings ->
             MoteLog.d("Settings", MoteLog.event("已加载 API 设置", *settings.safeLogFields()))
@@ -56,6 +58,7 @@ object ApiSettingsStore {
                     settings.compressionTriggerLength.coerceAtLeast(0)
                 )
                 .putString(KeySearxngUrl, settings.searxngUrl)
+                .putString(KeyTavilyApiKey, settings.tavilyApiKey)
                 .putString(KeyReasoningEffort, settings.reasoningEffort)
         }
         MoteLog.i("Settings", MoteLog.event("已保存 API 设置", *settings.safeLogFields()))
@@ -72,6 +75,7 @@ object ApiSettingsStore {
             "modelContextLength" to modelContextLength,
             "compressionTriggerLength" to compressionTriggerLength,
             "searxngConfigured" to searxngUrl.isNotBlank(),
+            "tavilyConfigured" to tavilyApiKey.isNotBlank(),
             "reasoningEffort" to reasoningEffort.ifBlank { "未配置" }
         )
     }

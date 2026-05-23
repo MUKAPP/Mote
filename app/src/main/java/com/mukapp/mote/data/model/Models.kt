@@ -62,6 +62,7 @@ data class ApiSettings(
     val modelContextLength: Int = 0,
     val compressionTriggerLength: Int = 0,
     val searxngUrl: String = "",
+    val tavilyApiKey: String = "",
     val reasoningEffort: String = "high"
 )
 

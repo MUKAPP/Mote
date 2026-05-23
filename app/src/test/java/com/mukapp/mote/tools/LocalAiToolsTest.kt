@@ -33,8 +33,8 @@ class LocalAiToolsTest {
     }
 
     @Test
-    fun toolDefinitionsDoNotExposeWebSearchWhenSearxngUrlIsBlank() {
-        val definitions = LocalAiTools.toolDefinitions(ApiSettings(searxngUrl = ""))
+    fun toolDefinitionsDoNotExposeWebSearchWhenSearchProviderIsBlank() {
+        val definitions = LocalAiTools.toolDefinitions(ApiSettings(searxngUrl = "", tavilyApiKey = ""))
 
         assertFalse(definitions.hasTool("web_search"))
     }
@@ -46,6 +46,29 @@ class LocalAiToolsTest {
         )
 
         assertTrue(definitions.hasTool("web_search"))
+    }
+
+    @Test
+    fun toolDefinitionsExposeWebSearchWhenTavilyApiKeyIsConfigured() {
+        val definitions = LocalAiTools.toolDefinitions(
+            ApiSettings(tavilyApiKey = "tvly-test")
+        )
+
+        assertTrue(definitions.hasTool("web_search"))
+    }
+
+    @Test
+    fun toolDefinitionsRejectConflictingSearchProviders() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            LocalAiTools.toolDefinitions(
+                ApiSettings(
+                    searxngUrl = "https://searx.example.org",
+                    tavilyApiKey = "tvly-test"
+                )
+            )
+        }
+
+        assertEquals("Tavily API Key 和 SearXNG 地址只能配置一个。", error.message)
     }
 
     @Test
@@ -65,10 +88,10 @@ class LocalAiToolsTest {
     }
 
     @Test
-    fun webSearchRejectsBlankSearxngUrl() {
+    fun webSearchRejectsMissingSearchProvider() {
         val error = assertThrows(IllegalArgumentException::class.java) {
             LocalAiTools.webSearch(
-                settings = ApiSettings(searxngUrl = ""),
+                settings = ApiSettings(searxngUrl = "", tavilyApiKey = ""),
                 arguments = JSONObject()
                     .put("description", "搜索 Kotlin 新闻")
                     .put("query", "Kotlin news")
@@ -76,7 +99,7 @@ class LocalAiToolsTest {
             )
         }
 
-        assertEquals("SearXNG 地址未配置，无法执行搜索。", error.message)
+        assertEquals("搜索服务未配置，无法执行搜索。", error.message)
     }
 
     @Test
@@ -358,6 +381,103 @@ class LocalAiToolsTest {
                 result.getJSONArray("results").getJSONObject(0).getString("url")
             )
         } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun webSearchRequestsTavilyEndpointAndFormatsResults() {
+        val originalEndpoint = LocalAiTools.tavilySearchEndpoint
+        val requestMethod = AtomicReference("")
+        val authorizationHeader = AtomicReference("")
+        val contentTypeHeader = AtomicReference("")
+        val requestBody = AtomicReference("")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/search") { exchange ->
+            requestMethod.set(exchange.requestMethod)
+            authorizationHeader.set(exchange.requestHeaders.getFirst("Authorization").orEmpty())
+            contentTypeHeader.set(exchange.requestHeaders.getFirst("Content-Type").orEmpty())
+            requestBody.set(exchange.requestBody.bufferedReader(Charsets.UTF_8).use { input -> input.readText() })
+            val response = JSONObject()
+                .put("query", "Kotlin coroutines")
+                .put("answer", "Kotlin 协程用于简化异步代码。")
+                .put("response_time", "0.12")
+                .put(
+                    "results",
+                    JSONArray()
+                        .put(
+                            JSONObject()
+                                .put("title", "Kotlin 协程")
+                                .put("url", "https://kotlinlang.org/docs/coroutines-overview.html")
+                                .put("content", "协程是在 Kotlin 中编写异步代码的推荐方式。")
+                                .put("score", 0.98)
+                                .put("published_date", "2026-05-01")
+                                .put("raw_content", "完整内容".repeat(3000))
+                        )
+                        .put(
+                            JSONObject()
+                                .put("title", "第二条结果")
+                                .put("url", "https://example.org/second")
+                        )
+                )
+                .put("usage", JSONObject().put("credits", 1))
+                .toString()
+                .toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { output -> output.write(response) }
+        }
+        server.start()
+
+        try {
+            LocalAiTools.tavilySearchEndpoint = "http://127.0.0.1:${server.address.port}/search"
+            val result = JSONObject(
+                LocalAiTools.webSearch(
+                    settings = ApiSettings(tavilyApiKey = "tvly-test"),
+                    arguments = JSONObject()
+                        .put("description", "搜索 Kotlin 协程")
+                        .put("query", "Kotlin coroutines")
+                        .put("limit", 1)
+                        .put("search_depth", "advanced")
+                        .put("topic", "news")
+                        .put("time_range", "week")
+                        .put("include_answer", true)
+                        .put("chunks_per_source", 2)
+                        .put("include_domains", "kotlinlang.org, example.org")
+                        .put("exclude_domains", JSONArray().put("blocked.example"))
+                        .toString()
+                )
+            )
+            val body = JSONObject(requestBody.get())
+
+            assertEquals("POST", requestMethod.get())
+            assertEquals("Bearer tvly-test", authorizationHeader.get())
+            assertTrue(contentTypeHeader.get().startsWith("application/json"))
+            assertEquals("Kotlin coroutines", body.getString("query"))
+            assertEquals(1, body.getInt("max_results"))
+            assertEquals("advanced", body.getString("search_depth"))
+            assertEquals("news", body.getString("topic"))
+            assertEquals("week", body.getString("time_range"))
+            assertEquals(true, body.getBoolean("include_answer"))
+            assertEquals(2, body.getInt("chunks_per_source"))
+            assertEquals("kotlinlang.org", body.getJSONArray("include_domains").getString(0))
+            assertEquals("example.org", body.getJSONArray("include_domains").getString(1))
+            assertEquals("blocked.example", body.getJSONArray("exclude_domains").getString(0))
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("tavily", result.getString("provider"))
+            assertEquals("Kotlin 协程用于简化异步代码。", result.getString("answer"))
+            assertEquals(1, result.getInt("returned"))
+            assertEquals(true, result.getBoolean("has_more"))
+            assertEquals(
+                "https://kotlinlang.org/docs/coroutines-overview.html",
+                result.getJSONArray("results").getJSONObject(0).getString("url")
+            )
+            assertTrue(result.getJSONArray("results").getJSONObject(0).getString("content").contains("异步代码"))
+            assertEquals(0.98, result.getJSONArray("results").getJSONObject(0).getDouble("score"), 0.0001)
+            assertTrue(result.getJSONArray("results").getJSONObject(0).getString("raw_content").length <= 4003)
+            assertEquals(1, result.getJSONObject("usage").getInt("credits"))
+        } finally {
+            LocalAiTools.tavilySearchEndpoint = originalEndpoint
             server.stop(0)
         }
     }

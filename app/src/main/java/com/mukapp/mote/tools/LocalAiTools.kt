@@ -64,12 +64,20 @@ object LocalAiTools {
     private const val MaxWebViewExtractChars = 1_000_000
     private const val DefaultSearchResultLimit = 5
     private const val MaxSearchResultLimit = 10
+    private const val MaxTavilySearchResultLimit = 20
     private const val MaxSearchQueryChars = 300
     private const val MaxSearchSnippetChars = 600
+    private const val MaxSearchRawContentChars = 4_000
     private const val MaxSearchResponseChars = 1_000_000
+    private const val DefaultTavilySearchEndpoint = "https://api.tavily.com/search"
     private const val ShellShortTimeoutMs = 30_000L
     private const val MaxShellOutputChars = 8000
     private const val ShellConfirmationTtlMs = 10 * 60 * 1000L
+
+    private enum class SearchProvider {
+        Searxng,
+        Tavily
+    }
 
     private data class PendingShellConfirmation(
         val id: String,
@@ -101,6 +109,8 @@ object LocalAiTools {
         val error: String? = null
     )
 
+    internal var tavilySearchEndpoint: String = DefaultTavilySearchEndpoint
+
     private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
 
     internal var htmlToMarkdownConverter: (String) -> String = { html ->
@@ -119,19 +129,23 @@ object LocalAiTools {
             .put(buildWaitDefinition())
     }
 
-    private val cachedWebSearchToolDefinition: JSONObject by lazy { buildWebSearchDefinition() }
+    private val cachedSearxngWebSearchToolDefinition: JSONObject by lazy { buildSearxngWebSearchDefinition() }
+    private val cachedTavilyWebSearchToolDefinition: JSONObject by lazy { buildTavilyWebSearchDefinition() }
 
     fun toolDefinitions(settings: ApiSettings = ApiSettings()): JSONArray {
         val definitions = JSONArray(cachedBaseToolDefinitions.toString())
-        if (settings.searxngUrl.isNotBlank()) {
-            definitions.put(JSONObject(cachedWebSearchToolDefinition.toString()))
+        val searchProvider = resolveSearchProvider(settings)
+        when (searchProvider) {
+            SearchProvider.Searxng -> definitions.put(JSONObject(cachedSearxngWebSearchToolDefinition.toString()))
+            SearchProvider.Tavily -> definitions.put(JSONObject(cachedTavilyWebSearchToolDefinition.toString()))
+            null -> Unit
         }
         MoteLog.d(
             Component,
             MoteLog.event(
                 "已构建工具定义",
                 "tools" to definitions.length(),
-                "webSearchEnabled" to settings.searxngUrl.isNotBlank()
+                "webSearchProvider" to (searchProvider?.name ?: "未启用")
             )
         )
         return definitions
@@ -1111,6 +1125,25 @@ object LocalAiTools {
     }
 
     internal fun webSearch(settings: ApiSettings, arguments: String): String {
+        return when (resolveSearchProvider(settings)) {
+            SearchProvider.Searxng -> searchWithSearxng(settings, arguments)
+            SearchProvider.Tavily -> searchWithTavily(settings, arguments)
+            null -> throw IllegalArgumentException("搜索服务未配置，无法执行搜索。")
+        }
+    }
+
+    private fun resolveSearchProvider(settings: ApiSettings): SearchProvider? {
+        val hasSearxng = settings.searxngUrl.isNotBlank()
+        val hasTavily = settings.tavilyApiKey.isNotBlank()
+        require(!(hasSearxng && hasTavily)) { "Tavily API Key 和 SearXNG 地址只能配置一个。" }
+        return when {
+            hasSearxng -> SearchProvider.Searxng
+            hasTavily -> SearchProvider.Tavily
+            else -> null
+        }
+    }
+
+    private fun searchWithSearxng(settings: ApiSettings, arguments: String): String {
         val searxngBaseUrl = settings.searxngUrl.trim()
         require(searxngBaseUrl.isNotEmpty()) { "SearXNG 地址未配置，无法执行搜索。" }
         val startMs = System.currentTimeMillis()
@@ -1211,6 +1244,216 @@ object LocalAiTools {
         }
     }
 
+    private fun searchWithTavily(settings: ApiSettings, arguments: String): String {
+        val apiKey = settings.tavilyApiKey.trim()
+        require(apiKey.isNotEmpty()) { "Tavily API Key 未配置，无法执行搜索。" }
+        val startMs = System.currentTimeMillis()
+
+        val payload = JSONObject(arguments)
+        val query = payload.optString("query").trim()
+        require(query.isNotEmpty()) { "query 不能为空。" }
+        require(query.length <= MaxSearchQueryChars) { "query 不能超过 $MaxSearchQueryChars 个字符。" }
+
+        val limit = payload.optIntOrNull("limit") ?: DefaultSearchResultLimit
+        require(limit > 0) { "limit 必须大于 0。" }
+        require(limit <= MaxTavilySearchResultLimit) { "limit 不能超过 $MaxTavilySearchResultLimit。" }
+
+        val requestBody = buildTavilySearchRequest(payload, query, limit)
+        val searchUrl = normalizeFetchUrl(tavilySearchEndpoint)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "开始 web_search",
+                "provider" to "Tavily",
+                "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                "queryLength" to query.length,
+                "queryHash" to MoteLog.fingerprint(query),
+                "limit" to limit
+            )
+        )
+
+        val connection = (searchUrl.openConnection() as HttpURLConnection)
+        return try {
+            val requestBytes = requestBody.toString().toByteArray(StandardCharsets.UTF_8)
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer $apiKey")
+            connection.setRequestProperty("User-Agent", "Mote/1.0")
+            connection.setFixedLengthStreamingMode(requestBytes.size)
+            connection.outputStream.use { output -> output.write(requestBytes) }
+
+            val statusCode = connection.responseCode
+            val responseText = readHttpResponseText(connection, statusCode, MaxSearchResponseChars)
+            if (statusCode !in 200..299) {
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "web_search 请求失败",
+                        "provider" to "Tavily",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("provider", "tavily")
+                    put("status", statusCode)
+                    put("error", "Tavily 请求失败，HTTP $statusCode。")
+                    put("body", truncateOutput(responseText, maxChars = 1200))
+                }.toString(2)
+            }
+
+            val root = runCatching { JSONObject(responseText) }.getOrElse { error ->
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "web_search 响应 JSON 解析失败",
+                        "provider" to "Tavily",
+                        "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                        "responseLength" to responseText.length,
+                        "durationMs" to MoteLog.durationMs(startMs),
+                        "error" to error
+                    )
+                )
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("provider", "tavily")
+                    put("error", "Tavily 返回的内容不是有效 JSON：${error.message ?: "解析失败"}")
+                    put("body", truncateOutput(responseText, maxChars = 1200))
+                }.toString(2)
+            }
+            formatTavilySearchResults(query = query, limit = limit, root = root).also { output ->
+                val returned = runCatching { JSONObject(output).optInt("returned", 0) }.getOrDefault(0)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event(
+                        "web_search 完成",
+                        "provider" to "Tavily",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                        "returned" to returned,
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
+            }
+        } finally {
+            runCatching { connection.disconnect() }
+        }
+    }
+
+    private fun buildTavilySearchRequest(payload: JSONObject, query: String, limit: Int): JSONObject {
+        return JSONObject().apply {
+            put("query", query)
+            put("max_results", limit)
+            putOptionalTavilyEnum(
+                payload = payload,
+                target = this,
+                key = "search_depth",
+                allowedValues = setOf("basic", "advanced", "fast", "ultra-fast")
+            )
+            putOptionalTavilyEnum(
+                payload = payload,
+                target = this,
+                key = "topic",
+                allowedValues = setOf("general", "news", "finance")
+            )
+            putOptionalTavilyEnum(
+                payload = payload,
+                target = this,
+                key = "time_range",
+                allowedValues = setOf("day", "week", "month", "year", "d", "w", "m", "y")
+            )
+            putOptionalTavilyDate(payload, this, "start_date")
+            putOptionalTavilyDate(payload, this, "end_date")
+            putOptionalTavilyAnswer(payload, this)
+            putOptionalTavilyInt(payload, this, "chunks_per_source", min = 1, max = 3)
+            putOptionalTavilyDomains(payload, this, "include_domains")
+            putOptionalTavilyDomains(payload, this, "exclude_domains")
+        }
+    }
+
+    private fun putOptionalTavilyEnum(
+        payload: JSONObject,
+        target: JSONObject,
+        key: String,
+        allowedValues: Set<String>
+    ) {
+        val value = payload.optString(key).trim().lowercase(Locale.ROOT).takeIf { it.isNotEmpty() } ?: return
+        require(value in allowedValues) { "$key 只能是 ${allowedValues.joinToString(separator = "、")}。" }
+        target.put(key, value)
+    }
+
+    private fun putOptionalTavilyDate(payload: JSONObject, target: JSONObject, key: String) {
+        val value = payload.optString(key).trim().takeIf { it.isNotEmpty() } ?: return
+        require(Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)) { "$key 必须使用 YYYY-MM-DD 格式。" }
+        target.put(key, value)
+    }
+
+    private fun putOptionalTavilyAnswer(payload: JSONObject, target: JSONObject) {
+        if (!payload.has("include_answer")) {
+            return
+        }
+        when (val value = payload.opt("include_answer")) {
+            is Boolean -> target.put("include_answer", value)
+            is String -> {
+                val normalized = value.trim().lowercase(Locale.ROOT)
+                require(normalized in setOf("true", "false", "basic", "advanced")) {
+                    "include_answer 只能是 true、false、basic 或 advanced。"
+                }
+                if (normalized == "true" || normalized == "false") {
+                    target.put("include_answer", normalized.toBoolean())
+                } else {
+                    target.put("include_answer", normalized)
+                }
+            }
+            JSONObject.NULL -> Unit
+            else -> throw IllegalArgumentException("include_answer 只能是布尔值、basic 或 advanced。")
+        }
+    }
+
+    private fun putOptionalTavilyInt(payload: JSONObject, target: JSONObject, key: String, min: Int, max: Int) {
+        val value = payload.optIntOrNull(key) ?: return
+        require(value in min..max) { "$key 必须在 $min 到 $max 之间。" }
+        target.put(key, value)
+    }
+
+    private fun putOptionalTavilyDomains(payload: JSONObject, target: JSONObject, key: String) {
+        val domains = parseTavilyDomainList(payload, key) ?: return
+        if (domains.length() > 0) {
+            target.put(key, domains)
+        }
+    }
+
+    private fun parseTavilyDomainList(payload: JSONObject, key: String): JSONArray? {
+        if (!payload.has(key)) {
+            return null
+        }
+        val output = JSONArray()
+        when (val value = payload.opt(key)) {
+            is JSONArray -> {
+                for (index in 0 until value.length()) {
+                    val domain = value.optString(index).trim()
+                    require(domain.isNotEmpty()) { "$key 不能包含空域名。" }
+                    output.put(domain)
+                }
+            }
+            is String -> {
+                value.split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .forEach { domain -> output.put(domain) }
+            }
+            JSONObject.NULL -> Unit
+            else -> throw IllegalArgumentException("$key 必须是逗号分隔字符串或字符串数组。")
+        }
+        return output
+    }
+
     private fun buildSearxngSearchUrl(
         baseUrl: String,
         query: String,
@@ -1306,6 +1549,7 @@ object LocalAiTools {
 
         return JSONObject().apply {
             put("ok", true)
+            put("provider", "searxng")
             put("query", root.optString("query").takeIf { it.isNotBlank() } ?: query)
             put("page", page)
             put("returned", results.length())
@@ -1318,12 +1562,75 @@ object LocalAiTools {
         }.toString(2)
     }
 
+    private fun formatTavilySearchResults(query: String, limit: Int, root: JSONObject): String {
+        val rawResults = root.optJSONArray("results") ?: JSONArray()
+        val results = JSONArray()
+        var skipped = 0
+        for (index in 0 until rawResults.length()) {
+            val item = rawResults.optJSONObject(index) ?: continue
+            val title = item.optString("title").trim()
+            val url = item.optString("url").trim()
+            if (title.isBlank() && url.isBlank()) {
+                skipped++
+                continue
+            }
+            if (results.length() >= limit) {
+                skipped++
+                continue
+            }
+            results.put(
+                JSONObject().apply {
+                    put("title", title)
+                    put("url", url)
+                    item.optString("content").trim().takeIf { it.isNotEmpty() }?.let { content ->
+                        put("content", truncateSearchSnippet(content))
+                    }
+                    val score = item.optDouble("score", Double.NaN)
+                    if (!score.isNaN() && !score.isInfinite()) {
+                        put("score", score)
+                    }
+                    item.optString("published_date").trim().takeIf { it.isNotEmpty() }?.let {
+                        put("published_date", it)
+                    }
+                    item.optString("raw_content").trim().takeIf { it.isNotEmpty() }?.let { rawContent ->
+                        put("raw_content", truncateSearchRawContent(rawContent))
+                    }
+                    item.optString("favicon").trim().takeIf { it.isNotEmpty() }?.let { put("favicon", it) }
+                    item.optJSONArray("images")?.takeIf { it.length() > 0 }?.let { put("images", it) }
+                }
+            )
+        }
+
+        return JSONObject().apply {
+            put("ok", true)
+            put("provider", "tavily")
+            put("query", root.optString("query").takeIf { it.isNotBlank() } ?: query)
+            put("returned", results.length())
+            put("available", rawResults.length())
+            put("has_more", rawResults.length() > results.length() || skipped > 0)
+            put("results", results)
+            root.optString("answer").trim().takeIf { it.isNotEmpty() }?.let { put("answer", it) }
+            root.optJSONArray("images")?.takeIf { it.length() > 0 }?.let { put("images", it) }
+            root.optString("response_time").trim().takeIf { it.isNotEmpty() }?.let { put("response_time", it) }
+            root.optJSONObject("auto_parameters")?.let { put("auto_parameters", it) }
+            root.optJSONObject("usage")?.let { put("usage", it) }
+        }.toString(2)
+    }
+
     private fun truncateSearchSnippet(text: String): String {
         val compact = text.replace(Regex("\\s+"), " ").trim()
         return if (compact.length <= MaxSearchSnippetChars) {
             compact
         } else {
             compact.take(MaxSearchSnippetChars) + "..."
+        }
+    }
+
+    private fun truncateSearchRawContent(text: String): String {
+        return if (text.length <= MaxSearchRawContentChars) {
+            text
+        } else {
+            text.take(MaxSearchRawContentChars) + "..."
         }
     }
 
@@ -1772,7 +2079,7 @@ object LocalAiTools {
         }
     }
 
-    private fun buildWebSearchDefinition(): JSONObject {
+    private fun buildSearxngWebSearchDefinition(): JSONObject {
         return JSONObject().apply {
             put("type", "function")
             put(
@@ -1837,6 +2144,131 @@ object LocalAiTools {
                                             put("type", "integer")
                                             put("description", "可选的安全搜索等级：0 关闭，1 中等，2 严格。")
                                             put("enum", JSONArray().put(0).put(1).put(2))
+                                        }
+                                    )
+                                }
+                            )
+                            put("required", JSONArray().put("description").put("query"))
+                            put("additionalProperties", false)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    private fun buildTavilyWebSearchDefinition(): JSONObject {
+        return JSONObject().apply {
+            put("type", "function")
+            put(
+                "function",
+                JSONObject().apply {
+                    put("name", WebSearchToolName)
+                    put("description", "使用 Tavily Search 搜索互联网。适合查询最新信息、网页资料、新闻或需要来源链接的问题。")
+                    put(
+                        "parameters",
+                        JSONObject().apply {
+                            put("type", "object")
+                            put(
+                                "properties",
+                                JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
+                                    put(
+                                        "query",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "搜索关键词，使用与用户问题最匹配的自然语言或关键词，最大 300 个字符。")
+                                        }
+                                    )
+                                    put(
+                                        "limit",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "最多返回多少条结果，默认 5，最大 20。")
+                                        }
+                                    )
+                                    put(
+                                        "search_depth",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "搜索深度：basic 默认平衡，advanced 更深入但更慢，fast/ultra-fast 优先低延迟。")
+                                            put(
+                                                "enum",
+                                                JSONArray()
+                                                    .put("basic")
+                                                    .put("advanced")
+                                                    .put("fast")
+                                                    .put("ultra-fast")
+                                            )
+                                        }
+                                    )
+                                    put(
+                                        "topic",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "搜索类别：general 通用，news 新闻，finance 金融。")
+                                            put("enum", JSONArray().put("general").put("news").put("finance"))
+                                        }
+                                    )
+                                    put(
+                                        "time_range",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "可选的时间范围，例如 day、week、month、year，也支持 d、w、m、y。")
+                                            put(
+                                                "enum",
+                                                JSONArray()
+                                                    .put("day")
+                                                    .put("week")
+                                                    .put("month")
+                                                    .put("year")
+                                                    .put("d")
+                                                    .put("w")
+                                                    .put("m")
+                                                    .put("y")
+                                            )
+                                        }
+                                    )
+                                    put(
+                                        "start_date",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "只返回该日期之后发布或更新的结果，格式 YYYY-MM-DD。")
+                                        }
+                                    )
+                                    put(
+                                        "end_date",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "只返回该日期之前发布或更新的结果，格式 YYYY-MM-DD。")
+                                        }
+                                    )
+                                    put(
+                                        "include_answer",
+                                        JSONObject().apply {
+                                            put("type", "boolean")
+                                            put("description", "是否请求 Tavily 生成简短答案；默认 false。")
+                                        }
+                                    )
+                                    put(
+                                        "chunks_per_source",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "advanced 搜索时每个来源返回的内容片段数，1 到 3。")
+                                        }
+                                    )
+                                    put(
+                                        "include_domains",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "可选的域名白名单，多个域名用英文逗号分隔。")
+                                        }
+                                    )
+                                    put(
+                                        "exclude_domains",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "可选的域名黑名单，多个域名用英文逗号分隔。")
                                         }
                                     )
                                 }

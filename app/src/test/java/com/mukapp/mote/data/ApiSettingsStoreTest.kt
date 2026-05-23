@@ -19,6 +19,7 @@ class ApiSettingsStoreTest {
             modelContextLength = 128_000,
             compressionTriggerLength = 96_000,
             searxngUrl = "https://search.example.com",
+            tavilyApiKey = "tvly-test",
             reasoningEffort = "medium"
         )
 
