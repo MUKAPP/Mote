@@ -3,15 +3,15 @@
     <!-- 主题色 -->
     <color name="mote_primary">#88A8E8</color>
     <color name="mote_on_primary">#0D0E0F</color>
-    <color name="mote_primary_container">#191D25</color> <!-- Background + 10% Primary -->
+    <color name="mote_primary_container">#1A88A8E8</color> <!-- Primary 10% -->
     <color name="mote_on_primary_container">#88A8E8</color>
 
     <!-- 背景与表面 -->
     <color name="mote_background">#0D0E0F</color>
     <color name="mote_surface">#0D0E0F</color>
-    <color name="mote_card">#191A1B</color> <!-- Background + 5% White -->
-    <color name="mote_card_nested">#282929</color> <!-- Background + 12% White -->
-    <color name="mote_user_message_card">#191D25</color> <!-- Background + 10% Primary -->
+    <color name="mote_card">#0DFFFFFF</color> <!-- White 5% -->
+    <color name="mote_card_nested">#0DFFFFFF</color> <!-- White 5%（叠加在 Card 上约 10%） -->
+    <color name="mote_user_message_card">#1A88A8E8</color> <!-- Primary 10% -->
 
     <!-- 文字 -->
     <color name="mote_on_background">#DEFFFFFF</color> <!-- White 87% -->
@@ -26,15 +26,18 @@
     <color name="mote_error">#EF5350</color>
     <color name="mote_on_error">#0D0E0F</color>
 
+    <!-- 输入框背景 -->
+    <color name="mote_input_background">#14FFFFFF</color> <!-- White 8% -->
+
     <!-- 按钮透明主题色背景 -->
-    <color name="mote_primary_alpha_15">#2688A8E8</color> <!-- Primary 15% alpha -->
+    <color name="mote_primary_alpha_15">#2688A8E8</color> <!-- Primary 15% -->
 
     <!-- Markdown 代码高亮 -->
-    <color name="markdown_code_block_background">#282929</color>
+    <color name="markdown_code_block_background">#0DFFFFFF</color> <!-- White 5%（叠加在卡片上） -->
     <color name="markdown_code_block_header_text">#8B949E</color>
     <color name="markdown_code_block_text">#C9D1D9</color>
-    <color name="markdown_code_block_divider">#2A2B2C</color>
-    <color name="markdown_code_block_stroke">#2A2B2C</color>
+    <color name="markdown_code_block_divider">#14FFFFFF</color>
+    <color name="markdown_code_block_stroke">#14FFFFFF</color>
     <color name="markdown_code_keyword">#FF7B72</color>
     <color name="markdown_code_string">#7EE787</color>
     <color name="markdown_code_comment">#8B949E</color>

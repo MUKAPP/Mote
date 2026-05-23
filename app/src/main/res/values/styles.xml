@@ -34,11 +34,12 @@
         <item name="chipMinHeight">36dp</item>
         <item name="checkedIconVisible">false</item>
         <item name="chipCornerRadius">18dp</item>
+        <item name="chipSurfaceColor">@android:color/transparent</item>
     </style>
 
     <!-- 设置页输入框 -->
     <style name="Widget.Mote.TextInputLayout" parent="Widget.Material3.TextInputLayout.FilledBox">
-        <item name="boxBackgroundColor">@color/mote_card_nested</item>
+        <item name="boxBackgroundColor">@color/mote_input_background</item>
         <item name="boxCornerRadiusTopStart">12dp</item>
         <item name="boxCornerRadiusTopEnd">12dp</item>
         <item name="boxCornerRadiusBottomStart">12dp</item>

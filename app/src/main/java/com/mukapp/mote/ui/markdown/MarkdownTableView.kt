@@ -102,14 +102,14 @@ class MarkdownTableView @JvmOverloads constructor(
     private val headerBgColor: Int by lazy {
         blendWithAlpha(
             resolveThemeColor(context, com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x88
+            0x28
         )
     }
 
     private val altRowBgColor: Int by lazy {
         blendWithAlpha(
             resolveThemeColor(context, com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x22
+            0x14
         )
     }
 
