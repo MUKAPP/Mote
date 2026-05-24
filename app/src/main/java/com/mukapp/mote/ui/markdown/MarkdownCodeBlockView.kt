@@ -115,7 +115,7 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     private val codeView = TextView(context).apply {
         layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         setPadding(12.dpInt, 12.dpInt, 12.dpInt, 12.dpInt)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         setTextColor(codeTextColor)
         typeface = android.graphics.Typeface.MONOSPACE
         includeFontPadding = false

@@ -2,27 +2,29 @@
 
 ## 设计方向
 
-MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保留 MD3 的部分组件形态（如毛玻璃顶栏、圆角悬浮输入框）。不使用 Material You 动态取色，采用固定的单主题色方案，通过背景色与预混合叠加色营造 two-tone 层次感。
+MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保留 MD3 的部分组件形态（如毛玻璃顶栏、圆角悬浮输入框）。不使用 Material You 动态取色，采用固定的单主题色方案，通过带透明度的黑/白/主题色叠加营造 two-tone 层次感。
 
 ## 色彩系统
 
 ### 基本原则
 
 - 只有一种主题色（Primary），不设 Secondary / Tertiary
-- 背景色为纯色，卡片/容器通过预混合的叠加色区分层级（所有颜色均为不透明色值，避免透明度导致的窗口穿透问题）
+- 所有容器/卡片颜色使用带 alpha 的黑色或白色叠加在背景上，利用透明度自然适配层级
 - 文字颜色使用黑/白 + 透明度
-- 按钮等交互元素使用带 alpha 的主题色背景（始终位于不透明底色之上）
+- 按钮等交互元素使用带 alpha 的主题色背景
 
 ### 日间模式
 
 | 用途 | 色值 | 说明 |
 |------|------|------|
-| Primary | `#57A2DB` | 主题色，用于强调元素、按钮、链接 |
+| Primary | `#57A2DB` | 主题色 |
 | On Primary | `#FFFFFF` | 主题色上的前景色 |
 | Background | `#FFFFFF` | 页面底色 |
-| Card | `#F2F2F2` | 一级卡片背景（Background + 5% Black） |
-| Card Nested | `#E2E2E2` | 二级嵌套容器（Background + 12% Black） |
-| User Message Card | `#EEF6FB` | 用户消息卡片（Background + 10% Primary） |
+| Card | `#0D000000` | 一级卡片背景（Black 5%） |
+| Card Nested | `#0D000000` | 二级嵌套容器（Black 5%，叠加在 Card 上约 10%） |
+| Input Background | `#14000000` | 输入框背景（Black 8%） |
+| User Message Card | `#1A57A2DB` | 用户消息卡片（Primary 10%） |
+| Primary Container | `#1A57A2DB` | Primary 10%，用于选中态等 |
 | Primary Alpha 15% | `#2657A2DB` | 按钮/Chip 选中态背景 |
 | On Background | `#DE000000` | 主要文字（Black 87%） |
 | On Background Secondary | `#99000000` | 次要文字（Black 60%） |
@@ -37,9 +39,11 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | Primary | `#88A8E8` | 主题色 |
 | On Primary | `#0D0E0F` | 主题色上的前景色 |
 | Background | `#0D0E0F` | 页面底色 |
-| Card | `#191A1B` | 一级卡片背景（Background + 5% White） |
-| Card Nested | `#282929` | 二级嵌套容器（Background + 12% White） |
-| User Message Card | `#191D25` | 用户消息卡片（Background + 10% Primary） |
+| Card | `#0DFFFFFF` | 一级卡片背景（White 5%） |
+| Card Nested | `#0DFFFFFF` | 二级嵌套容器（White 5%，叠加在 Card 上约 10%） |
+| Input Background | `#14FFFFFF` | 输入框背景（White 8%） |
+| User Message Card | `#1A88A8E8` | 用户消息卡片（Primary 10%） |
+| Primary Container | `#1A88A8E8` | Primary 10% |
 | Primary Alpha 15% | `#2688A8E8` | 按钮/Chip 选中态背景 |
 | On Background | `#DEFFFFFF` | 主要文字（White 87%） |
 | On Background Secondary | `#99FFFFFF` | 次要文字（White 60%） |
@@ -50,22 +54,24 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 ### Two-Tone 层级示意
 
 ```
-背景 (Background)         #FFFFFF / #0D0E0F
-└── 卡片层 (Card)         #F2F2F2 / #191A1B
-    └── 嵌套容器 (Nested) #E2E2E2 / #282929
+背景 (Background)                    不透明底色
+├── 卡片层 (Card)                    +5% Black/White
+│   └── 嵌套容器 (Card Nested)       再 +5%（累计约 10%）
+├── 输入框 (Input Background)         +8% Black/White
+└── 用户消息 (User Message Card)      +10% Primary
 ```
 
-层级不超过两层叠加，避免颜色浑浊。
+层级通过透明度自然叠加，不超过两层，避免颜色浑浊。
 
 ### 代码块颜色
 
-代码块背景使用 Card Nested 色，确保在消息卡片（Card 色）上有明显区分。行内代码背景同代码块背景色。
+代码块背景使用 Black/White 5%（与 Card Nested 相同），叠加在消息卡片上后累计约 10%，与卡片底色有明显区分。行内代码背景同代码块背景色。
 
-| | 日间 | 夜间 |
-|---|------|------|
-| 背景 | `#E2E2E2` | `#282929` |
-| 文字 | `#24292F` | `#C9D1D9` |
-| 分割线 | `#E0E0E0` | `#2A2B2C` |
+### 表格颜色
+
+表格 header 和交替行使用低透明度的 `colorSurfaceVariant` 叠加：
+- Header：alpha `0x28`（约 16%）
+- 交替行：alpha `0x14`（约 8%）
 
 ## 排版
 
@@ -95,7 +101,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | 属性 | 值 |
 |------|-----|
 | 圆角 | 16dp（主要卡片）、12dp（嵌套/次要卡片如工具结果） |
-| 背景 | Card 色或 Card Nested 色（见色彩系统） |
+| 背景 | Card 色或 Card Nested 色（带透明度叠加） |
 | 边框 | 无（不使用 Outlined Card，不绘制 stroke） |
 | 阴影 | 无 elevation（0dp），依靠色差区分层级 |
 
@@ -115,7 +121,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 ### 设置页输入框 (TextInputLayout)
 
 - 样式：Filled，无底部线（`boxStrokeWidth=0dp`）
-- 背景色：Card Nested 色
+- 背景色：`mote_input_background`（Black/White 8%）
 - 四角统一圆角 12dp
 - 浮动标签 + placeholderText（不在 EditText 上重复设置 hint）
 
@@ -123,8 +129,8 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 | 角色 | 背景 | 特征 |
 |------|------|------|
-| 用户消息 | User Message Card 色（Primary 10% 混合） | 纯文本，右下角操作按钮 |
-| AI 消息 | Card 色 | "AI" 标签（Primary 色）+ Markdown 渲染 + 操作按钮 |
+| 用户消息 | User Message Card 色（Primary 10%） | 纯文本，右下角操作按钮 |
+| AI 消息 | Card 色（Black/White 5%） | "AI" 标签（Primary 色）+ Markdown 渲染 + 操作按钮 |
 | 工具结果 | Card Nested 色 | 可折叠，12dp 圆角，等宽字体显示参数和结果 |
 
 用户消息带有主题色调，AI 消息为中性灰底，视觉上自然区分角色。
@@ -140,7 +146,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 ### 对话框 (Dialog)
 
-- 背景：主背景色（Background）
+- 背景：主背景色（Background，不透明）
 - 积极按钮：胶囊型（cornerSize 50%）+ Primary 填充色 + On Primary 文字
 - 消极按钮：Text 样式
 
@@ -149,6 +155,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 - 选中态：Primary 15% alpha 背景 + Primary 文字
 - 未选中态：Card Nested 色背景 + On Background Secondary 文字
 - 无边框，胶囊圆角（18dp），不显示 checked icon
+- `chipSurfaceColor=transparent` 禁用内部 overlay，确保颜色与按钮一致
 
 ### 侧边栏 (Drawer)
 
@@ -198,4 +205,6 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 - 无顶部介绍卡片，直接展示功能卡片
 - 权限卡片：Card 色背景，状态通过标题/图标颜色区分（granted 用正常文字色，denied 用 Error 色）
 - 接口配置/约定卡片：Card 色背景
+- 输入框：Filled 样式，Input Background 色，12dp 统一圆角，无底部线
+- 思考强度选择：ChipGroup，胶囊型 Chip
 - 保存按钮：Filled 样式

@@ -13,6 +13,7 @@ import android.view.LayoutInflater
 import android.view.View.MeasureSpec
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -592,7 +593,7 @@ class MarkdownView @JvmOverloads constructor(
             }
         }
         val expanded = expandedThinkingPartIds.contains(part.id)
-        return MaterialCardView(context).apply {
+        return MaterialCardView(context).apply thinkingCard@ {
             layoutParams = createBlockLayoutParams()
             radius = 12.dp
             strokeWidth = 0
@@ -656,10 +657,14 @@ class MarkdownView @JvmOverloads constructor(
                             expandedThinkingPartIds.remove(part.id)
                         }
                         // 启动高度变化过渡动画
-                        val animParent = this@apply.parent as? ViewGroup
+                        val animParent = this@thinkingCard.parent as? ViewGroup
                         if (animParent != null) {
                             TransitionManager.beginDelayedTransition(
-                                animParent, ChangeBounds().apply { duration = 200 }
+                                animParent,
+                                ChangeBounds().apply {
+                                    duration = 200
+                                    interpolator = DecelerateInterpolator()
+                                }
                             )
                         }
                         contentView.isVisible = nextExpanded
@@ -729,6 +734,7 @@ class MarkdownView @JvmOverloads constructor(
             if (parent != null) {
                 val transition = ChangeBounds().apply {
                     duration = 200
+                    interpolator = DecelerateInterpolator()
                 }
                 TransitionManager.beginDelayedTransition(parent, transition)
             }
