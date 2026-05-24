@@ -20,7 +20,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
-import androidx.transition.AutoTransition
+import androidx.transition.ChangeBounds
 import androidx.transition.TransitionManager
 import com.google.android.material.card.MaterialCardView
 import com.mukapp.mote.R
@@ -650,6 +650,18 @@ class MarkdownView @JvmOverloads constructor(
                     val toggleView = (headerView as LinearLayout).getChildAt(1) as ImageView
                     val toggle = View.OnClickListener {
                         val nextExpanded = !contentView.isVisible
+                        if (nextExpanded) {
+                            expandedThinkingPartIds.add(part.id)
+                        } else {
+                            expandedThinkingPartIds.remove(part.id)
+                        }
+                        // 启动高度变化过渡动画
+                        val animParent = this@apply.parent as? ViewGroup
+                        if (animParent != null) {
+                            TransitionManager.beginDelayedTransition(
+                                animParent, ChangeBounds().apply { duration = 200 }
+                            )
+                        }
                         contentView.isVisible = nextExpanded
                         toggleView.contentDescription = context.getString(
                             if (nextExpanded) R.string.action_collapse else R.string.action_expand
@@ -657,11 +669,6 @@ class MarkdownView @JvmOverloads constructor(
                         toggleView.setImageResource(
                             if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
                         )
-                        if (nextExpanded) {
-                            expandedThinkingPartIds.add(part.id)
-                        } else {
-                            expandedThinkingPartIds.remove(part.id)
-                        }
                     }
                     headerView.setOnClickListener(toggle)
                 }
@@ -720,7 +727,7 @@ class MarkdownView @JvmOverloads constructor(
             // 在父容器上启动过渡动画，实现平滑展开/折叠
             val parent = binding.root.parent as? ViewGroup
             if (parent != null) {
-                val transition = AutoTransition().apply {
+                val transition = ChangeBounds().apply {
                     duration = 200
                 }
                 TransitionManager.beginDelayedTransition(parent, transition)
