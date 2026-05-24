@@ -70,6 +70,17 @@ class ConversationSummaryAdapter(
     inner class ViewHolder(
         private val binding: ItemConversationSummaryBinding
     ) : RecyclerView.ViewHolder(binding.root) {
+        init {
+            binding.root.setOnClickListener {
+                currentItemOrNull()?.let(onConversationClick)
+            }
+            binding.root.setOnLongClickListener {
+                val item = currentItemOrNull() ?: return@setOnLongClickListener false
+                onConversationLongClick?.invoke(item)
+                onConversationLongClick != null
+            }
+        }
+
         fun bind(item: ConversationSummary) {
             val selected = item.id == currentConversationId
             val context = binding.root.context
@@ -109,10 +120,14 @@ class ConversationSummaryAdapter(
             binding.textTime.setTextColor(MaterialColors.getColor(binding.textTime, subtextAttr))
 
             binding.root.isSelected = selected
-            binding.root.setOnClickListener { onConversationClick(item) }
-            binding.root.setOnLongClickListener {
-                onConversationLongClick?.invoke(item)
-                onConversationLongClick != null
+        }
+
+        private fun currentItemOrNull(): ConversationSummary? {
+            val position = bindingAdapterPosition
+            return if (position != RecyclerView.NO_POSITION && position in items.indices) {
+                items[position]
+            } else {
+                null
             }
         }
     }

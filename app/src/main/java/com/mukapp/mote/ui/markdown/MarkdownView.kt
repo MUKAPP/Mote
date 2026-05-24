@@ -20,6 +20,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
+import androidx.transition.AutoTransition
+import androidx.transition.TransitionManager
 import com.google.android.material.card.MaterialCardView
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
@@ -714,6 +716,14 @@ class MarkdownView @JvmOverloads constructor(
                 expandedToolPartIds.add(toolPart.id)
             } else {
                 expandedToolPartIds.remove(toolPart.id)
+            }
+            // 在父容器上启动过渡动画，实现平滑展开/折叠
+            val parent = binding.root.parent as? ViewGroup
+            if (parent != null) {
+                val transition = AutoTransition().apply {
+                    duration = 200
+                }
+                TransitionManager.beginDelayedTransition(parent, transition)
             }
             binding.containerDetail.isVisible = nextExpanded
             binding.btnToggleDetail.setImageResource(
