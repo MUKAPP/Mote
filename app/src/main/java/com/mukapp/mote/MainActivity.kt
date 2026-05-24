@@ -4,6 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.Menu
 import android.view.View
+import android.view.animation.DecelerateInterpolator
+import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -14,6 +16,7 @@ import androidx.core.view.isVisible
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
+import androidx.drawerlayout.widget.DrawerLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commit
@@ -210,23 +213,67 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBackPressHandler() {
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                when {
-                    binding.drawerLayout.isDrawerOpen(GravityCompat.START) -> {
-                        binding.drawerLayout.closeDrawer(GravityCompat.START)
-                    }
+        var hasDrawerBackProgress = false
+        val closeDrawerCallback = object : OnBackPressedCallback(false) {
+            override fun handleOnBackStarted(backEvent: BackEventCompat) {
+                hasDrawerBackProgress = false
+                binding.drawerPanel.animate().cancel()
+                binding.drawerPanel.translationX = 0f
+            }
 
-                    else -> {
-                        isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
-                    }
+            override fun handleOnBackProgressed(backEvent: BackEventCompat) {
+                hasDrawerBackProgress = true
+                binding.drawerPanel.translationX = drawerCloseTranslation(backEvent.progress)
+            }
+
+            override fun handleOnBackCancelled() {
+                hasDrawerBackProgress = false
+                binding.drawerPanel.animate()
+                    .translationX(0f)
+                    .setDuration(DrawerBackCancelDurationMs)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            }
+
+            override fun handleOnBackPressed() {
+                binding.drawerPanel.animate().cancel()
+                binding.drawerLayout.closeDrawer(GravityCompat.START, !hasDrawerBackProgress)
+                binding.drawerPanel.translationX = 0f
+                hasDrawerBackProgress = false
+            }
+        }
+        onBackPressedDispatcher.addCallback(this, closeDrawerCallback)
+
+        binding.drawerLayout.addDrawerListener(object : DrawerLayout.SimpleDrawerListener() {
+            override fun onDrawerOpened(drawerView: View) {
+                if (drawerView == binding.drawerPanel) {
+                    closeDrawerCallback.isEnabled = true
+                    binding.drawerPanel.translationX = 0f
+                }
+            }
+
+            override fun onDrawerClosed(drawerView: View) {
+                if (drawerView == binding.drawerPanel) {
+                    closeDrawerCallback.isEnabled = false
+                    hasDrawerBackProgress = false
+                    binding.drawerPanel.animate().cancel()
+                    binding.drawerPanel.translationX = 0f
                 }
             }
         })
     }
 
+    private fun drawerCloseTranslation(progress: Float): Float {
+        val direction = if (binding.drawerPanel.layoutDirection == View.LAYOUT_DIRECTION_RTL) {
+            1f
+        } else {
+            -1f
+        }
+        return binding.drawerPanel.width * progress.coerceIn(0f, 1f) * direction
+    }
+
     private companion object {
         const val ChatTag = "chat_fragment"
+        const val DrawerBackCancelDurationMs = 120L
     }
 }
