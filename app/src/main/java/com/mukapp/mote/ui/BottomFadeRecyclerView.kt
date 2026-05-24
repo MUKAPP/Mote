@@ -6,9 +6,10 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Shader
 import android.util.AttributeSet
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.color.MaterialColors
+import com.mukapp.mote.R
 
 /**
  * 自定义 RecyclerView，只在底部物理边缘处显示虚化渐变效果。
@@ -26,7 +27,7 @@ class BottomFadeRecyclerView @JvmOverloads constructor(
     private val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var fadeHeight: Int = (80 * resources.displayMetrics.density).toInt()
     private val fadeColor: Int by lazy {
-        MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurface)
+        ContextCompat.getColor(context, R.color.mote_background)
     }
 
     /** 缓存是否需要底部渐变，通过滚动监听更新，避免每帧查询 */

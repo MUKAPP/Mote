@@ -3,8 +3,8 @@ package com.mukapp.mote.ui
 import android.text.format.DateUtils
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.color.MaterialColors
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.databinding.ItemConversationSummaryBinding
@@ -84,25 +84,20 @@ class ConversationSummaryAdapter(
         fun bind(item: ConversationSummary) {
             val selected = item.id == currentConversationId
             val context = binding.root.context
-            val backgroundAttr = if (selected) {
-                com.google.android.material.R.attr.colorSecondaryContainer
-            } else {
-                com.google.android.material.R.attr.colorSurfaceContainer
-            }
-            val textAttr = if (selected) {
-                com.google.android.material.R.attr.colorOnSecondaryContainer
-            } else {
-                com.google.android.material.R.attr.colorOnSurface
-            }
-            val subtextAttr = if (selected) {
-                com.google.android.material.R.attr.colorOnSecondaryContainer
-            } else {
-                com.google.android.material.R.attr.colorOnSurfaceVariant
-            }
-            binding.cardConversation.setCardBackgroundColor(
-                MaterialColors.getColor(binding.cardConversation, backgroundAttr)
+            val backgroundColor = ContextCompat.getColor(
+                context,
+                if (selected) R.color.mote_primary_container else R.color.mote_card
             )
-            binding.textTitle.setTextColor(MaterialColors.getColor(binding.textTitle, textAttr))
+            val textColor = ContextCompat.getColor(
+                context,
+                if (selected) R.color.mote_on_primary_container else R.color.mote_on_background
+            )
+            val subtextColor = ContextCompat.getColor(
+                context,
+                if (selected) R.color.mote_on_primary_container else R.color.mote_on_background_secondary
+            )
+            binding.cardConversation.setCardBackgroundColor(backgroundColor)
+            binding.textTitle.setTextColor(textColor)
             binding.textTitle.text = item.title.ifBlank { context.getString(R.string.nav_untitled_chat) }
 
             // 显示相对时间
@@ -117,7 +112,7 @@ class ConversationSummaryAdapter(
                 ""
             }
             binding.textTime.text = timeText
-            binding.textTime.setTextColor(MaterialColors.getColor(binding.textTime, subtextAttr))
+            binding.textTime.setTextColor(subtextColor)
 
             binding.root.isSelected = selected
         }

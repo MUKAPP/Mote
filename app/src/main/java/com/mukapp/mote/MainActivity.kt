@@ -10,6 +10,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.GravityCompat
 import androidx.core.view.isVisible
@@ -21,7 +22,6 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commit
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.mukapp.mote.databinding.ActivityMainBinding
@@ -67,10 +67,7 @@ class MainActivity : AppCompatActivity() {
                         val realWindowBackground = this@MainActivity.window.decorView.background
                         val backgroundColorInt =
                             (realWindowBackground as? android.graphics.drawable.ColorDrawable)?.color
-                                ?: MaterialColors.getColor(
-                                    binding.root,
-                                    com.google.android.material.R.attr.colorSurface
-                                )
+                                ?: ContextCompat.getColor(this@MainActivity, R.color.mote_background)
                         val overlayColor = ColorUtils.setAlphaComponent(
                             backgroundColorInt,
                             (255 * 0.6).toInt()

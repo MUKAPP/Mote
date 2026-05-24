@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
@@ -25,7 +26,6 @@ import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ApiSettings
@@ -179,11 +179,10 @@ class ChatFragment : Fragment() {
         ViewCompat.setWindowInsetsAnimationCallback(binding.root, animationCallback)
 
         val realWindowBackground = requireActivity().window.decorView.background
-        val baseColor = MaterialColors.getColor(
-            binding.root,
-            com.google.android.material.R.attr.colorSurfaceContainerLow
-        )
-        val overlayColor = ColorUtils.setAlphaComponent(baseColor, (255 * 0.6).toInt())
+        val backgroundColor = ContextCompat.getColor(requireContext(), R.color.mote_background)
+        val cardColor = ContextCompat.getColor(requireContext(), R.color.mote_card)
+        val backgroundOverlayColor = ColorUtils.setAlphaComponent(backgroundColor, (255 * 0.6).toInt())
+        val overlayColor = ColorUtils.compositeColors(cardColor, backgroundOverlayColor)
 
         fun setupBlur(view: BlurView, blurRadius: Float, overlayColor: Int, borderRadius: Float) {
             view.setupWith(binding.blurTarget)

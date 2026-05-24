@@ -3,6 +3,7 @@ package com.mukapp.mote
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.ViewCompat
@@ -10,7 +11,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
-import com.google.android.material.color.MaterialColors
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.databinding.ActivitySettingsBinding
@@ -48,15 +48,9 @@ class SettingsActivity : AppCompatActivity() {
             finish()
         }
 
-        val fallbackSurfaceColor = MaterialColors.getColor(
-            binding.root,
-            com.google.android.material.R.attr.colorSurface
-        )
+        val fallbackSurfaceColor = ContextCompat.getColor(this, R.color.mote_background)
         val frameClearDrawable = window.decorView.background ?: fallbackSurfaceColor.toDrawable()
-        val blurBaseColor = MaterialColors.getColor(
-            binding.root,
-            com.google.android.material.R.attr.colorSurfaceContainerLow
-        )
+        val blurBaseColor = ContextCompat.getColor(this, R.color.mote_background)
         val overlayColor = ColorUtils.setAlphaComponent(blurBaseColor, (255 * 0.6f).toInt())
         binding.blurViewToolbar.setupWith(binding.blurTarget)
             .setFrameClearDrawable(frameClearDrawable)
@@ -203,15 +197,14 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun refreshPermissionState() {
         val granted = hasManageAllFilesPermission()
-        val view = binding.settingsContent.cardPermission
         val titleColor = if (granted) {
-            MaterialColors.getColor(view, com.google.android.material.R.attr.colorOnSurface)
+            ContextCompat.getColor(this, R.color.mote_on_background)
         } else {
-            androidx.core.content.ContextCompat.getColor(this, R.color.mote_error)
+            ContextCompat.getColor(this, R.color.mote_error)
         }
         binding.settingsContent.textPermissionTitle.setTextColor(titleColor)
         binding.settingsContent.textPermissionDescription.setTextColor(
-            MaterialColors.getColor(view, com.google.android.material.R.attr.colorOnSurfaceVariant)
+            ContextCompat.getColor(this, R.color.mote_on_background_secondary)
         )
         binding.settingsContent.iconPermission.setColorFilter(titleColor)
         binding.settingsContent.textPermissionDescription.text = getString(

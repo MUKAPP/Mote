@@ -7,7 +7,8 @@ import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.LinearInterpolator
-import com.google.android.material.color.MaterialColors
+import androidx.core.content.ContextCompat
+import com.mukapp.mote.R
 import kotlin.math.ceil
 
 class TypingIndicatorView @JvmOverloads constructor(
@@ -26,11 +27,7 @@ class TypingIndicatorView @JvmOverloads constructor(
     private val minDotScale = 0.72f
     private val maxDotScale = 1.08f
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = MaterialColors.getColor(
-            this@TypingIndicatorView,
-            com.google.android.material.R.attr.colorOnSurfaceVariant,
-            0xFF49454F.toInt()
-        )
+        color = ContextCompat.getColor(context, R.color.mote_on_background_secondary)
         style = Paint.Style.FILL
     }
 
