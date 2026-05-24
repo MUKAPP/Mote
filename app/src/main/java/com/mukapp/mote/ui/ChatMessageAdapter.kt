@@ -25,6 +25,7 @@ class ChatMessageAdapter(
     private val messages = mutableListOf<ChatMessage>()
     private val expandedThinkingPartIds = mutableSetOf<String>()
     private val expandedToolPartIds = mutableSetOf<String>()
+    private val expandedUserMessageIds = mutableSetOf<String>()
     private val activeThinkingPartIdsByMessageId = mutableMapOf<String, String>()
 
     private var isSending: Boolean = false
@@ -103,6 +104,7 @@ class ChatMessageAdapter(
         activeThinkingPartIdsByMessageId.keys.retainAll(visibleMessageIds)
         expandedThinkingPartIds.retainAll(visibleThinkingPartIds)
         expandedToolPartIds.retainAll(visibleToolPartIds)
+        expandedUserMessageIds.retainAll(visibleMessageIds)
 
         isSending = sending
         streamingMessageId = if (sending) {
@@ -317,11 +319,50 @@ class ChatMessageAdapter(
             binding.btnDelete.setOnClickListener {
                 currentPositionOrNull()?.let(onDeleteMessage)
             }
+            binding.btnToggleExpand.setOnClickListener {
+                val message = currentMessageOrNull() ?: return@setOnClickListener
+                val isExpanded = expandedUserMessageIds.contains(message.id)
+                if (isExpanded) {
+                    expandedUserMessageIds.remove(message.id)
+                    binding.textContent.maxLines = COLLAPSED_MAX_LINES
+                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_more)
+                    binding.btnToggleExpand.contentDescription =
+                        itemView.context.getString(R.string.action_expand)
+                } else {
+                    expandedUserMessageIds.add(message.id)
+                    binding.textContent.maxLines = Int.MAX_VALUE
+                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_less)
+                    binding.btnToggleExpand.contentDescription =
+                        itemView.context.getString(R.string.action_collapse)
+                }
+            }
         }
 
         fun bind(message: ChatMessage, position: Int) {
             binding.textContent.text = message.content
             binding.btnCopy.isEnabled = message.content.isNotBlank()
+
+            val isExpanded = expandedUserMessageIds.contains(message.id)
+            val lineCount = message.content.count { it == '\n' } + 1
+            val needsCollapse = lineCount > COLLAPSED_MAX_LINES
+
+            if (needsCollapse) {
+                binding.btnToggleExpand.isVisible = true
+                if (isExpanded) {
+                    binding.textContent.maxLines = Int.MAX_VALUE
+                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_less)
+                    binding.btnToggleExpand.contentDescription =
+                        itemView.context.getString(R.string.action_collapse)
+                } else {
+                    binding.textContent.maxLines = COLLAPSED_MAX_LINES
+                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_more)
+                    binding.btnToggleExpand.contentDescription =
+                        itemView.context.getString(R.string.action_expand)
+                }
+            } else {
+                binding.btnToggleExpand.isVisible = false
+                binding.textContent.maxLines = Int.MAX_VALUE
+            }
         }
 
         private fun currentPositionOrNull(): Int? {
@@ -345,5 +386,6 @@ class ChatMessageAdapter(
         const val ViewTypeAssistant = 0
         const val ViewTypeUser = 1
         const val STREAMING_PAYLOAD = "streaming"
+        const val COLLAPSED_MAX_LINES = 10
     }
 }
