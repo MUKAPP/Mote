@@ -1,9 +1,11 @@
 package com.mukapp.mote.ui.markdown
 
+import android.util.LruCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -19,7 +21,11 @@ class MarkdownParseCache {
 
     private data class CacheKey(val text: String, val isStreaming: Boolean)
 
-    private val cache = ConcurrentHashMap<CacheKey, BlockParser.ParseResult>()
+    private val cacheLock = Any()
+    private val cache = object : LruCache<CacheKey, BlockParser.ParseResult>(MaxCacheEntries) {
+        override fun sizeOf(key: CacheKey, value: BlockParser.ParseResult): Int = 1
+    }
+    private val inFlight = ConcurrentHashMap.newKeySet<CacheKey>()
     private val blockParser = BlockParser()
 
     /** 预解析任务的 Job，用于外部取消。仅在主线程访问。 */
@@ -30,7 +36,8 @@ class MarkdownParseCache {
      * @return 解析结果；缓存未命中时返回 null。
      */
     fun get(text: String, isStreaming: Boolean): BlockParser.ParseResult? {
-        return cache[CacheKey(text, isStreaming)]
+        val key = CacheKey(text, isStreaming)
+        return synchronized(cacheLock) { cache.get(key) }
     }
 
     /**
@@ -48,16 +55,22 @@ class MarkdownParseCache {
         onReady: (() -> Unit)? = null
     ) {
         val key = CacheKey(text, isStreaming)
-        // 已有缓存则跳过
-        if (cache.containsKey(key)) {
+        if (contains(key)) {
             onReady?.invoke()
             return
         }
+        if (!inFlight.add(key)) {
+            return
+        }
         scope.launch(Dispatchers.Default) {
-            val result = blockParser.parseWithLinkDefs(text, isStreaming)
-            cache[key] = result
-            if (onReady != null) {
-                launch(Dispatchers.Main.immediate) { onReady() }
+            try {
+                val result = blockParser.parseWithLinkDefs(text, isStreaming)
+                put(key, result)
+                if (onReady != null) {
+                    launch(Dispatchers.Main.immediate) { onReady() }
+                }
+            } finally {
+                inFlight.remove(key)
             }
         }
     }
@@ -76,9 +89,11 @@ class MarkdownParseCache {
         onAllReady: (() -> Unit)? = null
     ) {
         batchJob?.cancel()
-        val toResolve = entries.filter { (text, isStreaming) ->
-            text.isNotBlank() && !cache.containsKey(CacheKey(text, isStreaming))
-        }
+        val toResolve = entries.asSequence()
+            .filter { (text, _) -> text.isNotBlank() }
+            .distinctBy { (text, isStreaming) -> CacheKey(text, isStreaming) }
+            .filterNot { (text, isStreaming) -> contains(CacheKey(text, isStreaming)) }
+            .toList()
         if (toResolve.isEmpty()) {
             onAllReady?.invoke()
             return
@@ -86,10 +101,18 @@ class MarkdownParseCache {
         batchJob = scope.launch(Dispatchers.Default) {
             for ((text, isStreaming) in toResolve) {
                 val key = CacheKey(text, isStreaming)
-                if (!cache.containsKey(key)) {
-                    val result = blockParser.parseWithLinkDefs(text, isStreaming)
-                    cache[key] = result
+                if (!inFlight.add(key)) {
+                    continue
                 }
+                try {
+                    if (!contains(key)) {
+                        val result = blockParser.parseWithLinkDefs(text, isStreaming)
+                        put(key, result)
+                    }
+                } finally {
+                    inFlight.remove(key)
+                }
+                yield()
             }
             if (onAllReady != null) {
                 launch(Dispatchers.Main.immediate) { onAllReady() }
@@ -103,7 +126,8 @@ class MarkdownParseCache {
      */
     fun clear() {
         batchJob?.cancel()
-        cache.clear()
+        synchronized(cacheLock) { cache.evictAll() }
+        inFlight.clear()
     }
 
     /**
@@ -111,7 +135,23 @@ class MarkdownParseCache {
      * 避免内存无限增长。
      */
     fun evict(activeTexts: Set<String>) {
-        val keysToRemove = cache.keys().toList().filter { it.text !in activeTexts }
-        keysToRemove.forEach { cache.remove(it) }
+        val keysToRemove = synchronized(cacheLock) {
+            cache.snapshot().keys.filter { it.text !in activeTexts }
+        }
+        synchronized(cacheLock) {
+            keysToRemove.forEach { cache.remove(it) }
+        }
+    }
+
+    private fun contains(key: CacheKey): Boolean {
+        return synchronized(cacheLock) { cache.get(key) != null }
+    }
+
+    private fun put(key: CacheKey, result: BlockParser.ParseResult) {
+        synchronized(cacheLock) { cache.put(key, result) }
+    }
+
+    private companion object {
+        const val MaxCacheEntries = 160
     }
 }

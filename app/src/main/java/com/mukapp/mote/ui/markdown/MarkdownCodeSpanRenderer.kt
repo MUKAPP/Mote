@@ -5,9 +5,16 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.text.style.TypefaceSpan
+import android.util.LruCache
 import io.noties.prism4j.AbsVisitor
 import io.noties.prism4j.GrammarLocator
 import io.noties.prism4j.Prism4j
+
+private data class CodeContentCacheKey(
+    val code: String,
+    val normalizedLanguage: String,
+    val colorKey: Int
+)
 
 class MarkdownCodeSpanRenderer(
     context: Context,
@@ -41,19 +48,43 @@ class MarkdownCodeSpanRenderer(
     }
 
     fun buildCodeContent(code: String, language: String): SpannableStringBuilder {
+        val normalizedLanguage = normalizeLanguage(language)
+        val canUseCache = code.length <= MaxCachedCodeLength
+        val cacheKey = if (canUseCache) {
+            CodeContentCacheKey(
+                code = code,
+                normalizedLanguage = normalizedLanguage,
+                colorKey = codeColors.hashCode()
+            )
+        } else {
+            null
+        }
+        if (cacheKey != null) {
+            synchronized(codeContentCacheLock) {
+                codeContentCache.get(cacheKey)?.let { cached ->
+                    return SpannableStringBuilder(cached)
+                }
+            }
+        }
+
         val ssb = SpannableStringBuilder(code)
         if (ssb.isNotEmpty()) {
             ssb.setSpan(TypefaceSpan("monospace"), 0, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            if (!applyPrismHighlight(ssb, code, language)) {
-                applyFallbackHighlight(ssb, language, 0, ssb.length)
+            if (code.length <= MaxHighlightedCodeLength && !applyPrismHighlight(ssb, code, normalizedLanguage)) {
+                applyFallbackHighlight(ssb, normalizedLanguage, 0, ssb.length)
+            }
+        }
+        if (cacheKey != null) {
+            synchronized(codeContentCacheLock) {
+                codeContentCache.put(cacheKey, SpannableStringBuilder(ssb))
             }
         }
         return ssb
     }
 
-    private fun applyPrismHighlight(ssb: SpannableStringBuilder, code: String, language: String): Boolean {
+    private fun applyPrismHighlight(ssb: SpannableStringBuilder, code: String, normalizedLanguage: String): Boolean {
         val prism = prism4j ?: return false
-        val grammar = prism.grammar(normalizeLanguage(language)) ?: return false
+        val grammar = prism.grammar(normalizedLanguage) ?: return false
         val nodes = prism.tokenize(code, grammar)
         if (nodes.isEmpty()) return false
 
@@ -181,6 +212,15 @@ class MarkdownCodeSpanRenderer(
     private companion object {
         private val STRING_REGEX = Regex("""\"[^\"]*\"|'[^']*'|\"\"\"[\s\S]*?\"\"\"""")
         private val COMMENT_REGEX = Regex("#.*?$", RegexOption.MULTILINE)
+        private const val MaxHighlightedCodeLength = 24_000
+        private const val MaxCachedCodeLength = 32_000
+        private const val CodeContentCacheSizeChars = 240_000
+        private val codeContentCacheLock = Any()
+        private val codeContentCache = object : LruCache<CodeContentCacheKey, SpannableStringBuilder>(CodeContentCacheSizeChars) {
+            override fun sizeOf(key: CodeContentCacheKey, value: SpannableStringBuilder): Int {
+                return value.length.coerceAtLeast(1)
+            }
+        }
 
         private val SHELL_KEYWORDS = setOf(
             "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",

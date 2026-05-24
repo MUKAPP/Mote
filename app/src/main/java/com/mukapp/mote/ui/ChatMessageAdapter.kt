@@ -64,6 +64,8 @@ class ChatMessageAdapter(
 
     override fun getItemCount(): Int = messages.size
 
+    fun getMessageAt(position: Int): ChatMessage? = messages.getOrNull(position)
+
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
         if (payloads.isEmpty()) {
             super.onBindViewHolder(holder, position, payloads)
@@ -89,29 +91,28 @@ class ChatMessageAdapter(
     }
 
     fun submitMessages(newMessages: List<ChatMessage>, sending: Boolean) {
-        val oldMessages = messages.toList()
-        val oldStreamingMessageId = streamingMessageId
-        val filteredMessages = newMessages.filter { it.role != ChatRole.Tool }
-        val visibleMessageIds = filteredMessages.mapTo(mutableSetOf()) { it.id }
-        val visibleThinkingPartIds = filteredMessages.asSequence()
-            .flatMap { message -> message.assistantParts.asSequence() }
-            .mapNotNull { part -> (part as? AssistantThinkingPart)?.id }
-            .toMutableSet()
-        val visibleToolPartIds = filteredMessages.asSequence()
-            .flatMap { message -> message.assistantParts.asSequence() }
-            .mapNotNull { part -> (part as? AssistantToolPart)?.id }
-            .toMutableSet()
-        activeThinkingPartIdsByMessageId.keys.retainAll(visibleMessageIds)
-        expandedThinkingPartIds.retainAll(visibleThinkingPartIds)
-        expandedToolPartIds.retainAll(visibleToolPartIds)
-        expandedUserMessageIds.retainAll(visibleMessageIds)
-
-        isSending = sending
-        streamingMessageId = if (sending) {
+        val filteredMessages = visibleMessagesFrom(newMessages)
+        val nextStreamingMessageId = if (sending) {
             filteredMessages.lastOrNull { it.role == ChatRole.Assistant }?.id
         } else {
             null
         }
+
+        if (canApplyStreamingTailUpdate(filteredMessages, sending, nextStreamingMessageId)) {
+            isSending = sending
+            streamingMessageId = nextStreamingMessageId
+            val lastIndex = messages.lastIndex
+            messages[lastIndex] = filteredMessages[lastIndex]
+            notifyItemChanged(lastIndex, STREAMING_PAYLOAD)
+            return
+        }
+
+        val oldMessages = messages.toList()
+        val oldStreamingMessageId = streamingMessageId
+        trimExpansionStateIfNeeded(filteredMessages)
+
+        isSending = sending
+        streamingMessageId = nextStreamingMessageId
 
         if (oldMessages.isEmpty() && filteredMessages.isEmpty()) {
             return
@@ -151,7 +152,12 @@ class ChatMessageAdapter(
         if (appendedToTail) {
             messages.clear()
             messages.addAll(filteredMessages)
-            notifyItemRangeInserted(oldMessages.size, filteredMessages.size - oldMessages.size)
+            val insertedCount = filteredMessages.size - oldMessages.size
+            if (oldMessages.isEmpty() && insertedCount > BulkInsertNotifyThreshold) {
+                notifyDataSetChanged()
+            } else {
+                notifyItemRangeInserted(oldMessages.size, insertedCount)
+            }
             return
         }
 
@@ -171,6 +177,57 @@ class ChatMessageAdapter(
         messages.clear()
         messages.addAll(filteredMessages)
         notifyDataSetChanged()
+    }
+
+    private fun visibleMessagesFrom(newMessages: List<ChatMessage>): List<ChatMessage> {
+        return if (newMessages.none { it.role == ChatRole.Tool }) {
+            newMessages
+        } else {
+            newMessages.filter { it.role != ChatRole.Tool }
+        }
+    }
+
+    private fun trimExpansionStateIfNeeded(filteredMessages: List<ChatMessage>) {
+        if (activeThinkingPartIdsByMessageId.isEmpty() &&
+            expandedThinkingPartIds.isEmpty() &&
+            expandedToolPartIds.isEmpty() &&
+            expandedUserMessageIds.isEmpty()
+        ) {
+            return
+        }
+
+        val visibleMessageIds = filteredMessages.mapTo(mutableSetOf()) { it.id }
+        val visibleThinkingPartIds = filteredMessages.asSequence()
+            .flatMap { message -> message.assistantParts.asSequence() }
+            .mapNotNull { part -> (part as? AssistantThinkingPart)?.id }
+            .toMutableSet()
+        val visibleToolPartIds = filteredMessages.asSequence()
+            .flatMap { message -> message.assistantParts.asSequence() }
+            .mapNotNull { part -> (part as? AssistantToolPart)?.id }
+            .toMutableSet()
+        activeThinkingPartIdsByMessageId.keys.retainAll(visibleMessageIds)
+        expandedThinkingPartIds.retainAll(visibleThinkingPartIds)
+        expandedToolPartIds.retainAll(visibleToolPartIds)
+        expandedUserMessageIds.retainAll(visibleMessageIds)
+    }
+
+    private fun canApplyStreamingTailUpdate(
+        filteredMessages: List<ChatMessage>,
+        sending: Boolean,
+        nextStreamingMessageId: String?
+    ): Boolean {
+        if (!sending || nextStreamingMessageId == null || streamingMessageId != nextStreamingMessageId) {
+            return false
+        }
+        if (messages.isEmpty() || messages.size != filteredMessages.size) {
+            return false
+        }
+        val lastIndex = messages.lastIndex
+        val oldLast = messages[lastIndex]
+        val newLast = filteredMessages[lastIndex]
+        return oldLast.id == nextStreamingMessageId &&
+            newLast.id == nextStreamingMessageId &&
+            oldLast.role == newLast.role
     }
 
     private inner class AssistantViewHolder(
@@ -387,5 +444,6 @@ class ChatMessageAdapter(
         const val ViewTypeUser = 1
         const val STREAMING_PAYLOAD = "streaming"
         const val COLLAPSED_MAX_LINES = 10
+        const val BulkInsertNotifyThreshold = 40
     }
 }

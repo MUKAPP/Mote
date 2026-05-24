@@ -24,6 +24,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
@@ -66,6 +67,10 @@ class ChatFragment : Fragment() {
         lastStreamingScrollUptime = SystemClock.uptimeMillis()
         scrollToBottomIfScrollable(animated = true)
     }
+    private val markdownPreparseRunnable = Runnable { runMarkdownPreparseForViewport() }
+    private var lastMarkdownPreparseSignature: String? = null
+    private var lastMarkdownPreparseUptime: Long = 0L
+    private var lastScrollDy: Int = 0
 
     private var systemBottomInset = 0
     private var imeBottomInset = 0
@@ -224,6 +229,7 @@ class ChatFragment : Fragment() {
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
+        binding.recyclerMessages.removeCallbacks(markdownPreparseRunnable)
         scrollAfterLayoutPending = false
         binding.recyclerMessages.adapter = null
         _binding = null
@@ -300,6 +306,7 @@ class ChatFragment : Fragment() {
                             followOutput = !recyclerView.canScrollVertically(1)
                         }
                         userScrolling = false
+                        scheduleMarkdownPreparse(immediate = true)
                     }
                 }
             }
@@ -309,6 +316,10 @@ class ChatFragment : Fragment() {
                 dx: Int,
                 dy: Int
             ) {
+                if (dy != 0) {
+                    lastScrollDy = dy
+                }
+                scheduleMarkdownPreparse(immediate = false)
                 if (!userScrolling) {
                     return
                 }
@@ -507,8 +518,8 @@ class ChatFragment : Fragment() {
         val previousStreamingSignature = lastStreamingMessageSignature
         adapter.submitMessages(latestMessages, latestIsSending)
 
-        // 在后台预解析所有可见消息的 Markdown，让 MarkdownView 在绑定时直接命中缓存
-        preparseVisibleMessages()
+        // 只预解析当前可见窗口及邻近消息，避免长历史加载时一次性扫描和解析完整对话。
+        scheduleMarkdownPreparse(immediate = true)
 
         val currentStreamingSignature = currentStreamingMessageSignature()
         val isStreamingContentUpdate = latestIsSending &&
@@ -523,48 +534,148 @@ class ChatFragment : Fragment() {
             return
         }
 
+        val shouldJumpToBottom = pendingImmediateScrollToBottom ||
+                (previousMessageCount == 0 && adapter.itemCount > InitialImmediateScrollThreshold)
         if (followOutput) {
-            val animated = !pendingImmediateScrollToBottom
+            val animated = !shouldJumpToBottom
             pendingImmediateScrollToBottom = false
             postScrollToBottom(animated, throttle = animated && isStreamingContentUpdate)
         }
     }
 
     /**
-     * 从当前消息列表中提取所有 assistant markdown 片段文本，
-     * 在后台线程预解析 AST，使 MarkdownView 在 onBind 时能直接命中全局缓存。
+     * 延迟预解析当前可见窗口及邻近消息的 Markdown。
      *
-     * - 非流式消息全部预解析（切换对话、历史加载）
-     * - 流式消息仅预解析已完成的 part（最后一个 part 变化频繁，由 MarkdownView 同步解析）
+     * 长对话不再一次性解析完整历史，避免加载阶段和滚动阶段抢占 CPU；滚动时通过小窗口预取，
+     * 让即将进入屏幕的消息尽量命中全局解析缓存。
      */
-    private fun preparseVisibleMessages() {
-        val messages = latestMessages
-        val isStreaming = latestIsSending
-        val streamingMsgId = if (isStreaming) {
-            messages.lastOrNull { it.role == ChatRole.Assistant }?.id
-        } else null
+    private fun scheduleMarkdownPreparse(immediate: Boolean) {
+        val binding = _binding ?: return
+        binding.recyclerMessages.removeCallbacks(markdownPreparseRunnable)
+        if (adapter.itemCount <= 0) {
+            lastMarkdownPreparseSignature = null
+            return
+        }
+        if (immediate) {
+            runMarkdownPreparseForViewport()
+        } else {
+            val now = SystemClock.uptimeMillis()
+            val delay = (MarkdownPreparseThrottleMs - (now - lastMarkdownPreparseUptime))
+                .coerceAtLeast(0L)
+            binding.recyclerMessages.postDelayed(markdownPreparseRunnable, delay)
+        }
+    }
 
-        val entries = mutableListOf<Pair<String, Boolean>>()
-        for (message in messages) {
+    private fun runMarkdownPreparseForViewport() {
+        val binding = _binding ?: return
+        val itemCount = adapter.itemCount
+        if (itemCount <= 0) {
+            lastMarkdownPreparseSignature = null
+            return
+        }
+
+        lastMarkdownPreparseUptime = SystemClock.uptimeMillis()
+
+        val layoutManager = binding.recyclerMessages.layoutManager as? LinearLayoutManager
+        val canUseCurrentLayout = !binding.recyclerMessages.isLayoutRequested
+        val firstVisible = if (canUseCurrentLayout) {
+            layoutManager
+                ?.findFirstVisibleItemPosition()
+                ?.takeIf { it != RecyclerView.NO_POSITION }
+        } else {
+            null
+        }
+        val lastVisible = if (canUseCurrentLayout) {
+            layoutManager
+                ?.findLastVisibleItemPosition()
+                ?.takeIf { it != RecyclerView.NO_POSITION }
+        } else {
+            null
+        }
+
+        val positions = if (firstVisible != null && lastVisible != null) {
+            val visibleStart = minOf(firstVisible, lastVisible).coerceIn(0, itemCount - 1)
+            val visibleEnd = maxOf(firstVisible, lastVisible).coerceIn(0, itemCount - 1)
+            val windowStart = (visibleStart - MarkdownPreparseBeforeItems).coerceAtLeast(0)
+            val windowEnd = (visibleEnd + MarkdownPreparseAfterItems).coerceAtMost(itemCount - 1)
+            buildList {
+                addAll(visibleStart..visibleEnd)
+                if (lastScrollDy < 0) {
+                    if (windowStart < visibleStart) {
+                        for (position in (visibleStart - 1) downTo windowStart) {
+                            add(position)
+                        }
+                    }
+                    if (visibleEnd < windowEnd) addAll((visibleEnd + 1)..windowEnd)
+                } else {
+                    if (visibleEnd < windowEnd) addAll((visibleEnd + 1)..windowEnd)
+                    if (windowStart < visibleStart) {
+                        for (position in (visibleStart - 1) downTo windowStart) {
+                            add(position)
+                        }
+                    }
+                }
+            }
+        } else {
+            val fallbackStart = (itemCount - MarkdownPreparseFallbackTailItems).coerceAtLeast(0)
+            (fallbackStart until itemCount).toList()
+        }
+
+        val entries = collectMarkdownPreparseEntries(positions)
+        if (entries.isEmpty()) {
+            return
+        }
+
+        val signature = buildMarkdownPreparseSignature(positions, entries)
+        if (signature == lastMarkdownPreparseSignature) {
+            return
+        }
+        lastMarkdownPreparseSignature = signature
+        parseCache.preparseAll(viewLifecycleOwner.lifecycleScope, entries)
+    }
+
+    private fun collectMarkdownPreparseEntries(positions: List<Int>): List<Pair<String, Boolean>> {
+        val streamingMsgId = if (latestIsSending) {
+            latestMessages.asReversed().firstOrNull { it.role == ChatRole.Assistant }?.id
+        } else {
+            null
+        }
+        val entries = ArrayList<Pair<String, Boolean>>(positions.size)
+        for (position in positions) {
+            val message = adapter.getMessageAt(position) ?: continue
             if (message.role != ChatRole.Assistant) continue
             val msgIsStreaming = message.id == streamingMsgId
             val parts = message.assistantParts
             if (parts.isEmpty() && message.content.isNotBlank()) {
-                entries.add(message.content to msgIsStreaming)
-                continue
+                entries += message.content to msgIsStreaming
+            } else {
+                for ((index, part) in parts.withIndex()) {
+                    if (part !is AssistantMarkdownPart || part.text.isBlank()) continue
+                    // 流式消息的最后一个 part 变化频繁，跳过预解析。
+                    if (msgIsStreaming && index == parts.lastIndex) continue
+                    entries += part.text to msgIsStreaming
+                }
             }
-            for ((index, part) in parts.withIndex()) {
-                if (part !is AssistantMarkdownPart || part.text.isBlank()) continue
-                // 流式消息的最后一个 part 变化频繁，跳过预解析
-                if (msgIsStreaming && index == parts.lastIndex) continue
-                entries.add(part.text to msgIsStreaming)
+            if (entries.size >= MarkdownPreparseMaxEntries) {
+                break
             }
         }
-        if (entries.isEmpty()) return
-        // 淘汰不再使用的缓存条目，防止内存无限增长
-        val activeTexts = entries.mapTo(HashSet()) { it.first }
-        parseCache.evict(activeTexts)
-        parseCache.preparseAll(viewLifecycleOwner.lifecycleScope, entries)
+        return entries
+    }
+
+    private fun buildMarkdownPreparseSignature(
+        positions: List<Int>,
+        entries: List<Pair<String, Boolean>>
+    ): String {
+        var hash = 17
+        for ((text, isStreaming) in entries) {
+            hash = 31 * hash + System.identityHashCode(text)
+            hash = 31 * hash + text.length
+            hash = 31 * hash + isStreaming.hashCode()
+        }
+        val firstPosition = positions.firstOrNull() ?: -1
+        val lastPosition = positions.lastOrNull() ?: -1
+        return "$firstPosition:$lastPosition:${entries.size}:$hash"
     }
 
     private fun postScrollToBottom(animated: Boolean, throttle: Boolean = false) {
@@ -729,5 +840,11 @@ class ChatFragment : Fragment() {
 
     private companion object {
         const val StreamingScrollThrottleMs = 80L
+        const val MarkdownPreparseThrottleMs = 64L
+        const val MarkdownPreparseBeforeItems = 8
+        const val MarkdownPreparseAfterItems = 12
+        const val MarkdownPreparseFallbackTailItems = 18
+        const val MarkdownPreparseMaxEntries = 32
+        const val InitialImmediateScrollThreshold = 20
     }
 }
