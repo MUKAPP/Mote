@@ -1,6 +1,8 @@
 package com.mukapp.mote.ui.markdown
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -15,8 +17,13 @@ import android.text.style.SubscriptSpan
 import android.text.style.SuperscriptSpan
 import android.text.style.TypefaceSpan
 import android.text.style.URLSpan
+import android.util.LruCache
 import android.util.TypedValue
 import androidx.annotation.ColorInt
+import io.ratex.RaTeXEngine
+import io.ratex.RaTeXFontLoader
+import io.ratex.RaTeXRenderer
+import kotlin.math.ceil
 
 class SpannedBuilder(private val context: Context) {
 
@@ -29,6 +36,31 @@ class SpannedBuilder(private val context: Context) {
 
     /** 表格可用绘制宽度（像素），由外部设置 */
     var tableAvailableWidth: Int = 0
+
+    /** 行内公式渲染字号（像素），由 MarkdownView 按当前 TextView 字号同步 */
+    var inlineMathTextSizePx: Float = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_SP,
+        16f,
+        context.resources.displayMetrics
+    )
+
+    private data class InlineMathRenderKey(
+        val formula: String,
+        val fontSizePx: Int,
+        val color: Int
+    )
+
+    private data class InlineMathRenderResult(
+        val bitmap: Bitmap,
+        val heightPx: Float,
+        val depthPx: Float
+    )
+
+    private val inlineMathCache = object : LruCache<InlineMathRenderKey, InlineMathRenderResult>(MaxInlineMathCacheBytes) {
+        override fun sizeOf(key: InlineMathRenderKey, value: InlineMathRenderResult): Int {
+            return value.bitmap.byteCount.coerceAtLeast(1)
+        }
+    }
 
     private val codeBlockBgColor: Int by lazy {
         codeColors.blockBackgroundColor
@@ -44,6 +76,10 @@ class SpannedBuilder(private val context: Context) {
 
     private val linkColor: Int by lazy {
         resolveThemeColor(androidx.appcompat.R.attr.colorPrimary, 0xFF6750A4.toInt())
+    }
+
+    private val inlineMathTextColor: Int by lazy {
+        resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
     }
 
     private val bulletGapWidth: Int by lazy {
@@ -90,6 +126,7 @@ class SpannedBuilder(private val context: Context) {
             is MdBlock.TaskList -> appendTaskList(ssb, block, isStreaming, linkDefs)
             is MdBlock.Blockquote -> appendBlockquote(ssb, block, isStreaming, linkDefs)
             is MdBlock.Table -> appendTable(ssb, block, isStreaming, linkDefs)
+            is MdBlock.MathBlock -> appendMathBlock(ssb, block)
             is MdBlock.Paragraph -> appendParagraph(ssb, block, isStreaming, linkDefs)
             is MdBlock.HorizontalRule -> appendHorizontalRule(ssb)
         }
@@ -234,6 +271,25 @@ class SpannedBuilder(private val context: Context) {
         appendInlineElements(ssb, inlineElements)
     }
 
+    private fun appendMathBlock(ssb: SpannableStringBuilder, mathBlock: MdBlock.MathBlock) {
+        val closeDelimiter = when (mathBlock.delimiter) {
+            "$$" -> "$$"
+            "\\[" -> "\\]"
+            else -> mathBlock.delimiter
+        }
+        if (mathBlock.closed) {
+            ssb.append(mathBlock.delimiter)
+            ssb.append('\n')
+            ssb.append(mathBlock.formula)
+            ssb.append('\n')
+            ssb.append(closeDelimiter)
+        } else {
+            ssb.append(mathBlock.delimiter)
+            ssb.append('\n')
+            ssb.append(mathBlock.formula)
+        }
+    }
+
     private fun appendHorizontalRule(ssb: SpannableStringBuilder) {
         val start = ssb.length
         ssb.append("───────────────────")
@@ -280,6 +336,7 @@ class SpannedBuilder(private val context: Context) {
                     ssb.setSpan(ForegroundColorSpan(inlineCodeTextColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     ssb.setSpan(TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
+                is InlineElement.Math -> appendInlineMath(ssb, element)
                 is InlineElement.Link -> {
                     val start = ssb.length
                     ssb.append(element.text)
@@ -298,6 +355,59 @@ class SpannedBuilder(private val context: Context) {
         }
     }
 
+    private fun appendInlineMath(ssb: SpannableStringBuilder, math: InlineElement.Math) {
+        val rendered = renderInlineMath(math.formula)
+        if (rendered == null) {
+            ssb.append(inlineMathFallbackText(math))
+            return
+        }
+        val start = ssb.length
+        ssb.append('\uFFFC')
+        val end = ssb.length
+        ssb.setSpan(
+            MarkdownMathSpan(rendered.bitmap, rendered.heightPx, rendered.depthPx),
+            start,
+            end,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+    }
+
+    private fun renderInlineMath(formula: String): InlineMathRenderResult? {
+        val fontSizePx = inlineMathTextSizePx.coerceAtLeast(1f)
+        val key = InlineMathRenderKey(
+            formula = formula,
+            fontSizePx = fontSizePx.toInt(),
+            color = inlineMathTextColor
+        )
+        inlineMathCache.get(key)?.let { return it }
+        return runCatching {
+            RaTeXFontLoader.ensureLoaded(context.applicationContext)
+            val displayList = RaTeXEngine.parseBlocking(
+                latex = formula,
+                displayMode = false,
+                color = inlineMathTextColor
+            )
+            val renderer = RaTeXRenderer(displayList, fontSizePx) { fontId ->
+                RaTeXFontLoader.getTypeface(fontId)
+            }
+            val width = ceil(renderer.widthPx.toDouble()).toInt().coerceAtLeast(1)
+            val height = ceil(renderer.totalHeightPx.toDouble()).toInt().coerceAtLeast(1)
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            renderer.draw(Canvas(bitmap))
+            InlineMathRenderResult(bitmap, renderer.heightPx, renderer.depthPx)
+        }.getOrNull()?.also { result ->
+            inlineMathCache.put(key, result)
+        }
+    }
+
+    private fun inlineMathFallbackText(math: InlineElement.Math): String {
+        return when (math.delimiter) {
+            "$" -> "$${math.formula}$"
+            "\\(" -> "\\(${math.formula}\\)"
+            else -> math.formula
+        }
+    }
+
     private fun headingSize(level: Int): Float = when (level) {
         1 -> 1.48f; 2 -> 1.32f; 3 -> 1.18f; 4 -> 1.08f; 5 -> 1.0f; 6 -> 0.96f; else -> 1.0f
     }
@@ -312,5 +422,7 @@ class SpannedBuilder(private val context: Context) {
         return com.mukapp.mote.ui.markdown.blendWithAlpha(color, alpha)
     }
 
-    companion object
+    companion object {
+        private const val MaxInlineMathCacheBytes = 4 * 1024 * 1024
+    }
 }

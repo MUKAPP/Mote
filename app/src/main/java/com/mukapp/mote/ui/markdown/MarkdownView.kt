@@ -33,6 +33,7 @@ import com.mukapp.mote.databinding.ItemToolResultBinding
 import com.mukapp.mote.ui.IntermediateStepsHelper
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
+import io.ratex.RaTeXView
 import org.json.JSONObject
 
 class MarkdownView @JvmOverloads constructor(
@@ -172,6 +173,7 @@ class MarkdownView @JvmOverloads constructor(
         )
         baseTextSizePx = typedArray.getDimension(INDEX_TEXT_SIZE, defaultTextSize)
         typedArray.recycle()
+        spannedBuilder.inlineMathTextSizePx = baseTextSizePx
     }
 
     fun setMarkdown(text: String, isStreaming: Boolean) {
@@ -773,6 +775,7 @@ class MarkdownView @JvmOverloads constructor(
         return when (block) {
             is MdBlock.Table -> createTableView(block, isStreaming, linkDefs, nested, isLastInContainer)
             is MdBlock.CodeBlock -> createCodeBlockView(block, nested, isLastInContainer)
+            is MdBlock.MathBlock -> createMathBlockView(block, nested, isLastInContainer)
             is MdBlock.Blockquote -> createBlockquoteView(block, isStreaming, linkDefs, nested, isLastInContainer)
             is MdBlock.UnorderedList -> createListView(
                 items = block.items,
@@ -817,6 +820,85 @@ class MarkdownView @JvmOverloads constructor(
             layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
             setSharedCodeSpanRenderer(codeSpanRenderer)
             setCodeBlock(codeBlock.language, codeBlock.code)
+        }
+    }
+
+    private fun createMathBlockView(
+        mathBlock: MdBlock.MathBlock,
+        nested: Boolean,
+        isLastInContainer: Boolean
+    ): View {
+        if (!mathBlock.closed) {
+            return createMathFallbackTextView(mathBlock, nested, isLastInContainer)
+        }
+
+        val fallbackView = createBaseTextView().apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+            text = mathBlockFallbackText(mathBlock)
+            setTextColor(secondaryTextColor)
+            setLineSpacing(0f, 1.15f)
+            isVisible = false
+        }
+
+        val mathView = RaTeXView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+            fontSize = (baseTextSizePx / resources.displayMetrics.density * 1.12f).coerceAtLeast(12f)
+            displayMode = true
+            color = bodyTextColor
+            onError = {
+                isVisible = false
+                fallbackView.isVisible = true
+            }
+            latex = mathBlock.formula
+        }
+
+        val content = FrameLayout(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            addView(mathView)
+            addView(fallbackView)
+        }
+
+        return HorizontalScrollView(context).apply {
+            layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+            addView(content)
+        }
+    }
+
+    private fun createMathFallbackTextView(
+        mathBlock: MdBlock.MathBlock,
+        nested: Boolean,
+        isLastInContainer: Boolean
+    ): TextView {
+        return createBaseTextView().apply {
+            layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
+            text = mathBlockFallbackText(mathBlock)
+            setTextColor(secondaryTextColor)
+            typeface = Typeface.MONOSPACE
+            setLineSpacing(0f, 1.12f)
+        }
+    }
+
+    private fun mathBlockFallbackText(mathBlock: MdBlock.MathBlock): String {
+        val closeDelimiter = when (mathBlock.delimiter) {
+            "$$" -> "$$"
+            "\\[" -> "\\]"
+            else -> mathBlock.delimiter
+        }
+        return if (mathBlock.closed) {
+            "${mathBlock.delimiter}\n${mathBlock.formula}\n$closeDelimiter"
+        } else {
+            "${mathBlock.delimiter}\n${mathBlock.formula}"
         }
     }
 

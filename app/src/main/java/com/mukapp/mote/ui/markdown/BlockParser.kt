@@ -116,6 +116,16 @@ class BlockParser {
                 continue
             }
 
+            if (isMathBlockStart(trimmed)) {
+                val result = parseMathBlock(lines, i, offset, isStreaming)
+                if (result != null) {
+                    blocks.add(result.block)
+                    i = result.nextLineIndex
+                    offset = result.nextOffset
+                    continue
+                }
+            }
+
             val hr = if (unstableTailLine) {
                 null
             } else {
@@ -223,6 +233,10 @@ class BlockParser {
             afterMarker[2] == ']'
     }
 
+    private fun isMathBlockStart(trimmed: String): Boolean {
+        return trimmed.startsWith("$$") || trimmed.startsWith("\\[")
+    }
+
     private fun parseHeading(
         trimmed: String,
         startOffset: Int,
@@ -308,6 +322,105 @@ class BlockParser {
         val code = codeLines.joinToString("\n")
         val endOffset = offset - 1
         return CodeBlockResult(MdBlock.CodeBlock(language, code, closed, startOffset, endOffset), i, offset)
+    }
+
+    private fun parseMathBlock(
+        lines: List<String>,
+        startIndex: Int,
+        startOffset: Int,
+        isStreaming: Boolean
+    ): MathBlockResult? {
+        val firstLine = lines[startIndex]
+        val trimmed = firstLine.trim()
+        val (delimiter, closeDelimiter) = when {
+            trimmed.startsWith("$$") -> "$$" to "$$"
+            trimmed.startsWith("\\[") -> "\\[" to "\\]"
+            else -> return null
+        }
+
+        val delimiterStartInLine = firstLine.indexOf(delimiter)
+        if (delimiterStartInLine < 0) return null
+        val firstContentStart = delimiterStartInLine + delimiter.length
+        val firstContent = firstLine.substring(firstContentStart)
+        val sameLineClose = findMathCloseInLine(firstContent, closeDelimiter)
+        if (sameLineClose >= 0) {
+            val formula = firstContent.substring(0, sameLineClose).trim()
+            if (formula.isEmpty()) return null
+            val nextOffset = startOffset + firstLine.length + 1
+            return MathBlockResult(
+                MdBlock.MathBlock(
+                    formula = formula,
+                    delimiter = delimiter,
+                    closed = true,
+                    startOffset = startOffset,
+                    endOffset = startOffset + firstLine.length
+                ),
+                startIndex + 1,
+                nextOffset
+            )
+        }
+
+        val formulaLines = mutableListOf<String>()
+        if (firstContent.isNotEmpty()) {
+            formulaLines.add(firstContent)
+        }
+        var offset = startOffset + firstLine.length + 1
+        var i = startIndex + 1
+        var closed = false
+
+        while (i < lines.size) {
+            val line = lines[i]
+            val closePos = findMathCloseInLine(line, closeDelimiter)
+            if (closePos >= 0) {
+                formulaLines.add(line.substring(0, closePos))
+                offset += line.length + 1
+                i++
+                closed = true
+                break
+            }
+            formulaLines.add(line)
+            offset += line.length + 1
+            i++
+        }
+
+        if (!closed && !isStreaming) {
+            return null
+        }
+
+        val formula = formulaLines.joinToString("\n").trim()
+        if (formula.isEmpty()) return null
+        return MathBlockResult(
+            MdBlock.MathBlock(
+                formula = formula,
+                delimiter = delimiter,
+                closed = closed,
+                startOffset = startOffset,
+                endOffset = offset - 1
+            ),
+            i,
+            offset
+        )
+    }
+
+    private fun findMathCloseInLine(line: String, delimiter: String): Int {
+        var index = 0
+        while (index <= line.length - delimiter.length) {
+            if (line.regionMatches(index, delimiter, 0, delimiter.length) && !isEscaped(line, index)) {
+                return index
+            }
+            index++
+        }
+        return -1
+    }
+
+    private fun isEscaped(text: String, index: Int): Boolean {
+        var backslashCount = 0
+        var cursor = index - 1
+        while (cursor >= 0 && text[cursor] == '\\') {
+            backslashCount++
+            cursor--
+        }
+        return backslashCount % 2 == 1
     }
 
     private fun parseHorizontalRule(trimmed: String, startOffset: Int, endOffset: Int): MdBlock.HorizontalRule? {
@@ -616,6 +729,7 @@ class BlockParser {
         if (trimmed.startsWith("#") && HEADING_PREFIX.containsMatchIn(trimmed)) return true
         if (isSetextUnderline(trimmed) != null) return true
         if (isBacktickFenceStart(trimmed)) return true
+        if (isMathBlockStart(trimmed)) return true
         if (trimmed.startsWith(">")) return true
         if (isHorizontalRuleLike(trimmed)) return true
         if (isUnorderedListPrefix(trimmed)) return true
@@ -637,6 +751,7 @@ class BlockParser {
     private fun isTailSensitiveBlockStart(trimmed: String): Boolean {
         if (isSetextUnderline(trimmed) != null) return true
         if (isHorizontalRuleLike(trimmed)) return true
+        if (isMathBlockStart(trimmed)) return true
         if (trimmed.startsWith("|")) return true
         if (trimmed.startsWith("[") && trimmed.contains("]:") && LINK_DEF_PREFIX.containsMatchIn(trimmed)) return true
         return false
@@ -779,6 +894,7 @@ class BlockParser {
     }
 
     private data class CodeBlockResult(val block: MdBlock.CodeBlock, val nextLineIndex: Int, val nextOffset: Int)
+    private data class MathBlockResult(val block: MdBlock.MathBlock, val nextLineIndex: Int, val nextOffset: Int)
     private data class BlockquoteResult(val block: MdBlock.Blockquote, val nextLineIndex: Int, val nextOffset: Int)
     private data class UnorderedListResult(val block: MdBlock.UnorderedList, val nextLineIndex: Int, val nextOffset: Int)
     private data class OrderedListResult(val block: MdBlock.OrderedList, val nextLineIndex: Int, val nextOffset: Int)

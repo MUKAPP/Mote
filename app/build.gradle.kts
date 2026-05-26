@@ -62,6 +62,7 @@ dependencies {
         exclude(group = "org.jetbrains", module = "annotations-java5")
     }
     implementation(libs.flexmark.html2md.converter)
+    implementation(libs.ratex.android)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     androidTestImplementation(libs.androidx.junit)

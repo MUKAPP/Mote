@@ -55,6 +55,14 @@ sealed class MdBlock {
         override val endOffset: Int
     ) : MdBlock()
 
+    data class MathBlock(
+        val formula: String,
+        val delimiter: String,
+        val closed: Boolean,
+        override val startOffset: Int,
+        override val endOffset: Int
+    ) : MdBlock()
+
     data class Paragraph(
         val text: String,
         override val startOffset: Int,
@@ -77,6 +85,11 @@ sealed class InlineElement {
     data class Superscript(val children: List<InlineElement>) : InlineElement()
     data class Subscript(val children: List<InlineElement>) : InlineElement()
     data class InlineCode(val content: String) : InlineElement()
+    data class Math(
+        val formula: String,
+        val delimiter: String,
+        val display: Boolean
+    ) : InlineElement()
     data class Link(val text: String, val url: String) : InlineElement()
     data class AutoLink(val url: String) : InlineElement()
 }

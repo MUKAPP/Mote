@@ -131,6 +131,78 @@ class MarkdownStreamingParserTest {
     }
 
     @Test
+    fun inlineMathParsesBackslashParenBeforeEscapes() {
+        val elements = InlineParser().parse("公式 \\(E = mc^2\\) 完成", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("公式 "),
+                InlineElement.Math("E = mc^2", "\\(", display = false),
+                InlineElement.Text(" 完成")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun streamingInlineMathKeepsUnclosedTailAsPlainText() {
+        val elements = InlineParser().parse("公式 \\(E = mc", isStreaming = true)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("公式 "),
+                InlineElement.Text("\\(E = mc")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun inlineCodeDoesNotParseMath() {
+        val elements = InlineParser().parse("代码 `\\(x\\)`", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("代码 "),
+                InlineElement.InlineCode("\\(x\\)")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun blockMathParsesDollarDelimiter() {
+        val blocks = BlockParser().parse("$$\na^2 + b^2 = c^2\n$$", isStreaming = false)
+
+        assertEquals(1, blocks.size)
+        val mathBlock = blocks[0] as MdBlock.MathBlock
+        assertEquals("a^2 + b^2 = c^2", mathBlock.formula)
+        assertEquals("$$", mathBlock.delimiter)
+        assertEquals(true, mathBlock.closed)
+    }
+
+    @Test
+    fun streamingBlockMathKeepsUnclosedMathBlock() {
+        val blocks = BlockParser().parse("$$\na^2 + b^2", isStreaming = true)
+
+        assertEquals(1, blocks.size)
+        val mathBlock = blocks[0] as MdBlock.MathBlock
+        assertEquals("a^2 + b^2", mathBlock.formula)
+        assertEquals(false, mathBlock.closed)
+    }
+
+    @Test
+    fun blockMathParsesBackslashBracketDelimiter() {
+        val blocks = BlockParser().parse("\\[\n\\int_0^1 x dx\n\\]", isStreaming = false)
+
+        assertEquals(1, blocks.size)
+        val mathBlock = blocks[0] as MdBlock.MathBlock
+        assertEquals("\\int_0^1 x dx", mathBlock.formula)
+        assertEquals("\\[", mathBlock.delimiter)
+        assertEquals(true, mathBlock.closed)
+    }
+
+    @Test
     fun streamingTableWaitsForCompleteSeparatorLine() {
         val streamingBlocks = BlockParser().parse("| A |\n| --- |", isStreaming = true)
 

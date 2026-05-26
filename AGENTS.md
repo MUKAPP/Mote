@@ -16,7 +16,7 @@ Mote 是运行在 Android 设备上的 AI Agent 聊天客户端，通过 OpenAI 
 | 架构 | MVVM，AndroidViewModel，LiveData，Coroutines |
 | 网络 | HttpURLConnection |
 | 序列化 | org.json |
-| Markdown | 自研原生视图树 + prism4j 语法高亮 |
+| Markdown | 自研原生视图树 + prism4j 语法高亮 + RaTeX 公式渲染 |
 
 ## 目录速览
 
@@ -137,6 +137,7 @@ app/src/main/java/com/mukapp/mote/
 - `ChatMessageAdapter` 优先用 `setParts()` 渲染 assistant 片段，无片段时回退 `setMarkdown()`。
 - `MarkdownParseCache` 全局缓存解析结果，历史 Markdown 后台预解析，流式最后片段跳过预解析。
 - 代码高亮：`MarkdownCodeSpanRenderer`，主策略 prism4j，失败后正则回退。
+- LaTeX 公式：块级支持 `$$...$$` / `\[...\]`，行内支持 `$...$` / `\(...\)`；已闭合公式用 RaTeX 原生渲染，流式未闭合公式保持原文显示。
 - 新增语法高亮语言时同步 `MarkdownGrammarLocator` 和 `ui/markdown/prism/`。
 - `StreamingMarkdownRenderer` 和 `TableSpan` 为旧实现，保留参考。
 
@@ -168,7 +169,7 @@ app/src/main/java/com/mukapp/mote/
 | API 请求体 | 保持 OpenAI 兼容；注意 `stream_options.include_usage` 降级和 `reasoning_effort` 条件发送 |
 | 标题生成 | 保持空 `titleModel` 的本地备用标题兼容 |
 | 外部存储权限 | `Utils.kt` + `SettingsActivity.kt` |
-| Markdown 渲染/RecyclerView 绑定 | `MarkdownParseCache`、`MarkdownView`、`ChatMessageAdapter`、`ChatFragment.preparseVisibleMessages()` |
+| Markdown 渲染/RecyclerView 绑定/LaTeX 公式 | `MarkdownParseCache`、`MarkdownView`、`ChatMessageAdapter`、`ChatFragment.preparseVisibleMessages()`、公式分隔符流式解析与 RaTeX 渲染兼容 |
 | 图标更新 | Material Symbols Rounded，命名 `ic_{name}.xml`（不加 `_24px`） |
 
 ## 设计决策
@@ -178,6 +179,6 @@ app/src/main/java/com/mukapp/mote/
 - 多对话独立文件存储，侧栏通过摘要索引切换。
 - UI 消息和 API 上下文分离，避免展示型中间步骤污染请求上下文。
 - Shell 高风险命令必须经用户确认后才能执行。
-- Markdown 使用自研原生视图树，避免 WebView 渲染依赖。
+- Markdown 使用自研原生视图树，避免 WebView 渲染依赖；LaTeX 公式使用 RaTeX 原生 Canvas 渲染。
 - 固定单主题色方案（日间 #57A2DB / 夜间 #88A8E8），不使用 Material You 动态取色。
 - `MANAGE_EXTERNAL_STORAGE` 权限必须由用户手动授予。

@@ -13,6 +13,20 @@ class InlineParser {
         var textStart = 0
 
         while (i < text.length) {
+            val inlineMath = matchInlineMathAt(text, i, isStreaming)
+            if (inlineMath != null) {
+                appendText(elements, text, textStart, i)
+                if (inlineMath.closed) {
+                    elements.add(InlineElement.Math(inlineMath.formula, inlineMath.delimiter, display = false))
+                    i += inlineMath.consumed
+                    textStart = i
+                    continue
+                } else {
+                    elements.add(InlineElement.Text(text.substring(i)))
+                    return elements
+                }
+            }
+
             if (text[i] == '\\' && i + 1 < text.length && text[i + 1] in ESCAPABLE_CHARS) {
                 if (i > textStart) {
                     elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -203,6 +217,93 @@ class InlineParser {
         return elements
     }
 
+    private fun matchInlineMathAt(text: String, pos: Int, isStreaming: Boolean): InlineMathResult? {
+        if (pos >= text.length) return null
+        if (text.regionMatches(pos, "\\(", 0, 2) && !isEscaped(text, pos)) {
+            val closePos = findCloseDelimiter(text, pos + 2, "\\)")
+            if (closePos >= 0) {
+                val formula = text.substring(pos + 2, closePos)
+                if (formula.isNotBlank()) {
+                    return InlineMathResult(
+                        formula = formula,
+                        delimiter = "\\(",
+                        consumed = closePos + 2 - pos,
+                        closed = true
+                    )
+                }
+            }
+            return if (isStreaming && looksLikeUnfinishedBackslashMath(text, pos, "\\(")) {
+                InlineMathResult("", "\\(", text.length - pos, closed = false)
+            } else {
+                null
+            }
+        }
+
+        if (text[pos] == '$' && canOpenDollarMath(text, pos)) {
+            val closePos = findDollarMathClose(text, pos + 1)
+            if (closePos >= 0) {
+                val formula = text.substring(pos + 1, closePos)
+                if (formula.isNotBlank()) {
+                    return InlineMathResult(
+                        formula = formula,
+                        delimiter = "$",
+                        consumed = closePos + 1 - pos,
+                        closed = true
+                    )
+                }
+            }
+            return if (isStreaming) {
+                InlineMathResult("", "$", text.length - pos, closed = false)
+            } else {
+                null
+            }
+        }
+
+        return null
+    }
+
+    private fun looksLikeUnfinishedBackslashMath(text: String, pos: Int, delimiter: String): Boolean {
+        if (!text.regionMatches(pos, delimiter, 0, delimiter.length)) return false
+        val contentStart = pos + delimiter.length
+        return contentStart < text.length && text.substring(contentStart).isNotBlank()
+    }
+
+    private fun findCloseDelimiter(text: String, searchStart: Int, delimiter: String): Int {
+        var index = searchStart
+        while (index <= text.length - delimiter.length) {
+            if (text.regionMatches(index, delimiter, 0, delimiter.length) && !isEscaped(text, index)) {
+                return index
+            }
+            index++
+        }
+        return -1
+    }
+
+    private fun canOpenDollarMath(text: String, pos: Int): Boolean {
+        if (text[pos] != '$' || isEscaped(text, pos)) return false
+        if (pos + 1 >= text.length || text[pos + 1] == '$') return false
+        if (text[pos + 1].isWhitespace()) return false
+        return true
+    }
+
+    private fun findDollarMathClose(text: String, searchStart: Int): Int {
+        var index = searchStart
+        while (index < text.length) {
+            if (text[index] == '$' && !isEscaped(text, index)) {
+                val previous = text.getOrNull(index - 1)
+                val next = text.getOrNull(index + 1)
+                if (previous != null && !previous.isWhitespace() && next != '$' && next?.isDigit() != true) {
+                    return index
+                }
+            }
+            if (text[index] == '\n' && text.getOrNull(index + 1) == '\n') {
+                return -1
+            }
+            index++
+        }
+        return -1
+    }
+
     private fun matchAutoLinkAt(text: String, pos: Int): String? {
         if (text[pos] != '<') return null
         val closeAngle = text.indexOf('>', pos + 1)
@@ -363,6 +464,13 @@ class InlineParser {
     private fun isPunctuation(char: Char): Boolean {
         return !char.isLetterOrDigit() && !char.isWhitespace()
     }
+
+    private data class InlineMathResult(
+        val formula: String,
+        val delimiter: String,
+        val consumed: Int,
+        val closed: Boolean
+    )
 
     companion object {
         private val REF_LINK_REGEX = Regex("\\[([^\\]]+)\\](?:\\[([^\\]]*)\\])")
