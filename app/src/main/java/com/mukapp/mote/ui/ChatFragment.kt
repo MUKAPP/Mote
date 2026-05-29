@@ -370,9 +370,6 @@ class ChatFragment : Fragment() {
                 showAttachmentMenu()
             }
         }
-        binding.btnClearAttachments.setOnClickListener {
-            viewModel.clearDraftAttachments()
-        }
         binding.btnSend.setOnClickListener {
             if (latestIsSending) {
                 viewModel.stopGenerating()
@@ -511,7 +508,6 @@ class ChatFragment : Fragment() {
         val hasDraft = binding.editMessage.text?.isNotBlank() == true || latestDraftAttachments.isNotEmpty()
         binding.btnSend.isEnabled = sending || hasDraft
         binding.btnAddAttachment.isEnabled = !sending
-        binding.btnClearAttachments.isEnabled = !sending
         binding.btnSend.contentDescription = getString(
             if (sending) {
                 R.string.action_stop
@@ -532,21 +528,42 @@ class ChatFragment : Fragment() {
         val attachments = latestDraftAttachments
         binding.layoutAttachmentPreview.isVisible = attachments.isNotEmpty()
         if (attachments.isEmpty()) {
-            binding.textAttachmentPreview.text = ""
+            binding.chipGroupDraftAttachments.removeAllViews()
             return
         }
 
-        val previewText = attachments.joinToString(separator = "，") { attachment ->
-            val name = attachment.displayName.ifBlank { attachment.path }
-            getString(
-                when (attachment.type) {
-                    ChatAttachmentType.Image -> R.string.attachment_preview_image
-                    ChatAttachmentType.File -> R.string.attachment_preview_file
-                },
-                name
-            )
+        binding.chipGroupDraftAttachments.removeAllViews()
+        attachments.forEach { attachment ->
+            val chip = com.google.android.material.chip.Chip(
+                requireContext(),
+                null,
+                com.google.android.material.R.attr.chipStyle
+            ).apply {
+                setChipDrawable(
+                    com.google.android.material.chip.ChipDrawable.createFromAttributes(
+                        context, null, 0, R.style.Widget_Mote_Chip_Attachment
+                    )
+                )
+                text = attachment.displayName.ifBlank { attachment.path.substringAfterLast('/') }
+                isClickable = false
+                isCheckable = false
+                chipIcon = ContextCompat.getDrawable(
+                    context,
+                    when (attachment.type) {
+                        ChatAttachmentType.Image -> R.drawable.ic_image
+                        ChatAttachmentType.File -> R.drawable.ic_description
+                    }
+                )
+                isChipIconVisible = true
+                isCloseIconVisible = true
+                closeIcon = ContextCompat.getDrawable(context, R.drawable.ic_close)
+                closeIconContentDescription = getString(R.string.action_remove_attachment)
+                setOnCloseIconClickListener {
+                    viewModel.removeDraftAttachment(attachment.id)
+                }
+            }
+            binding.chipGroupDraftAttachments.addView(chip)
         }
-        binding.textAttachmentPreview.text = getString(R.string.attachment_preview, previewText)
     }
 
     private fun renderShellConfirmation() {

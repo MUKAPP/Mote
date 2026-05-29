@@ -158,11 +158,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _draftAttachments.value = _draftAttachments.value.orEmpty() + attachment
     }
 
-    fun clearDraftAttachments() {
+    fun removeDraftAttachment(attachmentId: String) {
         if (_isSending.value == true) {
             return
         }
-        _draftAttachments.value = emptyList()
+        _draftAttachments.value = _draftAttachments.value.orEmpty().filter { it.id != attachmentId }
     }
 
     fun reloadSettings() {

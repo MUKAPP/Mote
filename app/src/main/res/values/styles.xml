@@ -47,4 +47,28 @@
         <item name="boxStrokeWidth">0dp</item>
         <item name="boxStrokeWidthFocused">0dp</item>
     </style>
+    <!-- 输入框附件 Chip -->
+    <style name="Widget.Mote.Chip.Attachment" parent="Widget.Material3.Chip.Assist">
+        <item name="chipBackgroundColor">@color/mote_card</item>
+        <item name="android:textColor">@color/mote_on_background_secondary</item>
+        <item name="chipIconTint">@color/mote_on_background_secondary</item>
+        <item name="closeIconTint">@color/mote_on_background_secondary</item>
+        <item name="chipStrokeWidth">0dp</item>
+        <item name="chipSurfaceColor">@android:color/transparent</item>
+        <item name="rippleColor">@android:color/transparent</item>
+        <item name="android:textSize">12sp</item>
+        <item name="chipMinHeight">32dp</item>
+    </style>
+
+    <!-- 用户消息卡片附件 Chip -->
+    <style name="Widget.Mote.Chip.Attachment.User" parent="Widget.Material3.Chip.Assist">
+        <item name="chipBackgroundColor">@color/mote_background</item>
+        <item name="android:textColor">@color/mote_on_background</item>
+        <item name="chipIconTint">@color/mote_on_background_secondary</item>
+        <item name="chipStrokeWidth">0dp</item>
+        <item name="chipSurfaceColor">@android:color/transparent</item>
+        <item name="rippleColor">@android:color/transparent</item>
+        <item name="android:textSize">13sp</item>
+        <item name="chipMinHeight">32dp</item>
+    </style>
 </resources>

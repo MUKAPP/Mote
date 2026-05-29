@@ -15,7 +15,7 @@
     <string name="action_add_attachment">添加附件</string>
     <string name="action_add_image">添加图片</string>
     <string name="action_add_file">添加文件</string>
-    <string name="action_clear_attachments">清空附件</string>
+    <string name="action_remove_attachment">移除附件</string>
     <string name="action_copy">复制</string>
     <string name="action_edit">编辑</string>
     <string name="action_delete">删除</string>
@@ -26,9 +26,6 @@
     <string name="action_confirm">确认</string>
     <string name="action_cancel">取消</string>
     <string name="hint_message_input">输入消息...</string>
-    <string name="attachment_preview">已添加：%1$s</string>
-    <string name="attachment_preview_image">图片 %1$s</string>
-    <string name="attachment_preview_file">文件 %1$s</string>
     <string name="attachment_error_image_read_failed">无法读取图片内容。</string>
     <string name="attachment_error_file_read_failed">无法读取文件内容。</string>
     <string name="attachment_notice_file_truncated">文件内容过长，已截断后发送。</string>

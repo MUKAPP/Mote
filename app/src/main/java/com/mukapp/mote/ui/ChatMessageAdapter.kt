@@ -10,6 +10,7 @@ import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
+import com.mukapp.mote.data.model.ChatAttachment
 import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
@@ -397,13 +398,46 @@ class ChatMessageAdapter(
         }
 
         fun bind(message: ChatMessage, position: Int) {
-            val displayText = buildUserDisplayText(message)
-            binding.textContent.text = displayText
-            binding.btnCopy.isEnabled = displayText.isNotBlank()
+            binding.textContent.text = message.content
+            binding.textContent.isVisible = message.content.isNotBlank()
+            binding.btnCopy.isEnabled = message.content.isNotBlank() || message.attachments.isNotEmpty()
+
+            // 附件标签
+            if (message.attachments.isNotEmpty()) {
+                binding.chipGroupAttachments.isVisible = true
+                binding.chipGroupAttachments.removeAllViews()
+                message.attachments.forEach { attachment ->
+                    val chip = com.google.android.material.chip.Chip(
+                        itemView.context,
+                        null,
+                        com.google.android.material.R.attr.chipStyle
+                    ).apply {
+                        setChipDrawable(
+                            com.google.android.material.chip.ChipDrawable.createFromAttributes(
+                                context, null, 0, R.style.Widget_Mote_Chip_Attachment_User
+                            )
+                        )
+                        text = buildChipLabel(attachment)
+                        isClickable = false
+                        isCheckable = false
+                        chipIcon = androidx.core.content.ContextCompat.getDrawable(
+                            context,
+                            when (attachment.type) {
+                                ChatAttachmentType.Image -> R.drawable.ic_image
+                                ChatAttachmentType.File -> R.drawable.ic_description
+                            }
+                        )
+                        isChipIconVisible = true
+                    }
+                    binding.chipGroupAttachments.addView(chip)
+                }
+            } else {
+                binding.chipGroupAttachments.isVisible = false
+            }
 
             val isExpanded = expandedUserMessageIds.contains(message.id)
-            val lineCount = displayText.count { it == '\n' } + 1
-            val needsCollapse = lineCount > COLLAPSED_MAX_LINES
+            val lineCount = message.content.count { it == '\n' } + 1
+            val needsCollapse = message.content.isNotBlank() && lineCount > COLLAPSED_MAX_LINES
 
             if (needsCollapse) {
                 binding.btnToggleExpand.isVisible = true
@@ -441,49 +475,15 @@ class ChatMessageAdapter(
         }
     }
 
-    private fun buildUserDisplayText(message: ChatMessage): String {
-        if (message.attachments.isEmpty()) {
-            return message.content
+    private fun buildChipLabel(attachment: ChatAttachment): String {
+        val name = attachment.displayName.ifBlank { attachment.path.substringAfterLast('/') }
+        val suffix = when {
+            attachment.type == ChatAttachmentType.Image -> ""
+            attachment.directReadable -> ""
+            attachment.textContent != null && attachment.truncated -> " (已截断)"
+            else -> ""
         }
-
-        return buildString {
-            if (message.content.isNotBlank()) {
-                append(message.content)
-                append("\n\n")
-            }
-            append("附件：")
-            message.attachments.forEachIndexed { index, attachment ->
-                append('\n')
-                append(index + 1)
-                append(". ")
-                append(
-                    when (attachment.type) {
-                        ChatAttachmentType.Image -> "图片"
-                        ChatAttachmentType.File -> "文件"
-                    }
-                )
-                append("：")
-                append(attachment.displayName.ifBlank { attachment.path })
-                when (attachment.type) {
-                    ChatAttachmentType.Image -> append("（已作为 base64 图片发送）")
-                    ChatAttachmentType.File -> {
-                        val status = when {
-                            attachment.directReadable -> "已发送可直接读取的路径"
-                            attachment.textContent != null && attachment.truncated -> "已读取文本内容，内容过长已截断"
-                            attachment.textContent != null -> "已读取文本内容"
-                            else -> "已发送文件信息"
-                        }
-                        append('（')
-                        append(status)
-                        append('）')
-                    }
-                }
-                attachment.path.takeIf { it.isNotBlank() && it != attachment.displayName }?.let { path ->
-                    append("\n   路径：")
-                    append(path)
-                }
-            }
-        }
+        return name + suffix
     }
 
     private companion object {
