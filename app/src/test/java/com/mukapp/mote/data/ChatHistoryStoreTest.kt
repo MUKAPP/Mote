@@ -3,6 +3,8 @@ package com.mukapp.mote.data
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantToolPart
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ContextSummary
@@ -21,7 +23,30 @@ class ChatHistoryStoreTest {
                 isContextSummary = true,
                 contextSummarySourceIds = listOf("u1", "a1", "t1")
             ),
-            ChatMessage(id = "u2", role = ChatRole.User, content = "继续"),
+            ChatMessage(
+                id = "u2",
+                role = ChatRole.User,
+                content = "继续",
+                attachments = listOf(
+                    ChatAttachment(
+                        id = "att_file",
+                        type = ChatAttachmentType.File,
+                        displayName = "notes.txt",
+                        mimeType = "text/plain",
+                        path = "content://docs/notes.txt",
+                        textContent = "文件内容",
+                        truncated = true
+                    ),
+                    ChatAttachment(
+                        id = "att_image",
+                        type = ChatAttachmentType.Image,
+                        displayName = "photo.png",
+                        mimeType = "image/png",
+                        path = "/sdcard/photo.png",
+                        base64Data = "aW1n"
+                    )
+                )
+            ),
             ChatMessage(
                 id = "a2",
                 role = ChatRole.Assistant,

@@ -3,6 +3,7 @@ package com.mukapp.mote.ui
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantToolPart
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ContextSummary
@@ -379,11 +380,24 @@ internal object ChatConversationContextHelper {
         val toolCallTokens = message.toolCalls.sumOf { toolCall ->
             estimateTextTokens(toolCall.name) + estimateTextTokens(toolCall.arguments) + ToolCallOverheadTokens
         }
+        val attachmentTokens = message.attachments.sumOf { attachment ->
+            estimateTextTokens(attachment.type.storageValue) +
+                    estimateTextTokens(attachment.displayName) +
+                    estimateTextTokens(attachment.mimeType.orEmpty()) +
+                    estimateTextTokens(attachment.path) +
+                    estimateTextTokens(attachment.textContent.orEmpty()) +
+                    if (attachment.type == ChatAttachmentType.Image) {
+                        estimateTextTokens(attachment.base64Data.orEmpty())
+                    } else {
+                        0
+                    }
+        }
         return estimateTextTokens(message.role.apiValue) +
                 estimateTextTokens(message.content) +
                 estimateTextTokens(message.toolName.orEmpty()) +
                 estimateTextTokens(message.toolArguments.orEmpty()) +
-                toolCallTokens
+                toolCallTokens +
+                attachmentTokens
     }
 
     private fun estimateTextTokens(text: String): Int {

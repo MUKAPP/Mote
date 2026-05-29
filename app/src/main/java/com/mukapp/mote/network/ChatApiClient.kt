@@ -2,6 +2,8 @@ package com.mukapp.mote.network
 
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
@@ -438,7 +440,7 @@ object ChatApiClient {
         """.trimIndent()
     }
 
-    private fun buildApiMessage(message: ChatMessage): JSONObject {
+    internal fun buildApiMessage(message: ChatMessage): JSONObject {
         return JSONObject().apply {
             put("role", message.role.apiValue)
             when (message.role) {
@@ -473,11 +475,122 @@ object ChatApiClient {
                     }
                 }
 
+                ChatRole.User -> {
+                    put("content", buildUserApiContent(message))
+                }
+
                 else -> {
                     put("content", message.content)
                 }
             }
         }
+    }
+
+    private fun buildUserApiContent(message: ChatMessage): Any {
+        if (message.attachments.isEmpty()) {
+            return message.content
+        }
+
+        val textContent = buildUserTextContent(message)
+        val imageAttachments = message.attachments.filter { attachment ->
+            attachment.type == ChatAttachmentType.Image && !attachment.base64Data.isNullOrBlank()
+        }
+        if (imageAttachments.isEmpty()) {
+            return textContent
+        }
+
+        return JSONArray().apply {
+            if (textContent.isNotBlank()) {
+                put(
+                    JSONObject().apply {
+                        put("type", "text")
+                        put("text", textContent)
+                    }
+                )
+            }
+            imageAttachments.forEach { attachment ->
+                put(
+                    JSONObject().apply {
+                        put("type", "image_url")
+                        put(
+                            "image_url",
+                            JSONObject().apply {
+                                put("url", attachment.toDataUrl())
+                            }
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    private fun buildUserTextContent(message: ChatMessage): String {
+        if (message.attachments.isEmpty()) {
+            return message.content
+        }
+
+        return buildString {
+            if (message.content.isNotBlank()) {
+                append(message.content)
+                append("\n\n")
+            }
+            append("【附件】")
+            message.attachments.forEachIndexed { index, attachment ->
+                append('\n')
+                append(index + 1)
+                append(". ")
+                append(
+                    when (attachment.type) {
+                        ChatAttachmentType.Image -> "图片"
+                        ChatAttachmentType.File -> "文件"
+                    }
+                )
+                append("：")
+                append(attachment.displayName.ifBlank { attachment.path })
+                attachment.mimeType?.takeIf { it.isNotBlank() }?.let { mimeType ->
+                    append("\n   MIME：")
+                    append(mimeType)
+                }
+                attachment.path.takeIf { it.isNotBlank() }?.let { path ->
+                    append("\n   路径：")
+                    append(path)
+                }
+                when (attachment.type) {
+                    ChatAttachmentType.Image -> {
+                        append("\n   说明：图片已作为 base64 data URL 随本消息发送。")
+                    }
+
+                    ChatAttachmentType.File -> appendFileAttachmentContent(attachment)
+                }
+            }
+        }
+    }
+
+    private fun StringBuilder.appendFileAttachmentContent(attachment: ChatAttachment) {
+        if (attachment.directReadable) {
+            append("\n   说明：应用可直接读取该路径，请按需调用本地文件工具读取。")
+            return
+        }
+
+        val textContent = attachment.textContent
+        if (textContent == null) {
+            append("\n   说明：应用无法直接读取该路径，也未能读取文件内容。")
+            return
+        }
+
+        append("\n   说明：应用无法直接读取该路径，已通过 ContentResolver 读取文本内容。")
+        if (attachment.truncated) {
+            append("内容过长，以下内容已截断。")
+        }
+        append("\n   内容：\n")
+        append(textContent.ifBlank { "（文件内容为空）" })
+    }
+
+    private fun ChatAttachment.toDataUrl(): String {
+        val resolvedMimeType = mimeType
+            ?.takeIf { it.startsWith("image/", ignoreCase = true) }
+            ?: "image/jpeg"
+        return "data:$resolvedMimeType;base64,$base64Data"
     }
 
     private fun buildCompressionSystemPrompt(): String {
@@ -507,7 +620,7 @@ object ChatApiClient {
                     }
                 }
 
-                ChatRole.User -> "【用户】\n${message.content}"
+                ChatRole.User -> "【用户】\n${buildUserTextContent(message)}"
 
                 ChatRole.Assistant -> buildString {
                     append("【助手】\n")

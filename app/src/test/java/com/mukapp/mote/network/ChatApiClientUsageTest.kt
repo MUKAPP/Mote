@@ -1,11 +1,70 @@
 package com.mukapp.mote.network
 
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
+import com.mukapp.mote.data.model.ChatMessage
+import com.mukapp.mote.data.model.ChatRole
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatApiClientUsageTest {
+
+    @Test
+    fun buildApiMessageUsesImageContentPartsForImageAttachments() {
+        val message = ChatMessage(
+            role = ChatRole.User,
+            content = "看看这张图",
+            attachments = listOf(
+                ChatAttachment(
+                    type = ChatAttachmentType.Image,
+                    displayName = "photo.png",
+                    mimeType = "image/png",
+                    path = "content://docs/photo.png",
+                    base64Data = "aW1n"
+                )
+            )
+        )
+
+        val content = ChatApiClient.buildApiMessage(message).getJSONArray("content")
+
+        assertEquals("text", content.getJSONObject(0).getString("type"))
+        assertTrue(content.getJSONObject(0).getString("text").contains("看看这张图"))
+        assertTrue(content.getJSONObject(0).getString("text").contains("图片已作为 base64"))
+        assertEquals("image_url", content.getJSONObject(1).getString("type"))
+        assertEquals(
+            "data:image/png;base64,aW1n",
+            content.getJSONObject(1).getJSONObject("image_url").getString("url")
+        )
+    }
+
+    @Test
+    fun buildApiMessageIncludesContentResolverTextForUnreadableTextFile() {
+        val message = ChatMessage(
+            role = ChatRole.User,
+            content = "总结文件",
+            attachments = listOf(
+                ChatAttachment(
+                    type = ChatAttachmentType.File,
+                    displayName = "notes.txt",
+                    mimeType = "text/plain",
+                    path = "content://docs/notes.txt",
+                    directReadable = false,
+                    textContent = "第一行\n第二行",
+                    truncated = true
+                )
+            )
+        )
+
+        val content = ChatApiClient.buildApiMessage(message).getString("content")
+
+        assertTrue(content.contains("总结文件"))
+        assertTrue(content.contains("路径：content://docs/notes.txt"))
+        assertTrue(content.contains("第一行\n第二行"))
+        assertTrue(content.contains("内容过长"))
+    }
 
     @Test
     fun parseTokenUsageSupportsInputAndOutputTokenNames() {

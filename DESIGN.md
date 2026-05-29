@@ -115,7 +115,8 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 ### 聊天输入框 (Chat Input)
 
 - 底部悬浮，保持现有圆角毛玻璃实现不变
-- 内部：多行 EditText + 圆形发送按钮
+- 内部：附件加号按钮 + 多行 EditText + 圆形发送按钮
+- 附件预览：选择图片/文件后在输入框上方显示一行小号摘要，可一键清空
 - 发送按钮：Primary 填充色，On Primary 图标色
 
 ### 设置页输入框 (TextInputLayout)
@@ -129,7 +130,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 | 角色 | 背景 | 特征 |
 |------|------|------|
-| 用户消息 | User Message Card 色（Primary 10%） | 纯文本，右下角操作按钮 |
+| 用户消息 | User Message Card 色（Primary 10%） | 文本 + 附件摘要，右下角操作按钮 |
 | AI 消息 | Card 色（Black/White 5%） | "AI" 标签（Primary 色）+ Markdown 渲染 + 操作按钮 |
 | 工具结果 | Card Nested 色 | 可折叠，12dp 圆角，等宽字体显示参数和结果 |
 

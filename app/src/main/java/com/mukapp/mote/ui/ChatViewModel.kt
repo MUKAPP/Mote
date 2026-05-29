@@ -14,6 +14,8 @@ import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
@@ -99,6 +101,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _draftMessage = MutableLiveData("")
     val draftMessage: LiveData<String> = _draftMessage
 
+    private val _draftAttachments = MutableLiveData<List<ChatAttachment>>(emptyList())
+    val draftAttachments: LiveData<List<ChatAttachment>> = _draftAttachments
+
     private val _conversationSummaries = MutableLiveData<List<ConversationSummary>>(emptyList())
     val conversationSummaries: LiveData<List<ConversationSummary>> = _conversationSummaries
 
@@ -146,6 +151,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _draftMessage.value = value
     }
 
+    fun addDraftAttachment(attachment: ChatAttachment) {
+        if (_isSending.value == true) {
+            return
+        }
+        _draftAttachments.value = _draftAttachments.value.orEmpty() + attachment
+    }
+
+    fun clearDraftAttachments() {
+        if (_isSending.value == true) {
+            return
+        }
+        _draftAttachments.value = emptyList()
+    }
+
     fun reloadSettings() {
         _savedSettings.value = ApiSettingsStore.load(appContext)
         MoteLog.d(logComponent, "已重新加载设置。")
@@ -189,6 +208,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             MoteLog.event("已新建对话", "conversationId" to MoteLog.shortId(newConversationId))
         )
         _draftMessage.value = ""
+        _draftAttachments.value = emptyList()
         publishMessagesImmediately()
         persistCurrentConversationIdAsync(
             conversationId = newConversationId,
@@ -225,6 +245,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 applyConversationState(historyState)
                 _draftMessage.value = ""
+                _draftAttachments.value = emptyList()
                 persistCurrentConversationIdAsync(conversationId, requestVersion)
                 MoteLog.i(
                     logComponent,
@@ -293,6 +314,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (replacementState != null) {
                     applyConversationState(replacementState)
+                    _draftMessage.value = ""
+                    _draftAttachments.value = emptyList()
                 } else {
                     uiMessagesInternal.clear()
                     conversationMessagesInternal.clear()
@@ -307,6 +330,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         allowMissingConversation = true
                     )
                     _draftMessage.value = ""
+                    _draftAttachments.value = emptyList()
                     publishMessagesImmediately()
                 }
                 _conversationSummaries.value = summaries
@@ -371,7 +395,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage() {
         val content = _draftMessage.value.orEmpty().trim()
-        if (content.isEmpty() || _isSending.value == true) {
+        val attachments = _draftAttachments.value.orEmpty()
+        if ((content.isEmpty() && attachments.isEmpty()) || _isSending.value == true) {
             return
         }
 
@@ -388,7 +413,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         markStateChanged()
         val isFirstUserMessage = uiMessagesInternal.none { it.role == ChatRole.User }
-        val userMessage = ChatMessage(role = ChatRole.User, content = content)
+        val titleSeed = content.ifBlank { buildAttachmentTitleSeed(attachments) }
+        val userMessage = ChatMessage(
+            role = ChatRole.User,
+            content = content,
+            attachments = attachments
+        )
         uiMessagesInternal += userMessage
         conversationMessagesInternal += userMessage
         MoteLog.i(
@@ -398,6 +428,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "conversationId" to MoteLog.shortId(_currentConversationId.value),
                 "firstUserMessage" to isFirstUserMessage,
                 "userMessageLength" to content.length,
+                "attachments" to attachments.size,
                 "uiMessages" to uiMessagesInternal.size,
                 "conversationMessages" to conversationMessagesInternal.size,
                 "contextSummaries" to contextSummariesInternal.size,
@@ -406,9 +437,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
         if (isFirstUserMessage) {
-            currentConversationTitle = buildFallbackTitle(content)
+            currentConversationTitle = buildFallbackTitle(titleSeed)
         }
         _draftMessage.value = ""
+        _draftAttachments.value = emptyList()
 
         val assistantId = UUID.randomUUID().toString()
         uiMessagesInternal += ChatMessage(
@@ -505,7 +537,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         )
                         if (isFirstUserMessage) {
-                            generateConversationTitleAsync(settings, content)
+                            generateConversationTitleAsync(settings, titleSeed)
                         }
                         return@runCatching finalReply
                     }
@@ -615,7 +647,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         )
                         if (isFirstUserMessage) {
-                            generateConversationTitleAsync(settings, content)
+                            generateConversationTitleAsync(settings, titleSeed)
                         }
                         return@runCatching finalContent
                     }
@@ -710,7 +742,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 publishMessagesImmediately()
                 persistConversationAsync()
                 if (isFirstUserMessage) {
-                    generateConversationTitleAsync(settings, content)
+                    generateConversationTitleAsync(settings, titleSeed)
                 }
             }
 
@@ -804,6 +836,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .map { it.id }
             .toSet()
         _draftMessage.value = message.content
+        _draftAttachments.value = message.attachments
         repeat(uiMessagesInternal.size - index) {
             uiMessagesInternal.removeAt(uiMessagesInternal.lastIndex)
         }
@@ -861,9 +894,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         rebuildConversationAfterUiMutation(emptySet())
         val userIndex = uiMessagesInternal.lastIndex
         if (userIndex >= 0 && uiMessagesInternal[userIndex].role == ChatRole.User) {
-            val userContent = uiMessagesInternal[userIndex].content
-            val affectedUserMessageIds = setOf(uiMessagesInternal[userIndex].id)
+            val userMessage = uiMessagesInternal[userIndex]
+            val userContent = userMessage.content
+            val userAttachments = userMessage.attachments
+            val affectedUserMessageIds = setOf(userMessage.id)
             _draftMessage.value = userContent
+            _draftAttachments.value = userAttachments
             uiMessagesInternal.removeAt(userIndex)
             rebuildConversationAfterUiMutation(affectedUserMessageIds)
             publishMessagesImmediately()
@@ -2129,6 +2165,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return normalizeTitle(message).ifBlank { DefaultConversationTitle }
         }
 
+        fun buildAttachmentTitleSeed(attachments: List<ChatAttachment>): String {
+            return attachments.joinToString(separator = " ") { attachment ->
+                val label = when (attachment.type) {
+                    ChatAttachmentType.Image -> "图片"
+                    ChatAttachmentType.File -> "文件"
+                }
+                "$label：${attachment.displayName.ifBlank { attachment.path }}"
+            }
+        }
+
         fun normalizeTitle(value: String): String {
             val compact = value
                 .replace(Regex("[\\r\\n\\t]+"), " ")
@@ -2152,6 +2198,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 # 环境规范
                 - 基础环境：Android busybox（执行器已自动注入相关环境变量）。
                 - 路径约定：优先操作 `/sdcard/` 或应用私有目录。访问其他目录时需注意 Android 沙盒机制与读写权限限制。
+                - 附件约定：用户消息可能附带图片或文件；图片会以 base64 图片内容随消息提供，文件在可直接读取时只提供路径，否则会附带通过 ContentResolver 读取到的文本内容。
                 
                 # 安全协议（最高优先级）
                 - 拦截机制：当你调用高风险指令（如 `rm` 删除、`mv` 覆盖、修改敏感配置等）时，宿主应用会自动拦截并弹窗要求用户确认。

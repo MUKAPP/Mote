@@ -7,6 +7,8 @@ import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
@@ -655,10 +657,22 @@ object ChatHistoryStore {
     }
 
     private fun buildFallbackTitle(messages: List<ChatMessage>): String {
-        val firstUserMessage = messages.firstOrNull { it.role == ChatRole.User }
+        val firstUser = messages.firstOrNull { it.role == ChatRole.User }
+        val firstUserMessage = firstUser
             ?.content
             .orEmpty()
+            .ifBlank { buildAttachmentTitleSeed(firstUser?.attachments.orEmpty()) }
         return normalizeTitle(firstUserMessage).ifBlank { DefaultConversationTitle }
+    }
+
+    private fun buildAttachmentTitleSeed(attachments: List<ChatAttachment>): String {
+        return attachments.joinToString(separator = " ") { attachment ->
+            val label = when (attachment.type) {
+                ChatAttachmentType.Image -> "图片"
+                ChatAttachmentType.File -> "文件"
+            }
+            "$label：${attachment.displayName.ifBlank { attachment.path }}"
+        }
     }
 
     private fun normalizeTitle(value: String): String {
@@ -699,6 +713,9 @@ object ChatHistoryStore {
                                     message.contextSummarySourceIds.forEach { sourceId -> put(sourceId) }
                                 }
                             )
+                        }
+                        if (message.attachments.isNotEmpty()) {
+                            put("attachments", serializeAttachments(message.attachments))
                         }
                         if (message.toolCalls.isNotEmpty()) {
                             put(
@@ -747,6 +764,28 @@ object ChatHistoryStore {
                         )
                         put("createdAt", summary.createdAt)
                         put("updatedAt", summary.updatedAt)
+                    }
+                )
+            }
+        }
+    }
+
+    private fun serializeAttachments(attachments: List<ChatAttachment>): JSONArray {
+        return JSONArray().apply {
+            attachments.forEach { attachment ->
+                put(
+                    JSONObject().apply {
+                        put("id", attachment.id)
+                        put("type", attachment.type.storageValue)
+                        put("displayName", attachment.displayName)
+                        attachment.mimeType?.let { put("mimeType", it) }
+                        put("path", attachment.path)
+                        put("directReadable", attachment.directReadable)
+                        if (attachment.textContent != null) {
+                            put("textContent", attachment.textContent)
+                        }
+                        attachment.base64Data?.let { put("base64Data", it) }
+                        put("truncated", attachment.truncated)
                     }
                 )
             }
@@ -802,6 +841,7 @@ object ChatHistoryStore {
                         toolArguments = item.optString("toolArguments").takeIf { it.isNotBlank() },
                         toolCalls = deserializeToolCalls(item.optJSONArray("toolCalls")),
                         assistantParts = deserializeAssistantParts(item.optJSONArray("assistantParts")),
+                        attachments = deserializeAttachments(item.optJSONArray("attachments")),
                         excludeFromConversation = item.optBoolean("excludeFromConversation", false),
                         isContextSummary = item.optBoolean("isContextSummary", false),
                         contextSummarySourceIds = deserializeStringList(item.optJSONArray("contextSummarySourceIds"))
@@ -851,6 +891,45 @@ object ChatHistoryStore {
                 array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
             }
         }
+    }
+
+    private fun deserializeAttachments(attachmentsArray: JSONArray?): List<ChatAttachment> {
+        if (attachmentsArray == null) {
+            return emptyList()
+        }
+
+        return buildList {
+            for (index in 0 until attachmentsArray.length()) {
+                val item = attachmentsArray.optJSONObject(index) ?: continue
+                val type = item.optString("type").toChatAttachmentTypeOrNull() ?: continue
+                val path = item.optString("path")
+                val displayName = item.optString("displayName").ifBlank { path }
+                if (displayName.isBlank() && path.isBlank()) {
+                    continue
+                }
+                add(
+                    ChatAttachment(
+                        id = item.optString("id", UUID.randomUUID().toString()),
+                        type = type,
+                        displayName = displayName,
+                        mimeType = item.optString("mimeType").takeIf { it.isNotBlank() },
+                        path = path,
+                        directReadable = item.optBoolean("directReadable", false),
+                        textContent = if (item.has("textContent") && !item.isNull("textContent")) {
+                            item.optString("textContent")
+                        } else {
+                            null
+                        },
+                        base64Data = item.optString("base64Data").takeIf { it.isNotBlank() },
+                        truncated = item.optBoolean("truncated", false)
+                    )
+                )
+            }
+        }
+    }
+
+    private fun String.toChatAttachmentTypeOrNull(): ChatAttachmentType? {
+        return ChatAttachmentType.values().firstOrNull { it.storageValue == this }
     }
 
     private fun deserializeAssistantParts(partsArray: JSONArray?): List<AssistantPart> {

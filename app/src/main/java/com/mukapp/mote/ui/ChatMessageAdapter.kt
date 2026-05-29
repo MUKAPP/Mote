@@ -10,6 +10,7 @@ import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.ItemChatMessageBinding
@@ -396,11 +397,12 @@ class ChatMessageAdapter(
         }
 
         fun bind(message: ChatMessage, position: Int) {
-            binding.textContent.text = message.content
-            binding.btnCopy.isEnabled = message.content.isNotBlank()
+            val displayText = buildUserDisplayText(message)
+            binding.textContent.text = displayText
+            binding.btnCopy.isEnabled = displayText.isNotBlank()
 
             val isExpanded = expandedUserMessageIds.contains(message.id)
-            val lineCount = message.content.count { it == '\n' } + 1
+            val lineCount = displayText.count { it == '\n' } + 1
             val needsCollapse = lineCount > COLLAPSED_MAX_LINES
 
             if (needsCollapse) {
@@ -436,6 +438,51 @@ class ChatMessageAdapter(
     private fun hasCopyableMarkdownParts(message: ChatMessage): Boolean {
         return message.assistantParts.any { part ->
             part is AssistantMarkdownPart && part.text.isNotBlank()
+        }
+    }
+
+    private fun buildUserDisplayText(message: ChatMessage): String {
+        if (message.attachments.isEmpty()) {
+            return message.content
+        }
+
+        return buildString {
+            if (message.content.isNotBlank()) {
+                append(message.content)
+                append("\n\n")
+            }
+            append("附件：")
+            message.attachments.forEachIndexed { index, attachment ->
+                append('\n')
+                append(index + 1)
+                append(". ")
+                append(
+                    when (attachment.type) {
+                        ChatAttachmentType.Image -> "图片"
+                        ChatAttachmentType.File -> "文件"
+                    }
+                )
+                append("：")
+                append(attachment.displayName.ifBlank { attachment.path })
+                when (attachment.type) {
+                    ChatAttachmentType.Image -> append("（已作为 base64 图片发送）")
+                    ChatAttachmentType.File -> {
+                        val status = when {
+                            attachment.directReadable -> "已发送可直接读取的路径"
+                            attachment.textContent != null && attachment.truncated -> "已读取文本内容，内容过长已截断"
+                            attachment.textContent != null -> "已读取文本内容"
+                            else -> "已发送文件信息"
+                        }
+                        append('（')
+                        append(status)
+                        append('）')
+                    }
+                }
+                attachment.path.takeIf { it.isNotBlank() && it != attachment.displayName }?.let { path ->
+                    append("\n   路径：")
+                    append(path)
+                }
+            }
         }
     }
 

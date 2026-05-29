@@ -2,17 +2,30 @@ package com.mukapp.mote.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.os.SystemClock
+import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.util.Base64
 import android.view.LayoutInflater
+import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.webkit.MimeTypeMap
+import android.widget.PopupMenu
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
@@ -30,6 +43,8 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.AssistantMarkdownPart
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.FragmentChatBinding
@@ -38,6 +53,13 @@ import com.mukapp.mote.util.dpInt
 import kotlin.math.max
 import androidx.core.view.isVisible
 import eightbitlab.com.blurview.BlurView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
+import java.util.Locale
 
 class ChatFragment : Fragment() {
     private var _binding: FragmentChatBinding? = null
@@ -46,10 +68,17 @@ class ChatFragment : Fragment() {
     private val viewModel: ChatViewModel by activityViewModels()
     private lateinit var adapter: ChatMessageAdapter
     private val parseCache = MarkdownParseCache()
+    private val imagePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { handlePickedAttachment(it, AttachmentPickerKind.Image) }
+    }
+    private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { handlePickedAttachment(it, AttachmentPickerKind.File) }
+    }
 
     private var latestMessages: List<ChatMessage> = emptyList()
     private var latestSettings: ApiSettings = ApiSettings()
     private var latestIsSending: Boolean = false
+    private var latestDraftAttachments: List<ChatAttachment> = emptyList()
     private var latestShellConfirmation: ShellConfirmationUiState? = null
     private var followOutput: Boolean = true
     private var userScrolling: Boolean = false
@@ -336,6 +365,14 @@ class ChatFragment : Fragment() {
                 viewModel.updateDraftMessage(editable?.toString().orEmpty())
             }
         }
+        binding.btnAddAttachment.setOnClickListener {
+            if (!latestIsSending) {
+                showAttachmentMenu()
+            }
+        }
+        binding.btnClearAttachments.setOnClickListener {
+            viewModel.clearDraftAttachments()
+        }
         binding.btnSend.setOnClickListener {
             if (latestIsSending) {
                 viewModel.stopGenerating()
@@ -351,6 +388,67 @@ class ChatFragment : Fragment() {
             viewModel.cancelPendingShellCommand()
         }
         renderSendButton()
+    }
+
+    private fun showAttachmentMenu() {
+        val popup = PopupMenu(requireContext(), binding.btnAddAttachment)
+        popup.menu.add(Menu.NONE, MenuAddImage, Menu.NONE, R.string.action_add_image)
+        popup.menu.add(Menu.NONE, MenuAddFile, Menu.NONE, R.string.action_add_file)
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                MenuAddImage -> {
+                    imagePickerLauncher.launch(arrayOf("image/*"))
+                    true
+                }
+
+                MenuAddFile -> {
+                    filePickerLauncher.launch(arrayOf("*/*"))
+                    true
+                }
+
+                else -> false
+            }
+        }
+        popup.show()
+    }
+
+    private fun handlePickedAttachment(uri: Uri, requestedKind: AttachmentPickerKind) {
+        persistReadPermission(uri)
+        val appContext = requireContext().applicationContext
+        viewLifecycleOwner.lifecycleScope.launch {
+            val attachment = withContext(Dispatchers.IO) {
+                resolvePickedAttachment(appContext, uri, requestedKind)
+            }
+            if (!isAdded) {
+                return@launch
+            }
+            if (attachment == null) {
+                val errorRes = when (requestedKind) {
+                    AttachmentPickerKind.Image -> R.string.attachment_error_image_read_failed
+                    AttachmentPickerKind.File -> R.string.attachment_error_file_read_failed
+                }
+                Toast.makeText(requireContext(), getString(errorRes), Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            viewModel.addDraftAttachment(attachment)
+            if (attachment.type == ChatAttachmentType.File && attachment.truncated) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.attachment_notice_file_truncated),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    private fun persistReadPermission(uri: Uri) {
+        runCatching {
+            requireContext().contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
     }
 
     private fun observeViewModel() {
@@ -387,6 +485,12 @@ class ChatFragment : Fragment() {
             renderSendButton()
         }
 
+        viewModel.draftAttachments.observe(viewLifecycleOwner) { attachments ->
+            latestDraftAttachments = attachments
+            renderAttachmentPreview()
+            renderSendButton()
+        }
+
         viewModel.currentConversationId.observe(viewLifecycleOwner) { conversationId ->
             val previousConversationId = observedConversationId
             observedConversationId = conversationId
@@ -404,7 +508,10 @@ class ChatFragment : Fragment() {
 
     private fun renderSendButton() {
         val sending = latestIsSending
-        binding.btnSend.isEnabled = sending || binding.editMessage.text?.isNotBlank() == true
+        val hasDraft = binding.editMessage.text?.isNotBlank() == true || latestDraftAttachments.isNotEmpty()
+        binding.btnSend.isEnabled = sending || hasDraft
+        binding.btnAddAttachment.isEnabled = !sending
+        binding.btnClearAttachments.isEnabled = !sending
         binding.btnSend.contentDescription = getString(
             if (sending) {
                 R.string.action_stop
@@ -419,6 +526,27 @@ class ChatFragment : Fragment() {
                 R.drawable.ic_send
             }
         )
+    }
+
+    private fun renderAttachmentPreview() {
+        val attachments = latestDraftAttachments
+        binding.layoutAttachmentPreview.isVisible = attachments.isNotEmpty()
+        if (attachments.isEmpty()) {
+            binding.textAttachmentPreview.text = ""
+            return
+        }
+
+        val previewText = attachments.joinToString(separator = "，") { attachment ->
+            val name = attachment.displayName.ifBlank { attachment.path }
+            getString(
+                when (attachment.type) {
+                    ChatAttachmentType.Image -> R.string.attachment_preview_image
+                    ChatAttachmentType.File -> R.string.attachment_preview_file
+                },
+                name
+            )
+        }
+        binding.textAttachmentPreview.text = getString(R.string.attachment_preview, previewText)
     }
 
     private fun renderShellConfirmation() {
@@ -777,16 +905,311 @@ class ChatFragment : Fragment() {
         )
     }
 
-    private fun copyMessage(message: ChatMessage) {
-        val copyText = message.assistantParts.asSequence()
-            .mapNotNull { part ->
-                when (part) {
-                    is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
-                    else -> null
-                }
+    private fun resolvePickedAttachment(
+        context: Context,
+        uri: Uri,
+        requestedKind: AttachmentPickerKind
+    ): ChatAttachment? {
+        val displayName = queryDisplayName(context, uri)
+            ?: uri.lastPathSegment
+            ?: "未命名文件"
+        val mimeType = resolveMimeType(context, uri, displayName)
+        val resolvedPath = resolveDirectPath(context, uri)
+        val readablePath = resolvedPath?.takeIf { path ->
+            runCatching { File(path).let { it.isFile && it.canRead() } }.getOrDefault(false)
+        }
+        val attachmentPath = readablePath ?: resolvedPath ?: uri.toString()
+        val effectiveKind = if (requestedKind == AttachmentPickerKind.Image || isImageLike(mimeType, displayName)) {
+            AttachmentPickerKind.Image
+        } else {
+            AttachmentPickerKind.File
+        }
+
+        return when (effectiveKind) {
+            AttachmentPickerKind.Image -> buildImageAttachment(
+                context = context,
+                uri = uri,
+                displayName = displayName,
+                mimeType = mimeType,
+                attachmentPath = attachmentPath,
+                readablePath = readablePath
+            )
+
+            AttachmentPickerKind.File -> buildFileAttachment(
+                context = context,
+                uri = uri,
+                displayName = displayName,
+                mimeType = mimeType,
+                attachmentPath = attachmentPath,
+                readablePath = readablePath
+            )
+        }
+    }
+
+    private fun buildImageAttachment(
+        context: Context,
+        uri: Uri,
+        displayName: String,
+        mimeType: String?,
+        attachmentPath: String,
+        readablePath: String?
+    ): ChatAttachment? {
+        val bytes = readAttachmentBytes(context, uri, readablePath, MaxImageBytes) ?: return null
+        if (bytes.truncated) {
+            return null
+        }
+        return ChatAttachment(
+            type = ChatAttachmentType.Image,
+            displayName = displayName,
+            mimeType = mimeType?.takeIf { it.startsWith("image/", ignoreCase = true) } ?: "image/jpeg",
+            path = attachmentPath,
+            base64Data = Base64.encodeToString(bytes.data, Base64.NO_WRAP)
+        )
+    }
+
+    private fun buildFileAttachment(
+        context: Context,
+        uri: Uri,
+        displayName: String,
+        mimeType: String?,
+        attachmentPath: String,
+        readablePath: String?
+    ): ChatAttachment? {
+        if (readablePath != null) {
+            return ChatAttachment(
+                type = ChatAttachmentType.File,
+                displayName = displayName,
+                mimeType = mimeType,
+                path = readablePath,
+                directReadable = true
+            )
+        }
+
+        if (!isTextLike(mimeType, displayName)) {
+            return null
+        }
+
+        val bytes = readAttachmentBytes(context, uri, directPath = null, maxBytes = MaxTextAttachmentBytes)
+            ?: return null
+        val text = bytes.data.toString(Charsets.UTF_8)
+        return ChatAttachment(
+            type = ChatAttachmentType.File,
+            displayName = displayName,
+            mimeType = mimeType,
+            path = attachmentPath,
+            textContent = text,
+            truncated = bytes.truncated
+        )
+    }
+
+    private fun readAttachmentBytes(
+        context: Context,
+        uri: Uri,
+        directPath: String?,
+        maxBytes: Int
+    ): ReadBytesResult? {
+        return runCatching {
+            val stream = if (directPath != null) {
+                File(directPath).inputStream()
+            } else {
+                context.contentResolver.openInputStream(uri)
+            } ?: return null
+            stream.use { input -> readLimitedBytes(input, maxBytes) }
+        }.getOrNull()
+    }
+
+    private fun readLimitedBytes(input: InputStream, maxBytes: Int): ReadBytesResult {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var truncated = false
+        val readLimit = maxBytes + 1
+        while (true) {
+            val read = input.read(buffer)
+            if (read == -1) {
+                break
             }
-            .joinToString(separator = "\n\n")
-            .ifBlank { message.content }
+            val allowed = readLimit - output.size()
+            if (allowed <= 0) {
+                truncated = true
+                break
+            }
+            output.write(buffer, 0, minOf(read, allowed))
+            if (output.size() > maxBytes) {
+                truncated = true
+                break
+            }
+        }
+        val data = output.toByteArray()
+        return if (data.size > maxBytes) {
+            ReadBytesResult(data.copyOf(maxBytes), truncated = true)
+        } else {
+            ReadBytesResult(data, truncated = truncated)
+        }
+    }
+
+    private fun queryDisplayName(context: Context, uri: Uri): String? {
+        if (uri.scheme == ContentResolver.SCHEME_FILE) {
+            return uri.path?.let { File(it).name }
+        }
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    return@use null
+                }
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0) cursor.getString(index) else null
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
+    private fun resolveMimeType(context: Context, uri: Uri, displayName: String): String? {
+        val resolverType = runCatching { context.contentResolver.getType(uri) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+        if (resolverType != null && !resolverType.equals("application/octet-stream", ignoreCase = true)) {
+            return resolverType
+        }
+
+        val extension = displayName.substringAfterLast('.', missingDelimiterValue = "")
+            .ifBlank { MimeTypeMap.getFileExtensionFromUrl(uri.toString()) }
+            .lowercase(Locale.ROOT)
+        return extension.takeIf { it.isNotBlank() }
+            ?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
+            ?: resolverType
+    }
+
+    private fun resolveDirectPath(context: Context, uri: Uri): String? {
+        if (uri.scheme == ContentResolver.SCHEME_FILE) {
+            return uri.path
+        }
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
+            return null
+        }
+
+        return runCatching {
+            if (!DocumentsContract.isDocumentUri(context, uri)) {
+                return@runCatching queryDataColumn(context, uri)
+            }
+            val documentId = DocumentsContract.getDocumentId(uri)
+            when (uri.authority) {
+                "com.android.externalstorage.documents" -> resolveExternalStorageDocumentPath(documentId)
+                "com.android.providers.downloads.documents" -> resolveDownloadsDocumentPath(context, documentId)
+                "com.android.providers.media.documents" -> resolveMediaDocumentPath(context, documentId)
+                else -> null
+            }
+        }.getOrNull()
+    }
+
+    private fun resolveExternalStorageDocumentPath(documentId: String): String? {
+        val parts = documentId.split(':', limit = 2)
+        if (parts.size != 2) {
+            return null
+        }
+        val root = when {
+            parts[0].equals("primary", ignoreCase = true) -> Environment.getExternalStorageDirectory().absolutePath
+            parts[0].equals("home", ignoreCase = true) -> File(
+                Environment.getExternalStorageDirectory(),
+                "Documents"
+            ).absolutePath
+            else -> "/storage/${parts[0]}"
+        }
+        return File(root, parts[1]).absolutePath
+    }
+
+    private fun resolveDownloadsDocumentPath(context: Context, documentId: String): String? {
+        if (documentId.startsWith("raw:")) {
+            return documentId.removePrefix("raw:")
+        }
+        val id = documentId.toLongOrNull() ?: return null
+        val uri = ContentUris.withAppendedId(
+            Uri.parse("content://downloads/public_downloads"),
+            id
+        )
+        return queryDataColumn(context, uri)
+    }
+
+    private fun resolveMediaDocumentPath(context: Context, documentId: String): String? {
+        val parts = documentId.split(':', limit = 2)
+        if (parts.size != 2) {
+            return null
+        }
+        val contentUri = when (parts[0]) {
+            "image" -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            "video" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            else -> MediaStore.Files.getContentUri("external")
+        }
+        return queryDataColumn(
+            context = context,
+            uri = contentUri,
+            selection = "_id=?",
+            selectionArgs = arrayOf(parts[1])
+        )
+    }
+
+    private fun queryDataColumn(
+        context: Context,
+        uri: Uri,
+        selection: String? = null,
+        selectionArgs: Array<String>? = null
+    ): String? {
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                selection,
+                selectionArgs,
+                null
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    return@use null
+                }
+                val index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                if (index >= 0) cursor.getString(index) else null
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
+    private fun isImageLike(mimeType: String?, displayName: String): Boolean {
+        if (mimeType?.startsWith("image/", ignoreCase = true) == true) {
+            return true
+        }
+        return displayName.substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase(Locale.ROOT) in ImageExtensions
+    }
+
+    private fun isTextLike(mimeType: String?, displayName: String): Boolean {
+        val normalizedMimeType = mimeType.orEmpty().lowercase(Locale.ROOT)
+        if (normalizedMimeType.startsWith("text/")) {
+            return true
+        }
+        if (normalizedMimeType in TextMimeTypes) {
+            return true
+        }
+        return displayName.substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase(Locale.ROOT) in TextExtensions
+    }
+
+    private fun copyMessage(message: ChatMessage) {
+        val copyText = if (message.role == ChatRole.User) {
+            buildUserCopyText(message)
+        } else {
+            message.assistantParts.asSequence()
+                .mapNotNull { part ->
+                    when (part) {
+                        is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
+                        else -> null
+                    }
+                }
+                .joinToString(separator = "\n\n")
+                .ifBlank { message.content }
+        }
         val clipboard =
             requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(
@@ -798,6 +1221,44 @@ class ChatFragment : Fragment() {
         Toast.makeText(requireContext(), getString(R.string.action_copy), Toast.LENGTH_SHORT).show()
     }
 
+    private fun buildUserCopyText(message: ChatMessage): String {
+        if (message.attachments.isEmpty()) {
+            return message.content
+        }
+
+        return buildString {
+            if (message.content.isNotBlank()) {
+                append(message.content)
+                append("\n\n")
+            }
+            append("附件：")
+            message.attachments.forEachIndexed { index, attachment ->
+                append('\n')
+                append(index + 1)
+                append(". ")
+                append(
+                    when (attachment.type) {
+                        ChatAttachmentType.Image -> "图片"
+                        ChatAttachmentType.File -> "文件"
+                    }
+                )
+                append("：")
+                append(attachment.displayName.ifBlank { attachment.path })
+                attachment.path.takeIf { it.isNotBlank() }?.let { path ->
+                    append("\n   路径：")
+                    append(path)
+                }
+                if (attachment.type == ChatAttachmentType.File && !attachment.directReadable && attachment.textContent != null) {
+                    append("\n   内容：\n")
+                    append(attachment.textContent)
+                    if (attachment.truncated) {
+                        append("\n（内容过长，已截断）")
+                    }
+                }
+            }
+        }
+    }
+
     private fun showConfirmationDialog(titleResId: Int, messageResId: Int, onConfirm: () -> Unit) {
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(titleResId)
@@ -807,6 +1268,16 @@ class ChatFragment : Fragment() {
             .show()
     }
 
+    private enum class AttachmentPickerKind {
+        Image,
+        File
+    }
+
+    private data class ReadBytesResult(
+        val data: ByteArray,
+        val truncated: Boolean
+    )
+
     private companion object {
         const val MarkdownPreparseThrottleMs = 64L
         const val MarkdownPreparseBeforeItems = 8
@@ -814,5 +1285,55 @@ class ChatFragment : Fragment() {
         const val MarkdownPreparseFallbackTailItems = 18
         const val MarkdownPreparseMaxEntries = 32
         const val InitialImmediateScrollThreshold = 20
+        const val MenuAddImage = 1
+        const val MenuAddFile = 2
+        const val MaxImageBytes = 20 * 1024 * 1024
+        const val MaxTextAttachmentBytes = 100_000
+
+        val ImageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
+        val TextExtensions = setOf(
+            "txt",
+            "md",
+            "markdown",
+            "json",
+            "xml",
+            "html",
+            "htm",
+            "css",
+            "js",
+            "ts",
+            "kt",
+            "java",
+            "c",
+            "cpp",
+            "h",
+            "hpp",
+            "py",
+            "rs",
+            "go",
+            "sh",
+            "bash",
+            "zsh",
+            "csv",
+            "tsv",
+            "yaml",
+            "yml",
+            "toml",
+            "ini",
+            "log",
+            "sql"
+        )
+        val TextMimeTypes = setOf(
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/x-javascript",
+            "application/ecmascript",
+            "application/xhtml+xml",
+            "application/csv",
+            "application/sql",
+            "application/x-sh",
+            "application/x-shellscript"
+        )
     }
 }

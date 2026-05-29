@@ -9,6 +9,23 @@ enum class ChatRole(val apiValue: String) {
     Tool(apiValue = "tool")
 }
 
+enum class ChatAttachmentType(val storageValue: String) {
+    Image(storageValue = "image"),
+    File(storageValue = "file")
+}
+
+data class ChatAttachment(
+    val id: String = UUID.randomUUID().toString(),
+    val type: ChatAttachmentType,
+    val displayName: String,
+    val mimeType: String? = null,
+    val path: String,
+    val directReadable: Boolean = false,
+    val textContent: String? = null,
+    val base64Data: String? = null,
+    val truncated: Boolean = false
+)
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: ChatRole,
@@ -18,6 +35,7 @@ data class ChatMessage(
     val toolArguments: String? = null,
     val toolCalls: List<AiToolCall> = emptyList(),
     val assistantParts: List<AssistantPart> = emptyList(),
+    val attachments: List<ChatAttachment> = emptyList(),
     val excludeFromConversation: Boolean = false,
     val isContextSummary: Boolean = false,
     val contextSummarySourceIds: List<String> = emptyList()
