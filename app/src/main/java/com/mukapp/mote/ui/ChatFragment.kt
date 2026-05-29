@@ -58,15 +58,9 @@ class ChatFragment : Fragment() {
     private var observedConversationId: String? = null
     private var renderMessagesPending: Boolean = false
     private var lastRenderedMessageCount: Int = 0
-    private var lastStreamingMessageSignature: String? = null
-    private var lastStreamingScrollUptime: Long = 0L
     private var scrollAfterLayoutPending: Boolean = false
     private val smoothScrollToBottomRunnable = Runnable { scrollToBottomIfScrollable(animated = true) }
     private val immediateScrollToBottomRunnable = Runnable { scrollToBottom(animated = false) }
-    private val throttledSmoothScrollToBottomRunnable = Runnable {
-        lastStreamingScrollUptime = SystemClock.uptimeMillis()
-        scrollToBottomIfScrollable(animated = true)
-    }
     private val markdownPreparseRunnable = Runnable { runMarkdownPreparseForViewport() }
     private var lastMarkdownPreparseSignature: String? = null
     private var lastMarkdownPreparseUptime: Long = 0L
@@ -227,7 +221,6 @@ class ChatFragment : Fragment() {
         parseCache.clear()
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
-        binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(markdownPreparseRunnable)
         scrollAfterLayoutPending = false
         binding.recyclerMessages.adapter = null
@@ -295,8 +288,11 @@ class ChatFragment : Fragment() {
             ) {
                 when (newState) {
                     androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_DRAGGING -> {
-                        // 仅用户手指触摸拖拽时标记
+                        // 用户开始触摸拖拽时立即取消自动吸附，避免流式输出的延迟滚动抢滚动。
                         userScrolling = true
+                        followOutput = false
+                        recyclerView.removeCallbacks(smoothScrollToBottomRunnable)
+                        recyclerView.removeCallbacks(immediateScrollToBottomRunnable)
                     }
 
                     androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_IDLE -> {
@@ -514,19 +510,12 @@ class ChatFragment : Fragment() {
 
     private fun renderMessages() {
         val previousMessageCount = lastRenderedMessageCount
-        val previousStreamingSignature = lastStreamingMessageSignature
         adapter.submitMessages(latestMessages, latestIsSending)
 
         // 只预解析当前可见窗口及邻近消息，避免长历史加载时一次性扫描和解析完整对话。
         scheduleMarkdownPreparse(immediate = true)
 
-        val currentStreamingSignature = currentStreamingMessageSignature()
-        val isStreamingContentUpdate = latestIsSending &&
-                latestMessages.size == previousMessageCount &&
-                currentStreamingSignature != null &&
-                currentStreamingSignature == previousStreamingSignature
         lastRenderedMessageCount = latestMessages.size
-        lastStreamingMessageSignature = currentStreamingSignature
 
         if (adapter.itemCount <= 0) {
             pendingImmediateScrollToBottom = false
@@ -536,9 +525,9 @@ class ChatFragment : Fragment() {
         val shouldJumpToBottom = pendingImmediateScrollToBottom ||
                 (previousMessageCount == 0 && adapter.itemCount > InitialImmediateScrollThreshold)
         if (followOutput) {
-            val animated = !shouldJumpToBottom
+            val animated = !latestIsSending && !shouldJumpToBottom
             pendingImmediateScrollToBottom = false
-            postScrollToBottom(animated, throttle = animated && isStreamingContentUpdate)
+            postScrollToBottom(animated)
         }
     }
 
@@ -677,22 +666,15 @@ class ChatFragment : Fragment() {
         return "$firstPosition:$lastPosition:${entries.size}:$hash"
     }
 
-    private fun postScrollToBottom(animated: Boolean, throttle: Boolean = false) {
+    private fun postScrollToBottom(animated: Boolean) {
         val binding = _binding ?: return
-        binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
-        binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
-        if (!throttle) {
-            binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
-        }
-        if (throttle) {
-            val now = SystemClock.uptimeMillis()
-            val delay = (StreamingScrollThrottleMs - (now - lastStreamingScrollUptime))
-                .coerceAtLeast(0L)
-            binding.recyclerMessages.removeCallbacks(throttledSmoothScrollToBottomRunnable)
-            binding.recyclerMessages.postDelayed(throttledSmoothScrollToBottomRunnable, delay)
+        val recyclerView = binding.recyclerMessages
+        if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
             return
         }
-        binding.recyclerMessages.post(
+        recyclerView.removeCallbacks(smoothScrollToBottomRunnable)
+        recyclerView.removeCallbacks(immediateScrollToBottomRunnable)
+        recyclerView.post(
             if (animated) {
                 smoothScrollToBottomRunnable
             } else {
@@ -708,30 +690,41 @@ class ChatFragment : Fragment() {
             return
         }
         val recyclerView = binding.recyclerMessages
+        if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
+            return
+        }
         if (animated) {
             recyclerView.smoothScrollToPosition(lastPosition)
             return
         }
 
-        recyclerView.stopScroll()
         val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
         if (layoutManager == null) {
+            recyclerView.stopScroll()
             recyclerView.scrollToPosition(lastPosition)
             return
         }
 
-        layoutManager.scrollToPosition(lastPosition)
-        recyclerView.post {
-            if (_binding == null || adapter.itemCount - 1 != lastPosition) {
-                return@post
-            }
-            snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
+        recyclerView.stopScroll()
+        val targetView = recyclerView.findViewHolderForAdapterPosition(lastPosition)?.itemView
+            ?: layoutManager.findViewByPosition(lastPosition)
+        if (targetView != null && targetView.height > 0) {
+            val offset = recyclerView.height -
+                    recyclerView.paddingTop -
+                    recyclerView.paddingBottom -
+                    targetView.height
+            layoutManager.scrollToPositionWithOffset(lastPosition, offset)
+        } else {
+            layoutManager.scrollToPosition(lastPosition)
         }
     }
 
     private fun scrollToBottomIfScrollable(animated: Boolean) {
         val binding = _binding ?: return
         val recyclerView = binding.recyclerMessages
+        if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
+            return
+        }
         if (recyclerView.isLayoutRequested) {
             if (scrollAfterLayoutPending) {
                 return
@@ -762,29 +755,6 @@ class ChatFragment : Fragment() {
             return
         }
         scrollToBottom(animated)
-    }
-
-    private fun currentStreamingMessageSignature(): String? {
-        val message = latestMessages.lastOrNull {
-            it.role == ChatRole.Assistant && (it.assistantParts.isNotEmpty() || it.content.isNotBlank())
-        }
-            ?: return null
-        return message.id
-    }
-
-    private fun snapPositionEndToRecyclerBottom(
-        layoutManager: LinearLayoutManager,
-        position: Int
-    ) {
-        val binding = _binding ?: return
-        val targetView = layoutManager.findViewByPosition(position) ?: return
-        val recyclerView = binding.recyclerMessages
-        val viewportBottom = recyclerView.height - recyclerView.paddingBottom
-        val targetBottom = layoutManager.getDecoratedBottom(targetView)
-        val delta = targetBottom - viewportBottom
-        if (delta != 0) {
-            recyclerView.scrollBy(0, delta)
-        }
     }
 
     private fun renderEmptyState() {
@@ -838,7 +808,6 @@ class ChatFragment : Fragment() {
     }
 
     private companion object {
-        const val StreamingScrollThrottleMs = 80L
         const val MarkdownPreparseThrottleMs = 64L
         const val MarkdownPreparseBeforeItems = 8
         const val MarkdownPreparseAfterItems = 12
