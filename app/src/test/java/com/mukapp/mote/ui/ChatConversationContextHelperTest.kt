@@ -4,6 +4,8 @@ import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantToolPart
+import com.mukapp.mote.data.model.ChatAttachment
+import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ContextSummary
@@ -159,6 +161,35 @@ class ChatConversationContextHelperTest {
                 contextTokens = estimatedTokens
             )
         }
+    }
+
+    @Test
+    fun estimateConversationTokensDoesNotCountImageBase64AsText() {
+        val imageWithoutData = ChatMessage(
+            id = "u1",
+            role = ChatRole.User,
+            content = "看看这张图",
+            attachments = listOf(
+                ChatAttachment(
+                    type = ChatAttachmentType.Image,
+                    displayName = "photo.png",
+                    mimeType = "image/png",
+                    path = "content://docs/photo.png"
+                )
+            )
+        )
+        val imageWithData = imageWithoutData.copy(
+            attachments = listOf(
+                imageWithoutData.attachments.single().copy(
+                    base64Data = "a".repeat(256_000)
+                )
+            )
+        )
+
+        assertEquals(
+            ChatConversationContextHelper.estimateConversationTokens(listOf(imageWithoutData)),
+            ChatConversationContextHelper.estimateConversationTokens(listOf(imageWithData))
+        )
     }
 
     @Test

@@ -385,12 +385,7 @@ internal object ChatConversationContextHelper {
                     estimateTextTokens(attachment.displayName) +
                     estimateTextTokens(attachment.mimeType.orEmpty()) +
                     estimateTextTokens(attachment.path) +
-                    estimateTextTokens(attachment.textContent.orEmpty()) +
-                    if (attachment.type == ChatAttachmentType.Image) {
-                        estimateTextTokens(attachment.base64Data.orEmpty())
-                    } else {
-                        0
-                    }
+                    estimateTextTokens(attachment.textContent.orEmpty())
         }
         return estimateTextTokens(message.role.apiValue) +
                 estimateTextTokens(message.content) +
