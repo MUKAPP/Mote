@@ -639,11 +639,11 @@ object ChatApiClient {
         val toolCalls = linkedMapOf<Int, ToolCallAccumulator>()
         var usage: TokenUsage? = null
 
-        response.body?.source()?.let { source ->
+        response.body?.byteStream()?.bufferedReader(Charsets.UTF_8)?.use { reader ->
             val eventPayload = StringBuilder()
-            while (!source.exhausted()) {
+            while (true) {
                 coroutineContext.ensureActive()
-                val line = source.buffer.readUtf8Line() ?: break
+                val line = reader.readLine() ?: break
                 if (line.isBlank()) {
                     if (eventPayload.isNotEmpty()) {
                         coroutineContext.ensureActive()
