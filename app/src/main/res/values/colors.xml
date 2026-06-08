@@ -9,9 +9,9 @@
     <!-- 背景与表面 -->
     <color name="mote_background">#FFFFFF</color>
     <color name="mote_surface">#FFFFFF</color>
-    <color name="mote_card">#0D000000</color> <!-- Black 5% -->
-    <color name="mote_card_nested">#0D000000</color> <!-- Black 5%（叠加在 Card 上约 10%） -->
-    <color name="mote_user_message_card">#1A57A2DB</color> <!-- Primary 10% -->
+    <color name="mote_card">#14000000</color> <!-- Black 8% -->
+    <color name="mote_card_nested">#14000000</color> <!-- Black 8%（叠加在 Card 上约 16%） -->
+    <color name="mote_user_message_card">#2657A2DB</color> <!-- Primary 15% -->
 
     <!-- 文字 -->
     <color name="mote_on_background">#DE000000</color> <!-- Black 87% -->
@@ -34,7 +34,7 @@
 
     <!-- Markdown 代码高亮 -->
     <color name="markdown_code_block_background">#0D000000</color> <!-- Black 5%（叠加在卡片上） -->
-    <color name="markdown_code_block_header_text">#57606A</color>
+    <color name="markdown_code_block_header_text">#424A53</color>
     <color name="markdown_code_block_text">#24292F</color>
     <color name="markdown_code_block_divider">#14000000</color>
     <color name="markdown_code_block_stroke">#14000000</color>

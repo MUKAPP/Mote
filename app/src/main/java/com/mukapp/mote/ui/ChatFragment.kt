@@ -115,6 +115,7 @@ class ChatFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         setupRecyclerView()
         setupInputArea()
+        setupExampleChips()
         observeViewModel()
 
         binding.recyclerMessages.clipToPadding = false
@@ -364,6 +365,7 @@ class ChatFragment : Fragment() {
             if (!updatingDraft) {
                 viewModel.updateDraftMessage(editable?.toString().orEmpty())
             }
+            updateCharCount()
         }
         binding.btnAddAttachment.setOnClickListener {
             if (!latestIsSending) {
@@ -385,6 +387,69 @@ class ChatFragment : Fragment() {
             viewModel.cancelPendingShellCommand()
         }
         renderSendButton()
+        updateCharCount()
+    }
+
+    private fun updateCharCount() {
+        val text = binding.editMessage.text?.toString().orEmpty()
+        val length = text.length
+        val charCountView = binding.textCharCount
+        
+        // 超过 100 字符时显示字数统计
+        if (length > 100) {
+            charCountView.visibility = View.VISIBLE
+            charCountView.text = length.toString()
+            
+            // 接近 10000 字符时变为警告色
+            if (length >= 9000) {
+                charCountView.setTextColor(
+                    ContextCompat.getColor(requireContext(), R.color.mote_error)
+                )
+            } else {
+                charCountView.setTextColor(
+                    ContextCompat.getColor(requireContext(), R.color.mote_on_background_secondary)
+                )
+            }
+        } else {
+            charCountView.visibility = View.GONE
+        }
+    }
+
+    private fun setupExampleChips() {
+        val chipGroup = binding.emptyPlaceholder.chipGroupExamples
+        chipGroup.removeAllViews()
+        val examples = listOf(
+            R.string.example_question_1,
+            R.string.example_question_2,
+            R.string.example_question_3,
+            R.string.example_question_4
+        )
+        examples.forEach { resId ->
+            val text = getString(resId)
+            val chip = com.google.android.material.chip.Chip(
+                requireContext(),
+                null,
+                com.google.android.material.R.attr.chipStyle
+            ).apply {
+                setChipDrawable(
+                    com.google.android.material.chip.ChipDrawable.createFromAttributes(
+                        context, null, 0, R.style.Widget_Mote_Chip_Attachment_User
+                    )
+                )
+                this.text = text
+                isClickable = true
+                isCheckable = false
+                setOnClickListener {
+                    binding.editMessage.setText(text)
+                    binding.editMessage.setSelection(text.length)
+                    binding.editMessage.requestFocus()
+                    val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE)
+                        as? android.view.inputmethod.InputMethodManager
+                    imm?.showSoftInput(binding.editMessage, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+            chipGroup.addView(chip)
+        }
     }
 
     private fun showAttachmentMenu() {
@@ -906,20 +971,36 @@ class ChatFragment : Fragment() {
         val showEmptyState = latestMessages.isEmpty()
         binding.emptyPlaceholder.root.visibility = if (showEmptyState) View.VISIBLE else View.GONE
         binding.recyclerMessages.visibility = if (showEmptyState) View.INVISIBLE else View.VISIBLE
+        
+        val isConfigured = latestSettings.baseUrl.isNotBlank() && latestSettings.model.isNotBlank()
         binding.emptyPlaceholder.textEmptySubtitle.text = getString(
-            if (latestSettings.baseUrl.isNotBlank() && latestSettings.model.isNotBlank()) {
+            if (isConfigured) {
                 R.string.empty_subtitle_configured
             } else {
                 R.string.empty_subtitle_unconfigured
             }
         )
         binding.emptyPlaceholder.textEmptyTipsBody.text = getString(
-            if (latestSettings.baseUrl.isNotBlank() && latestSettings.model.isNotBlank()) {
+            if (isConfigured) {
                 R.string.empty_tips_configured
             } else {
                 R.string.empty_tips_unconfigured
             }
         )
+        
+        // 仅在已配置时显示示例问题
+        binding.emptyPlaceholder.chipGroupExamples.visibility = if (showEmptyState && isConfigured) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+        
+        // 已配置时隐藏提示卡片
+        binding.emptyPlaceholder.cardTips.visibility = if (isConfigured) {
+            View.GONE
+        } else {
+            View.VISIBLE
+        }
     }
 
     private fun resolvePickedAttachment(

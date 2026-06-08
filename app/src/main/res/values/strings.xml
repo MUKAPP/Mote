@@ -51,6 +51,10 @@
     <string name="empty_tips_title">使用提示</string>
     <string name="empty_tips_configured">支持 Markdown 渲染、工具调用和聊天记录自动保存。</string>
     <string name="empty_tips_unconfigured">需要配置 OpenAI 兼容接口；本地模型服务通常可以留空 API Key。</string>
+    <string name="example_question_1">帮我写个 Python 脚本</string>
+    <string name="example_question_2">解释这段代码的含义</string>
+    <string name="example_question_3">搜索最新技术资讯</string>
+    <string name="example_question_4">分析这个算法的复杂度</string>
     <string name="settings_intro_title">配置 API 设置</string>
     <string name="settings_intro_body">填写聊天接口的基础配置；本地模型服务通常可以留空 API Key。</string>
     <string name="settings_permission_title">文件管理权限</string>

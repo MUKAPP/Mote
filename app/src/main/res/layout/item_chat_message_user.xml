@@ -8,6 +8,7 @@
     android:paddingVertical="8dp">
 
     <com.google.android.material.card.MaterialCardView
+        android:id="@+id/card_message"
         style="@style/Widget.Mote.MessageCard.User"
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
@@ -74,32 +75,6 @@
                     android:minHeight="0dp"
                     android:padding="4dp"
                     app:icon="@drawable/ic_content_copy"
-                    app:iconSize="20dp"
-                    app:iconTint="?attr/colorOnSurfaceVariant" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_edit"
-                    style="@style/Widget.Material3.Button.IconButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:contentDescription="@string/action_edit"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
-                    android:padding="4dp"
-                    app:icon="@drawable/ic_edit"
-                    app:iconSize="20dp"
-                    app:iconTint="?attr/colorOnSurfaceVariant" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_delete"
-                    style="@style/Widget.Material3.Button.IconButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:contentDescription="@string/action_delete"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
-                    android:padding="4dp"
-                    app:icon="@drawable/ic_delete"
                     app:iconSize="20dp"
                     app:iconTint="?attr/colorOnSurfaceVariant" />
             </LinearLayout>

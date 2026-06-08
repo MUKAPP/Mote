@@ -9,9 +9,9 @@
     <!-- 背景与表面 -->
     <color name="mote_background">#0D0E0F</color>
     <color name="mote_surface">#0D0E0F</color>
-    <color name="mote_card">#0DFFFFFF</color> <!-- White 5% -->
-    <color name="mote_card_nested">#0DFFFFFF</color> <!-- White 5%（叠加在 Card 上约 10%） -->
-    <color name="mote_user_message_card">#1A88A8E8</color> <!-- Primary 10% -->
+    <color name="mote_card">#14FFFFFF</color> <!-- White 8% -->
+    <color name="mote_card_nested">#14FFFFFF</color> <!-- White 8%（叠加在 Card 上约 16%） -->
+    <color name="mote_user_message_card">#2688A8E8</color> <!-- Primary 15% -->
 
     <!-- 文字 -->
     <color name="mote_on_background">#DEFFFFFF</color> <!-- White 87% -->

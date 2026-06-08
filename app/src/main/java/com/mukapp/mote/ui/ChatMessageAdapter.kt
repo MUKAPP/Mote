@@ -240,15 +240,47 @@ class ChatMessageAdapter(
             binding.btnCopy.setOnClickListener {
                 currentMessageOrNull()?.let(onCopyMessage)
             }
-            binding.btnEdit.setOnClickListener {
-                currentPositionOrNull()?.let(onEditMessage)
-            }
-            binding.btnDelete.setOnClickListener {
-                currentPositionOrNull()?.let(onDeleteMessage)
-            }
             binding.btnRetry.setOnClickListener {
                 currentPositionOrNull()?.let(onRetryMessage)
             }
+            
+            // 长按卡片弹出菜单
+            binding.cardMessage.setOnLongClickListener {
+                showAssistantPopupMenu(it)
+                true
+            }
+        }
+        
+        private fun showAssistantPopupMenu(view: android.view.View) {
+            val message = currentMessageOrNull() ?: return
+            val position = currentPositionOrNull() ?: return
+            val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
+            
+            val popup = android.widget.PopupMenu(view.context, view)
+            popup.menu.add(0, MENU_EDIT, 0, R.string.action_edit)
+            popup.menu.add(0, MENU_DELETE, 1, R.string.action_delete)
+            if (isLastAiMessage && !isSending) {
+                popup.menu.add(0, MENU_RETRY, 2, R.string.action_retry)
+            }
+            
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    MENU_EDIT -> {
+                        onEditMessage(position)
+                        true
+                    }
+                    MENU_DELETE -> {
+                        onDeleteMessage(position)
+                        true
+                    }
+                    MENU_RETRY -> {
+                        onRetryMessage(position)
+                        true
+                    }
+                    else -> false
+                }
+            }
+            popup.show()
         }
 
         fun clear() {
@@ -372,12 +404,6 @@ class ChatMessageAdapter(
             binding.btnCopy.setOnClickListener {
                 currentMessageOrNull()?.let(onCopyMessage)
             }
-            binding.btnEdit.setOnClickListener {
-                currentPositionOrNull()?.let(onEditMessage)
-            }
-            binding.btnDelete.setOnClickListener {
-                currentPositionOrNull()?.let(onDeleteMessage)
-            }
             binding.btnToggleExpand.setOnClickListener {
                 val message = currentMessageOrNull() ?: return@setOnClickListener
                 val isExpanded = expandedUserMessageIds.contains(message.id)
@@ -395,6 +421,35 @@ class ChatMessageAdapter(
                         itemView.context.getString(R.string.action_collapse)
                 }
             }
+            
+            // 长按卡片弹出菜单
+            binding.cardMessage.setOnLongClickListener {
+                showUserPopupMenu(it)
+                true
+            }
+        }
+        
+        private fun showUserPopupMenu(view: android.view.View) {
+            val position = currentPositionOrNull() ?: return
+            
+            val popup = android.widget.PopupMenu(view.context, view)
+            popup.menu.add(0, MENU_EDIT, 0, R.string.action_edit)
+            popup.menu.add(0, MENU_DELETE, 1, R.string.action_delete)
+            
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    MENU_EDIT -> {
+                        onEditMessage(position)
+                        true
+                    }
+                    MENU_DELETE -> {
+                        onDeleteMessage(position)
+                        true
+                    }
+                    else -> false
+                }
+            }
+            popup.show()
         }
 
         fun bind(message: ChatMessage, position: Int) {
@@ -492,5 +547,10 @@ class ChatMessageAdapter(
         const val STREAMING_PAYLOAD = "streaming"
         const val COLLAPSED_MAX_LINES = 10
         const val BulkInsertNotifyThreshold = 40
+        
+        // PopupMenu 菜单项 ID
+        const val MENU_EDIT = 1
+        const val MENU_DELETE = 2
+        const val MENU_RETRY = 3
     }
 }

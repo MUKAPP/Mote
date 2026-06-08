@@ -146,10 +146,10 @@ app/src/main/java/com/mukapp/mote/
 PowerShell 中至少使用以下方式调用 `gradlew.bat`，确保命令结束后把 Gradle 退出码传回当前进程：
 
 ```powershell
-& ".\gradlew.bat" assembleDebug; exit $LASTEXITCODE
-& ".\gradlew.bat" assembleRelease; exit $LASTEXITCODE
-& ".\gradlew.bat" testDebugUnitTest; exit $LASTEXITCODE
-& ".\gradlew.bat" connectedAndroidTest; exit $LASTEXITCODE
+& ".\gradlew.bat" assembleDebug --no-daemon; exit $LASTEXITCODE
+& ".\gradlew.bat" assembleRelease --no-daemon; exit $LASTEXITCODE
+& ".\gradlew.bat" testDebugUnitTest --no-daemon; exit $LASTEXITCODE
+& ".\gradlew.bat" connectedAndroidTest --no-daemon; exit $LASTEXITCODE
 ```
 
 - 修改代码后执行合适的测试或构建验证。

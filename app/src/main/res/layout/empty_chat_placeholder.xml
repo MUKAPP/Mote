@@ -44,6 +44,7 @@
         android:textColor="?attr/colorOnSurfaceVariant" />
 
     <com.google.android.material.card.MaterialCardView
+        android:id="@+id/card_tips"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
@@ -77,5 +78,15 @@
                 android:textColor="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/chip_group_examples"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:visibility="gone"
+        app:chipSpacingHorizontal="8dp"
+        app:chipSpacingVertical="8dp"
+        app:singleLine="false" />
 
 </LinearLayout>
