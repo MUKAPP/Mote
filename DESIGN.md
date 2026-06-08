@@ -20,10 +20,10 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | Primary | `#57A2DB` | 主题色 |
 | On Primary | `#FFFFFF` | 主题色上的前景色 |
 | Background | `#FFFFFF` | 页面底色 |
-| Card | `#0D000000` | 一级卡片背景（Black 5%） |
-| Card Nested | `#0D000000` | 二级嵌套容器（Black 5%，叠加在 Card 上约 10%） |
-| Input Background | `#14000000` | 输入框背景（Black 8%） |
-| User Message Card | `#1A57A2DB` | 用户消息卡片（Primary 10%） |
+| Card | `#14000000` | 一级卡片背景（Black 8%） |
+| Card Nested | `#14000000` | 二级嵌套容器（Black 8%，叠加在 Card 上约 16%） |
+| Input Background | `#1F000000` | 输入框背景（Black 12%） |
+| User Message Card | `#2657A2DB` | 用户消息卡片（Primary 15%） |
 | Primary Container | `#1A57A2DB` | Primary 10%，用于选中态等 |
 | Primary Alpha 15% | `#2657A2DB` | 按钮/Chip 选中态背景 |
 | On Background | `#DE000000` | 主要文字（Black 87%） |
@@ -39,10 +39,10 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | Primary | `#88A8E8` | 主题色 |
 | On Primary | `#0D0E0F` | 主题色上的前景色 |
 | Background | `#0D0E0F` | 页面底色 |
-| Card | `#0DFFFFFF` | 一级卡片背景（White 5%） |
-| Card Nested | `#0DFFFFFF` | 二级嵌套容器（White 5%，叠加在 Card 上约 10%） |
-| Input Background | `#14FFFFFF` | 输入框背景（White 8%） |
-| User Message Card | `#1A88A8E8` | 用户消息卡片（Primary 10%） |
+| Card | `#14FFFFFF` | 一级卡片背景（White 8%） |
+| Card Nested | `#14FFFFFF` | 二级嵌套容器（White 8%，叠加在 Card 上约 16%） |
+| Input Background | `#1FFFFFFF` | 输入框背景（White 12%） |
+| User Message Card | `#2688A8E8` | 用户消息卡片（Primary 15%） |
 | Primary Container | `#1A88A8E8` | Primary 10% |
 | Primary Alpha 15% | `#2688A8E8` | 按钮/Chip 选中态背景 |
 | On Background | `#DEFFFFFF` | 主要文字（White 87%） |
@@ -55,17 +55,17 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 ```
 背景 (Background)                    不透明底色
-├── 卡片层 (Card)                    +5% Black/White
-│   └── 嵌套容器 (Card Nested)       再 +5%（累计约 10%）
-├── 输入框 (Input Background)         +8% Black/White
-└── 用户消息 (User Message Card)      +10% Primary
+├── 卡片层 (Card)                    +8% Black/White
+│   └── 嵌套容器 (Card Nested)       再 +8%（累计约 16%）
+├── 输入框 (Input Background)         +12% Black/White
+└── 用户消息 (User Message Card)      +15% Primary
 ```
 
 层级通过透明度自然叠加，不超过两层，避免颜色浑浊。
 
 ### 代码块颜色
 
-代码块背景使用 Black/White 5%（与 Card Nested 相同），叠加在消息卡片上后累计约 10%，与卡片底色有明显区分。行内代码背景同代码块背景色。
+代码块背景使用 Black/White 5%（与基础卡片层相近但更低），叠加在消息卡片上后有明显区分。行内代码背景同代码块背景色。
 
 ### 表格颜色
 

@@ -4,6 +4,8 @@
 
 Mote 是运行在 Android 设备上的 AI Agent 聊天客户端，通过 OpenAI 兼容的 Chat Completions API 与模型交互。核心能力包括流式响应、工具调用、本地 Shell、思考过程展示、工具结果展示、多对话历史和自研 Markdown 渲染。
 
+视觉设计规范详见 [DESIGN.md](DESIGN.md)。
+
 ## 技术栈
 
 | 类别 | 技术 |
