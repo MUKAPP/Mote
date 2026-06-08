@@ -14,6 +14,7 @@ import androidx.core.widget.doAfterTextChanged
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.databinding.ActivitySettingsBinding
+import com.mukapp.mote.ui.smooth.SmoothCorners
 import com.mukapp.mote.util.dpInt
 import com.mukapp.mote.util.hasManageAllFilesPermission
 import com.mukapp.mote.util.openManageAllFilesAccessSettings
@@ -27,6 +28,7 @@ class SettingsActivity : AppCompatActivity() {
         enableEdgeToEdge()
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        SmoothCorners.applyToViewTree(binding.root)
         setSupportActionBar(binding.toolbar)
 
         setupChrome()

@@ -16,7 +16,7 @@
         android:paddingBottom="32dp">
 
         <!-- ==================== 权限卡片 ==================== -->
-        <com.google.android.material.card.MaterialCardView
+        <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
             android:id="@+id/card_permission"
             style="@style/Widget.Material3.CardView.Filled"
             android:layout_width="match_parent"
@@ -70,10 +70,10 @@
                     android:layout_marginTop="12dp"
                     android:text="@string/settings_permission_open" />
             </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+        </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
 
         <!-- ==================== 接口配置卡片 ==================== -->
-        <com.google.android.material.card.MaterialCardView
+        <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
             style="@style/Widget.Material3.CardView.Filled"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -417,10 +417,10 @@
                     android:textColor="?attr/colorPrimary"
                     android:visibility="gone" />
             </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+        </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
 
         <!-- ==================== 接口约定卡片 ==================== -->
-        <com.google.android.material.card.MaterialCardView
+        <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
             style="@style/Widget.Material3.CardView.Filled"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -466,7 +466,7 @@
                     android:textAppearance="?attr/textAppearanceBodySmall"
                     android:textColor="?attr/colorOnSurfaceVariant" />
             </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+        </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
     </LinearLayout>
 
 </ScrollView>

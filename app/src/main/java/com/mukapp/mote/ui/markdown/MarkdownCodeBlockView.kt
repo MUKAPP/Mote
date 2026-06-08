@@ -15,15 +15,15 @@ import android.widget.Toast
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.appcompat.widget.AppCompatImageButton
 import androidx.core.widget.TextViewCompat
-import com.google.android.material.card.MaterialCardView
 import com.mukapp.mote.R
+import com.mukapp.mote.ui.smooth.SmoothMaterialCardView
 import com.mukapp.mote.util.dpInt
 
 class MarkdownCodeBlockView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
-) : MaterialCardView(context, attrs, defStyleAttr) {
+) : SmoothMaterialCardView(context, attrs, defStyleAttr) {
 
     private var codeColors = resolveMarkdownCodeColors(context)
     private var sharedCodeSpanRenderer: MarkdownCodeSpanRenderer? = null
@@ -125,6 +125,7 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
 
     init {
         radius = 12.dpInt.toFloat()
+        applySmoothCorners()
         cardElevation = 0f
         strokeWidth = 0
         setCardBackgroundColor(blockBackgroundColor)

@@ -17,6 +17,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import androidx.core.text.buildSpannedString
+import com.mukapp.mote.ui.smooth.SmoothCorners
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.sp
 import java.util.Locale
@@ -210,7 +211,7 @@ class MarkdownTableView @JvmOverloads constructor(
 
         canvas.save()
         val clipPath = Path().apply {
-            addRoundRect(tableRect, cornerRadius, cornerRadius, Path.Direction.CW)
+            SmoothCorners.addSmoothRoundRect(this, tableRect, cornerRadius)
         }
         canvas.clipPath(clipPath)
 
@@ -244,7 +245,7 @@ class MarkdownTableView @JvmOverloads constructor(
             canvas.drawLine(currentX, startY, currentX, startY + totalH, linePaint)
         }
 
-        canvas.drawRoundRect(tableRect, cornerRadius, cornerRadius, linePaint)
+        canvas.drawPath(clipPath, linePaint)
     }
 
     private fun drawHeaderCells(canvas: Canvas, startX: Float, startY: Float) {

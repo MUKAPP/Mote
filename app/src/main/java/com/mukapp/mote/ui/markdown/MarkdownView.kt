@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.text.method.LinkMovementMethod
 import android.util.AttributeSet
 import android.util.TypedValue
@@ -23,7 +22,6 @@ import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
 import androidx.transition.ChangeBounds
 import androidx.transition.TransitionManager
-import com.google.android.material.card.MaterialCardView
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
@@ -31,6 +29,10 @@ import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.databinding.ItemToolResultBinding
 import com.mukapp.mote.ui.IntermediateStepsHelper
+import com.mukapp.mote.ui.smooth.SmoothCornerDrawable
+import com.mukapp.mote.ui.smooth.SmoothCornerFrameLayout
+import com.mukapp.mote.ui.smooth.SmoothCorners
+import com.mukapp.mote.ui.smooth.SmoothMaterialCardView
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
 import io.ratex.RaTeXView
@@ -595,9 +597,10 @@ class MarkdownView @JvmOverloads constructor(
             }
         }
         val expanded = expandedThinkingPartIds.contains(part.id)
-        return MaterialCardView(context).apply thinkingCard@ {
+        return SmoothMaterialCardView(context).apply thinkingCard@ {
             layoutParams = createBlockLayoutParams()
             radius = 12.dp
+            applySmoothCorners()
             strokeWidth = 0
             cardElevation = 0f
             setCardBackgroundColor(thinkingCardBgColor)
@@ -689,6 +692,7 @@ class MarkdownView @JvmOverloads constructor(
     ): View {
         val binding = ItemToolResultBinding.inflate(LayoutInflater.from(context), this, false)
         binding.root.layoutParams = createBlockLayoutParams()
+        SmoothCorners.applyToViewTree(binding.root)
         val expanded = expandedToolPartIds.contains(toolPart.id)
 
         binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
@@ -941,15 +945,11 @@ class MarkdownView @JvmOverloads constructor(
         nested: Boolean,
         isLastInContainer: Boolean
     ): View {
-        val container = FrameLayout(context).apply {
+        val container = SmoothCornerFrameLayout(context).apply {
             layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
             minimumHeight = 24.dpInt
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = quoteCornerRadius
-                setColor(quoteBackgroundColor)
-            }
-            clipToOutline = true
+            smoothCornerRadius = quoteCornerRadius
+            background = SmoothCornerDrawable(quoteBackgroundColor, quoteCornerRadius)
         }
 
         val stripe = View(context).apply {
@@ -1141,20 +1141,16 @@ class MarkdownView @JvmOverloads constructor(
             }
             addView(FrameLayout(context).apply {
                 layoutParams = FrameLayout.LayoutParams(boxSize, boxSize, Gravity.TOP or Gravity.END)
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 4.dp
-                    setStroke(strokeWidth, if (checked) taskMarkerCheckedColor else taskMarkerOutlineColor)
-                    setColor(if (checked) taskMarkerCheckedBgColor else Color.TRANSPARENT)
-                }
+                background = SmoothCornerDrawable(
+                    fillColor = if (checked) taskMarkerCheckedBgColor else Color.TRANSPARENT,
+                    cornerRadius = 4.dp,
+                    strokeColor = if (checked) taskMarkerCheckedColor else taskMarkerOutlineColor,
+                    strokeWidth = strokeWidth.toFloat()
+                )
                 if (checked) {
                     addView(View(context).apply {
                         layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
-                        background = GradientDrawable().apply {
-                            shape = GradientDrawable.RECTANGLE
-                            cornerRadius = 2.dp
-                            setColor(taskMarkerCheckedColor)
-                        }
+                        background = SmoothCornerDrawable(taskMarkerCheckedColor, 2.dp)
                     })
                 }
             })

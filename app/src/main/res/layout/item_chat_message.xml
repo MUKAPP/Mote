@@ -8,7 +8,7 @@
     android:paddingHorizontal="16dp"
     android:paddingVertical="10dp">
 
-    <com.google.android.material.card.MaterialCardView
+    <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
         android:id="@+id/card_message"
         style="@style/Widget.Mote.MessageCard.Assistant"
         android:layout_width="match_parent"
@@ -99,6 +99,6 @@
                     app:iconTint="?attr/colorOnSurfaceVariant" />
             </LinearLayout>
         </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
+    </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
 
 </LinearLayout>

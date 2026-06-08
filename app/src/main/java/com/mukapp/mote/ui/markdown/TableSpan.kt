@@ -6,6 +6,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.style.ReplacementSpan
 import androidx.annotation.ColorInt
+import com.mukapp.mote.ui.smooth.SmoothCorners
 import com.mukapp.mote.util.dp
 
 /**
@@ -134,7 +135,7 @@ class TableSpan(
         // 我们使用裁剪来确保内部的矩形背景不会超出圆角边框
         canvas.save()
         val clipPath = android.graphics.Path().apply {
-            addRoundRect(tableRect, cornerRadius, cornerRadius, android.graphics.Path.Direction.CW)
+            SmoothCorners.addSmoothRoundRect(this, tableRect, cornerRadius)
         }
         canvas.clipPath(clipPath)
 
@@ -199,7 +200,7 @@ class TableSpan(
         }
 
         // 绘制外边框（圆角）
-        canvas.drawRoundRect(tableRect, cornerRadius, cornerRadius, linePaint)
+        canvas.drawPath(clipPath, linePaint)
     }
 
     /** 根据对齐方式计算文字绘制的 X 坐标 */

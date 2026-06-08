@@ -28,6 +28,7 @@ import com.mukapp.mote.databinding.ActivityMainBinding
 import com.mukapp.mote.ui.ChatFragment
 import com.mukapp.mote.ui.ChatViewModel
 import com.mukapp.mote.ui.ConversationSummaryAdapter
+import com.mukapp.mote.ui.smooth.SmoothCorners
 import com.mukapp.mote.util.dpInt
 import eightbitlab.com.blurview.BlurTarget
 import kotlin.math.min
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        SmoothCorners.applyToViewTree(binding.root)
         setSupportActionBar(binding.toolbar)
 
         setupInsets()
@@ -175,14 +177,16 @@ class MainActivity : AppCompatActivity() {
             if (message.isNullOrBlank()) {
                 return@observe
             }
-            Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+            val snackbar = Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT)
+            SmoothCorners.applyToView(snackbar.view)
+            snackbar.show()
             viewModel.clearUserNotice()
         }
     }
 
     /** 删除当前对话（工具栏菜单触发） */
     private fun showDeleteConversationDialog() {
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.dialog_delete_conversation_title)
             .setMessage(R.string.dialog_delete_conversation_message)
             .setNegativeButton(R.string.action_cancel, null)
@@ -190,12 +194,13 @@ class MainActivity : AppCompatActivity() {
                 viewModel.deleteCurrentConversation()
             }
             .show()
+        dialog.window?.decorView?.let(SmoothCorners::applyToViewTree)
     }
 
     /** 删除指定对话（长按列表项触发） */
     private fun showDeleteConversationDialog(conversationId: String, title: String) {
         val displayTitle = title.ifBlank { getString(R.string.nav_untitled_chat) }
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.dialog_delete_conversation_title)
             .setMessage(getString(R.string.dialog_delete_specific_conversation_message, displayTitle))
             .setNegativeButton(R.string.action_cancel, null)
@@ -207,6 +212,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             .show()
+        dialog.window?.decorView?.let(SmoothCorners::applyToViewTree)
     }
 
     private fun setupBackPressHandler() {

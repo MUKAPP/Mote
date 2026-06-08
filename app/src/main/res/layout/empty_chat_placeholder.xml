@@ -10,7 +10,7 @@
     android:paddingEnd="32dp"
     android:paddingBottom="24dp">
 
-    <com.google.android.material.card.MaterialCardView
+    <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
         style="@style/Widget.Material3.CardView.Filled"
         android:layout_width="72dp"
         android:layout_height="72dp"
@@ -23,7 +23,7 @@
             android:padding="18dp"
             android:src="@drawable/ic_chat"
             app:tint="?attr/colorOnPrimaryContainer" />
-    </com.google.android.material.card.MaterialCardView>
+    </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
 
     <TextView
         android:id="@+id/text_empty_title"
@@ -43,7 +43,7 @@
         android:textAppearance="?attr/textAppearanceBodyMedium"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
-    <com.google.android.material.card.MaterialCardView
+    <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
         android:id="@+id/card_tips"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -77,7 +77,7 @@
                 android:textAppearance="?attr/textAppearanceBodySmall"
                 android:textColor="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
+    </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
 
     <com.google.android.material.chip.ChipGroup
         android:id="@+id/chip_group_examples"
