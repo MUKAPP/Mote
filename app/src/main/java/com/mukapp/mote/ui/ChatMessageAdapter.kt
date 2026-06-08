@@ -16,7 +16,6 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
-import com.mukapp.mote.ui.smooth.SmoothCorners
 import com.mukapp.mote.ui.markdown.MarkdownParseCache
 
 class ChatMessageAdapter(
@@ -250,7 +249,6 @@ class ChatMessageAdapter(
                 showAssistantPopupMenu(it)
                 true
             }
-            SmoothCorners.applyToViewTree(binding.root)
         }
         
         private fun showAssistantPopupMenu(view: android.view.View) {
@@ -429,7 +427,6 @@ class ChatMessageAdapter(
                 showUserPopupMenu(it)
                 true
             }
-            SmoothCorners.applyToViewTree(binding.root)
         }
         
         private fun showUserPopupMenu(view: android.view.View) {
@@ -487,7 +484,6 @@ class ChatMessageAdapter(
                         )
                         isChipIconVisible = true
                     }
-                    SmoothCorners.applyToView(chip)
                     binding.chipGroupAttachments.addView(chip)
                 }
             } else {

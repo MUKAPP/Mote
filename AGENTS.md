@@ -35,7 +35,6 @@ app/src/main/java/com/mukapp/mote/
 ├── tools/                          # AI 工具、BusyBox、Shell 风险检测、进程管理
 ├── ui/                             # 聊天界面、ViewModel、Adapter、侧栏列表
 ├── ui/markdown/                    # Markdown 解析、渲染、代码高亮、表格
-├── ui/smooth/                      # 连续平滑圆角 Drawable、Path 与 View 封装
 └── util/                           # 通用工具与单位转换
 ```
 
@@ -175,7 +174,6 @@ Start-Process -FilePath ".\gradlew.bat" -ArgumentList "connectedAndroidTest", "-
 | 标题生成 | 保持空 `titleModel` 的本地备用标题兼容 |
 | 外部存储权限 | `Utils.kt` + `SettingsActivity.kt` |
 | Markdown 渲染/RecyclerView 绑定/LaTeX 公式 | `MarkdownParseCache`、`MarkdownView`、`ChatMessageAdapter`、`ChatFragment.preparseVisibleMessages()`、公式分隔符流式解析与 RaTeX 渲染兼容 |
-| 圆角 UI/自绘 Canvas/卡片容器 | 复用 `ui/smooth`，避免新增普通 `<corners>`、`GradientDrawable.cornerRadius` 或 `drawRoundRect` |
 | 图标更新 | Material Symbols Rounded，命名 `ic_{name}.xml`（不加 `_24px`） |
 
 ## 设计决策
@@ -186,6 +184,5 @@ Start-Process -FilePath ".\gradlew.bat" -ArgumentList "connectedAndroidTest", "-
 - UI 消息和 API 上下文分离，避免展示型中间步骤污染请求上下文。
 - Shell 高风险命令必须经用户确认后才能执行。
 - Markdown 使用自研原生视图树，避免 WebView 渲染依赖；LaTeX 公式使用 RaTeX 原生 Canvas 渲染。
-- UI 圆角统一使用 `ui/smooth` 的连续平滑圆角实现，保留既有 dp 半径规范。
 - 固定单主题色方案（日间 #57A2DB / 夜间 #88A8E8），不使用 Material You 动态取色。
 - `MANAGE_EXTERNAL_STORAGE` 权限必须由用户手动授予。

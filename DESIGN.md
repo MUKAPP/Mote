@@ -2,7 +2,7 @@
 
 ## 设计方向
 
-MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保留 MD3 的部分组件形态（如毛玻璃顶栏、平滑圆角悬浮输入框）。不使用 Material You 动态取色，采用固定的单主题色方案，通过带透明度的黑/白/主题色叠加营造 two-tone 层次感。
+MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保留 MD3 的部分组件形态（如毛玻璃顶栏、圆角悬浮输入框）。不使用 Material You 动态取色，采用固定的单主题色方案，通过带透明度的黑/白/主题色叠加营造 two-tone 层次感。
 
 ## 色彩系统
 
@@ -100,12 +100,10 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 | 属性 | 值 |
 |------|-----|
-| 圆角 | 连续平滑圆角，16dp（主要卡片）、12dp（嵌套/次要卡片如工具结果） |
+| 圆角 | 16dp（主要卡片）、12dp（嵌套/次要卡片如工具结果） |
 | 背景 | Card 色或 Card Nested 色（带透明度叠加） |
 | 边框 | 无（不使用 Outlined Card，不绘制 stroke） |
 | 阴影 | 默认无 elevation（0dp），依靠色差区分层级；仅底部聊天输入栏保留现有悬浮阴影 |
-
-圆角曲线统一使用 `ui/smooth` 中的连续平滑圆角实现；新增圆角背景、卡片、毛玻璃容器或自绘 Canvas 边框时应复用该实现，不新增普通 `<corners>`、`GradientDrawable.cornerRadius` 或 `drawRoundRect`。
 
 ### 顶栏 (Toolbar)
 
@@ -116,7 +114,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 ### 聊天输入框 (Chat Input)
 
-- 底部悬浮，使用连续平滑圆角毛玻璃和悬浮阴影；其他毛玻璃/卡片组件不使用阴影
+- 底部悬浮，保持现有圆角毛玻璃和悬浮阴影实现不变；其他毛玻璃/卡片组件不使用阴影
 - 内部：附件加号按钮 + 多行 EditText + 圆形发送按钮
 - 附件预览：选择图片/文件后在输入框上方显示一行小号摘要，可一键清空
 - 发送按钮：Primary 填充色，On Primary 图标色
@@ -125,7 +123,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 - 样式：Filled，无底部线（`boxStrokeWidth=0dp`）
 - 背景色：`mote_input_background`（Black/White 8%）
-- 四角统一连续平滑圆角 12dp
+- 四角统一圆角 12dp
 - 浮动标签 + placeholderText（不在 EditText 上重复设置 hint）
 
 ### 消息气泡
@@ -142,7 +140,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 | 类型 | 用途 | 样式 |
 |------|------|------|
-| Filled | 主要操作（发送、确认） | Primary 背景 + On Primary 前景，连续平滑圆角 20dp |
+| Filled | 主要操作（发送、确认） | Primary 背景 + On Primary 前景，圆角 20dp |
 | Tonal | 次要强调（新对话、权限设置） | Primary 15% alpha 背景 + Primary 前景 |
 | Text | 低优先级操作（设置、取消） | 无背景 + Primary 前景 |
 | Icon | 消息操作（复制、编辑、删除） | 无背景 + On Background Secondary 前景 |
@@ -150,20 +148,20 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 ### 对话框 (Dialog)
 
 - 背景：主背景色（Background，不透明）
-- 积极按钮：连续平滑胶囊型（cornerSize 50%）+ Primary 填充色 + On Primary 文字
+- 积极按钮：胶囊型（cornerSize 50%）+ Primary 填充色 + On Primary 文字
 - 消极按钮：Text 样式
 
 ### Chip（思考强度选择等）
 
 - 选中态：Primary 15% alpha 背景 + Primary 文字
 - 未选中态：Card Nested 色背景 + On Background Secondary 文字
-- 无边框，连续平滑胶囊圆角（18dp），不显示 checked icon
+- 无边框，胶囊圆角（18dp），不显示 checked icon
 - `chipSurfaceColor=transparent` 禁用内部 overlay，确保颜色与按钮一致
 
 ### 侧边栏 (Drawer)
 
 - 背景：主背景色（Background），与主内容区一致
-- 对话列表项：无边框卡片，16dp 连续平滑圆角，选中态使用 Primary Container 色背景
+- 对话列表项：无边框卡片，16dp 圆角，选中态使用 Primary Container 色背景
 - 未选中态：Card 色背景
 - 品牌区：应用名（Bold）+ 副标题
 - 底部：分割线 + 设置按钮（图标与文字间距 12dp）
@@ -172,7 +170,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 - 位于输入框上方
 - 毛玻璃背景
-- 命令预览区域：Card Nested 色背景，12dp 连续平滑圆角，等宽字体
+- 命令预览区域：Card Nested 色背景，12dp 圆角，等宽字体
 - 风险提示文字：Error 色
 - 操作按钮：取消（Text）+ 确认（Filled）
 
@@ -200,14 +198,14 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 ## 空状态
 
 - 居中布局：图标（Primary Container 色容器）+ 标题 + 副标题 + 提示卡片
-- 图标容器：72dp 正方形，16dp 连续平滑圆角，Primary Container 色背景
-- 提示卡片：Card 色背景，16dp 连续平滑圆角
+- 图标容器：72dp 正方形，16dp 圆角，Primary Container 色背景
+- 提示卡片：Card 色背景，16dp 圆角
 
 ## 设置页
 
 - 无顶部介绍卡片，直接展示功能卡片
 - 权限卡片：Card 色背景，状态通过标题/图标颜色区分（granted 用正常文字色，denied 用 Error 色）
 - 接口配置/约定卡片：Card 色背景
-- 输入框：Filled 样式，Input Background 色，12dp 统一连续平滑圆角，无底部线
+- 输入框：Filled 样式，Input Background 色，12dp 统一圆角，无底部线
 - 思考强度选择：ChipGroup，胶囊型 Chip
 - 保存按钮：Filled 样式

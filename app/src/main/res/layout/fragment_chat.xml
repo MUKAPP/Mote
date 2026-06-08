@@ -32,7 +32,7 @@
             layout="@layout/empty_chat_placeholder" />
     </FrameLayout>
 
-    <com.mukapp.mote.ui.smooth.SmoothBlurView
+    <eightbitlab.com.blurview.BlurView
         android:id="@+id/card_input"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
@@ -117,9 +117,9 @@
                     app:icon="@drawable/ic_send" />
             </LinearLayout>
         </LinearLayout>
-    </com.mukapp.mote.ui.smooth.SmoothBlurView>
+    </eightbitlab.com.blurview.BlurView>
 
-    <com.mukapp.mote.ui.smooth.SmoothBlurView
+    <eightbitlab.com.blurview.BlurView
         android:id="@+id/card_shell_confirmation"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
@@ -150,10 +150,10 @@
                 android:textColor="?attr/colorOnSurface" />
 
             <LinearLayout
-                android:id="@+id/layout_shell_confirmation_risk"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
+                android:background="@drawable/shell_warning_background"
                 android:orientation="horizontal"
                 android:paddingHorizontal="10dp"
                 android:paddingVertical="8dp">
@@ -186,7 +186,7 @@
                 android:layout_marginTop="8dp"
                 android:textColor="?attr/colorOnSurface" />
 
-            <com.mukapp.mote.ui.smooth.SmoothMaterialCardView
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
@@ -217,7 +217,7 @@
 
                 </com.mukapp.mote.ui.InnerNestedScrollView>
 
-            </com.mukapp.mote.ui.smooth.SmoothMaterialCardView>
+            </com.google.android.material.card.MaterialCardView>
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -241,6 +241,6 @@
                     android:text="@string/action_cancel" />
             </LinearLayout>
         </LinearLayout>
-    </com.mukapp.mote.ui.smooth.SmoothBlurView>
+    </eightbitlab.com.blurview.BlurView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

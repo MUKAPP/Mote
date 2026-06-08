@@ -6,10 +6,9 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.graphics.Path
-import android.graphics.RectF
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -50,12 +49,10 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.databinding.FragmentChatBinding
 import com.mukapp.mote.ui.markdown.MarkdownParseCache
-import com.mukapp.mote.ui.smooth.SmoothBlurView
-import com.mukapp.mote.ui.smooth.SmoothCornerDrawable
-import com.mukapp.mote.ui.smooth.SmoothCorners
 import com.mukapp.mote.util.dpInt
 import kotlin.math.max
 import androidx.core.view.isVisible
+import eightbitlab.com.blurview.BlurView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -119,7 +116,6 @@ class ChatFragment : Fragment() {
         setupRecyclerView()
         setupInputArea()
         setupExampleChips()
-        SmoothCorners.applyToViewTree(binding.root)
         observeViewModel()
 
         binding.recyclerMessages.clipToPadding = false
@@ -212,28 +208,37 @@ class ChatFragment : Fragment() {
         val backgroundOverlayColor = ColorUtils.setAlphaComponent(backgroundColor, (255 * 0.6).toInt())
         val overlayColor = ColorUtils.compositeColors(cardColor, backgroundOverlayColor)
 
-        fun setupBlur(view: SmoothBlurView, blurRadius: Float, overlayColor: Int, borderRadius: Float) {
+        fun setupBlur(view: BlurView, blurRadius: Float, overlayColor: Int, borderRadius: Float) {
             view.setupWith(binding.blurTarget)
                 .setFrameClearDrawable(realWindowBackground)
                 .setBlurRadius(blurRadius)
                 .setOverlayColor(overlayColor)
 
+            // 1. 动态创建一个透明的圆角 Drawable
             val radius = borderRadius * resources.displayMetrics.density
-            val roundedBackground = SmoothCornerDrawable(Color.TRANSPARENT, radius)
-            view.smoothCornerRadius = radius
+            val roundedBackground = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = radius
+                setColor(Color.TRANSPARENT)
+            }
 
+            // 2. 应用背景、自定义轮廓裁剪与阴影
             view.apply {
                 background = roundedBackground
+
+                // 自定义 OutlineProvider
                 outlineProvider = object : ViewOutlineProvider() {
                     override fun getOutline(view: View, outline: Outline) {
-                        val path = Path()
-                        val rect = RectF(0f, 0f, view.width.toFloat(), view.height.toFloat())
-                        SmoothCorners.addSmoothRoundRect(path, rect, radius)
-                        @Suppress("DEPRECATION")
-                        outline.setConvexPath(path)
+                        // 根据 View 的宽高和圆角设置轮廓形状
+                        outline.setRoundRect(0, 0, view.width, view.height, radius)
+                        // 无视背景的透明度，强制设定轮廓的 Alpha 为 1.0f (不透明)，以投射阴影
                         outline.alpha = 1.0f
                     }
                 }
+
+                clipToOutline = true
+
+                // 3. 设置阴影的高度 (数值越大，阴影越明显)
                 elevation = 8f
             }
         }
@@ -416,7 +421,6 @@ class ChatFragment : Fragment() {
                     imm?.showSoftInput(binding.editMessage, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
                 }
             }
-            SmoothCorners.applyToView(chip)
             chipGroup.addView(chip)
         }
     }
@@ -596,7 +600,6 @@ class ChatFragment : Fragment() {
                     viewModel.removeDraftAttachment(attachment.id)
                 }
             }
-            SmoothCorners.applyToView(chip)
             binding.chipGroupDraftAttachments.addView(chip)
         }
     }
@@ -611,18 +614,6 @@ class ChatFragment : Fragment() {
         binding.textShellConfirmationRisk.text = getString(
             R.string.shell_confirmation_risk,
             confirmation.risk
-        )
-        binding.layoutShellConfirmationRisk.background = SmoothCornerDrawable(
-            fillColor = ColorUtils.setAlphaComponent(
-                ContextCompat.getColor(requireContext(), R.color.mote_error),
-                0x1A
-            ),
-            cornerRadius = 8.dpInt.toFloat(),
-            strokeColor = ColorUtils.setAlphaComponent(
-                ContextCompat.getColor(requireContext(), R.color.mote_error),
-                0x33
-            ),
-            strokeWidth = 1.dpInt.toFloat()
         )
         binding.textShellConfirmationDescription.text = getString(
             R.string.shell_confirmation_description,
@@ -1351,13 +1342,12 @@ class ChatFragment : Fragment() {
     }
 
     private fun showConfirmationDialog(titleResId: Int, messageResId: Int, onConfirm: () -> Unit) {
-        val dialog = MaterialAlertDialogBuilder(requireContext())
+        MaterialAlertDialogBuilder(requireContext())
             .setTitle(titleResId)
             .setMessage(messageResId)
             .setPositiveButton(R.string.action_confirm) { _, _ -> onConfirm() }
             .setNegativeButton(R.string.action_cancel, null)
             .show()
-        dialog.window?.decorView?.let(SmoothCorners::applyToViewTree)
     }
 
     private enum class AttachmentPickerKind {
