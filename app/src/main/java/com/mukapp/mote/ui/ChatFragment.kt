@@ -365,7 +365,6 @@ class ChatFragment : Fragment() {
             if (!updatingDraft) {
                 viewModel.updateDraftMessage(editable?.toString().orEmpty())
             }
-            updateCharCount()
         }
         binding.btnAddAttachment.setOnClickListener {
             if (!latestIsSending) {
@@ -387,32 +386,6 @@ class ChatFragment : Fragment() {
             viewModel.cancelPendingShellCommand()
         }
         renderSendButton()
-        updateCharCount()
-    }
-
-    private fun updateCharCount() {
-        val text = binding.editMessage.text?.toString().orEmpty()
-        val length = text.length
-        val charCountView = binding.textCharCount
-        
-        // 超过 100 字符时显示字数统计
-        if (length > 100) {
-            charCountView.visibility = View.VISIBLE
-            charCountView.text = length.toString()
-            
-            // 接近 10000 字符时变为警告色
-            if (length >= 9000) {
-                charCountView.setTextColor(
-                    ContextCompat.getColor(requireContext(), R.color.mote_error)
-                )
-            } else {
-                charCountView.setTextColor(
-                    ContextCompat.getColor(requireContext(), R.color.mote_on_background_secondary)
-                )
-            }
-        } else {
-            charCountView.visibility = View.GONE
-        }
     }
 
     private fun setupExampleChips() {

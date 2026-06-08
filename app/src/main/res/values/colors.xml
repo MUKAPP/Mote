@@ -27,7 +27,7 @@
     <color name="mote_on_error">#FFFFFF</color>
 
     <!-- 输入框背景 -->
-    <color name="mote_input_background">#14000000</color> <!-- Black 8% -->
+    <color name="mote_input_background">#1F000000</color> <!-- Black 12% -->
 
     <!-- 按钮透明主题色背景 -->
     <color name="mote_primary_alpha_15">#2657A2DB</color> <!-- Primary 15% -->
