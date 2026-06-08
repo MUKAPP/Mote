@@ -58,7 +58,7 @@ app/src/main/java/com/mukapp/mote/
 也可以在命令行构建：
 
 ```powershell
-& ".\gradlew.bat" assembleDebug; exit $LASTEXITCODE
+.\gradlew.bat assembleDebug
 ```
 
 生成的 Debug APK 位于：
@@ -70,7 +70,7 @@ app/build/outputs/apk/debug/app-debug.apk
 Release 构建：
 
 ```powershell
-& ".\gradlew.bat" assembleRelease; exit $LASTEXITCODE
+.\gradlew.bat assembleRelease
 ```
 
 ## 测试
@@ -78,13 +78,13 @@ Release 构建：
 运行单元测试：
 
 ```powershell
-& ".\gradlew.bat" testDebugUnitTest; exit $LASTEXITCODE
+.\gradlew.bat testDebugUnitTest
 ```
 
 运行设备测试：
 
 ```powershell
-& ".\gradlew.bat" connectedAndroidTest; exit $LASTEXITCODE
+.\gradlew.bat connectedAndroidTest
 ```
 
 ## 使用配置

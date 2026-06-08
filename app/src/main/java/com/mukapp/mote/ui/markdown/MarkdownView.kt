@@ -741,6 +741,13 @@ class MarkdownView @JvmOverloads constructor(
                 TransitionManager.beginDelayedTransition(parent, transition)
             }
             binding.containerDetail.isVisible = nextExpanded
+            
+            // 展开/折叠图标旋转动画
+            val iconAnim = android.view.animation.AnimationUtils.loadAnimation(
+                context,
+                if (nextExpanded) R.anim.rotate_expand else R.anim.rotate_collapse
+            )
+            binding.btnToggleDetail.startAnimation(iconAnim)
             binding.btnToggleDetail.setImageResource(
                 if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
             )

@@ -969,6 +969,7 @@ class ChatFragment : Fragment() {
 
     private fun renderEmptyState() {
         val showEmptyState = latestMessages.isEmpty()
+        val wasVisible = binding.emptyPlaceholder.root.visibility == View.VISIBLE
         binding.emptyPlaceholder.root.visibility = if (showEmptyState) View.VISIBLE else View.GONE
         binding.recyclerMessages.visibility = if (showEmptyState) View.INVISIBLE else View.VISIBLE
         
@@ -988,8 +989,8 @@ class ChatFragment : Fragment() {
             }
         )
         
-        // 仅在已配置时显示示例问题
-        binding.emptyPlaceholder.chipGroupExamples.visibility = if (showEmptyState && isConfigured) {
+        // 始终显示示例问题（已配置时）
+        binding.emptyPlaceholder.chipGroupExamples.visibility = if (isConfigured) {
             View.VISIBLE
         } else {
             View.GONE
@@ -1000,6 +1001,16 @@ class ChatFragment : Fragment() {
             View.GONE
         } else {
             View.VISIBLE
+        }
+        
+        // 添加淡入动画（仅首次显示）
+        if (showEmptyState && !wasVisible) {
+            binding.emptyPlaceholder.root.alpha = 0f
+            binding.emptyPlaceholder.root.animate()
+                .alpha(1f)
+                .setDuration(300)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
         }
     }
 

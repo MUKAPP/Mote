@@ -166,13 +166,34 @@
                 android:text="@string/shell_confirmation_title"
                 android:textColor="?attr/colorOnSurface" />
 
-            <TextView
-                android:id="@+id/text_shell_confirmation_risk"
-                style="?attr/textAppearanceBodySmall"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="?attr/colorError" />
+                android:layout_marginTop="6dp"
+                android:background="@drawable/shell_warning_background"
+                android:orientation="horizontal"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="8dp">
+
+                <ImageView
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginEnd="8dp"
+                    android:contentDescription="@null"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_warning"
+                    app:tint="?attr/colorError" />
+
+                <TextView
+                    android:id="@+id/text_shell_confirmation_risk"
+                    style="?attr/textAppearanceBodySmall"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_weight="1"
+                    android:textColor="?attr/colorError" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/text_shell_confirmation_description"
