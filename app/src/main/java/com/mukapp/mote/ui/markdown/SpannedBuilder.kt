@@ -211,7 +211,7 @@ class SpannedBuilder(private val context: Context) {
     private val tableHeaderBgColor: Int by lazy {
         blendWithAlpha(
             resolveThemeColor(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x88
+            0x28
         )
     }
 
@@ -219,7 +219,7 @@ class SpannedBuilder(private val context: Context) {
     private val tableRowAltBgColor: Int by lazy {
         blendWithAlpha(
             resolveThemeColor(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x22
+            0x14
         )
     }
 
