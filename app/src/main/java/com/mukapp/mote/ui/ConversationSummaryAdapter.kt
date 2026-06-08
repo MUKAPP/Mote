@@ -114,9 +114,6 @@ class ConversationSummaryAdapter(
             binding.textTime.text = timeText
             binding.textTime.setTextColor(subtextColor)
 
-            // 显示/隐藏选中指示条
-            binding.indicatorSelected.visibility = if (selected) android.view.View.VISIBLE else android.view.View.GONE
-
             binding.root.isSelected = selected
         }
 
