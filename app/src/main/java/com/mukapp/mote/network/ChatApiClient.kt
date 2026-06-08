@@ -12,19 +12,34 @@ import com.mukapp.mote.data.model.ToolCallAccumulator
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.util.MoteLog
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 object ChatApiClient {
     private const val Component = "Api"
     private val mainDispatcher = Dispatchers.Main
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
 
     suspend fun generateConversationTitle(
         settings: ApiSettings,
@@ -44,88 +59,63 @@ object ChatApiClient {
                     "userMessageLength" to userMessage.length
                 )
             )
-            val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
-            val coroutineContext = currentCoroutineContext()
-            val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
-                runCatching { connection.disconnect() }
+
+            val requestBody = JSONObject().apply {
+                put("model", settings.titleModel)
+                put("stream", false)
+                put("temperature", 0.2)
+                put("max_tokens", 48)
+                put(
+                    "messages",
+                    JSONArray().apply {
+                        put(
+                            JSONObject().apply {
+                                put("role", ChatRole.System.apiValue)
+                                put(
+                                    "content",
+                                    """
+                                    请根据用户的首条消息提炼一个简短标题。严格遵守以下规则：
+                                    1. 语言：必须与用户消息的语言完全一致。
+                                    2. 长度：中文最多12个字，其他语言最多6个单词。
+                                    3. 格式：直接输出标题文本，严禁包含任何解释、引导语、标点符号包裹（如引号）或Markdown格式。
+                                    """.trimIndent()
+                                )
+                            }
+                        )
+                        put(
+                            JSONObject().apply {
+                                put("role", ChatRole.User.apiValue)
+                                put("content", userMessage)
+                            }
+                        )
+                    }
+                )
+            }.toString()
+
+            val request = buildRequest(settings, requestBody, isStreaming = false)
+            val response = executeRequest(request)
+
+            val statusCode = response.code
+            val responseText = response.body?.string() ?: ""
+            MoteLog.i(
+                Component,
+                MoteLog.event("标题接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+            )
+            if (!response.isSuccessful) {
+                MoteLog.w(Component, MoteLog.event("标题接口返回失败状态", "status" to statusCode))
+                val errorMessage = parseErrorMessage(responseText)
+                throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
             }
-            try {
-                coroutineContext.ensureActive()
-                connection.requestMethod = "POST"
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 60_000
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                connection.setRequestProperty("Accept", "application/json")
-                if (settings.apiKey.isNotBlank()) {
-                    connection.setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
-                }
 
-                val requestBody = JSONObject().apply {
-                    put("model", settings.titleModel)
-                    put("stream", false)
-                    put("temperature", 0.2)
-                    put("max_tokens", 48)
-                    put(
-                        "messages",
-                        JSONArray().apply {
-                            put(
-                                JSONObject().apply {
-                                    put("role", ChatRole.System.apiValue)
-                                    put(
-                                        "content",
-                                        """
-                                        请根据用户的首条消息提炼一个简短标题。严格遵守以下规则：
-                                        1. 语言：必须与用户消息的语言完全一致。
-                                        2. 长度：中文最多12个字，其他语言最多6个单词。
-                                        3. 格式：直接输出标题文本，严禁包含任何解释、引导语、标点符号包裹（如引号）或Markdown格式。
-                                        """.trimIndent()
-                                    )
-                                }
-                            )
-                            put(
-                                JSONObject().apply {
-                                    put("role", ChatRole.User.apiValue)
-                                    put("content", userMessage)
-                                }
-                            )
-                        }
-                    )
-                }.toString()
-
-                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(requestBody)
-                }
-
-                coroutineContext.ensureActive()
-                val statusCode = connection.responseCode
-                val responseText = readResponseText(connection, statusCode)
+            parseAssistantReply(responseText).content.also { title ->
                 MoteLog.i(
                     Component,
-                    MoteLog.event("标题接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
-                )
-                if (statusCode !in 200..299) {
-                    MoteLog.w(Component, MoteLog.event("标题接口返回失败状态", "status" to statusCode))
-                    val errorMessage = parseErrorMessage(responseText)
-                    throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
-                }
-
-                parseAssistantReply(responseText).content.also { title ->
-                    MoteLog.i(
-                        Component,
-                        MoteLog.event(
-                            "对话标题生成完成",
-                            "titleLength" to title.length,
-                            "durationMs" to MoteLog.durationMs(startMs)
-                        )
+                    MoteLog.event(
+                        "对话标题生成完成",
+                        "titleLength" to title.length,
+                        "durationMs" to MoteLog.durationMs(startMs)
                     )
-                }
-            } catch (error: Throwable) {
-                coroutineContext.ensureActive()
-                throw error
-            } finally {
-                cancellationHandle?.dispose()
-                runCatching { connection.disconnect() }
+                )
             }
         }
     }
@@ -152,89 +142,64 @@ object ChatApiClient {
                     "modelLength" to compressionModel.length
                 )
             )
-            val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
-            val coroutineContext = currentCoroutineContext()
-            val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
-                runCatching { connection.disconnect() }
-            }
-            try {
-                coroutineContext.ensureActive()
-                connection.requestMethod = "POST"
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 120_000
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                connection.setRequestProperty("Accept", "application/json")
-                if (settings.apiKey.isNotBlank()) {
-                    connection.setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
-                }
 
-                val requestBody = JSONObject().apply {
-                    put("model", compressionModel)
-                    put("stream", false)
-                    put("temperature", 0.1)
-                    put("max_tokens", maxSummaryTokens.coerceIn(256, 8192))
-                    put(
-                        "messages",
-                        JSONArray().apply {
-                            put(
-                                JSONObject().apply {
-                                    put("role", ChatRole.System.apiValue)
-                                    put("content", buildCompressionSystemPrompt())
-                                }
-                            )
-                            put(
-                                JSONObject().apply {
-                                    put("role", ChatRole.User.apiValue)
-                                    put("content", buildCompressionTranscript(messages))
-                                }
-                            )
-                        }
-                    )
-                }.toString()
-
-                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(requestBody)
-                }
-
-                coroutineContext.ensureActive()
-                val statusCode = connection.responseCode
-                val responseText = readResponseText(connection, statusCode)
-                MoteLog.i(
-                    Component,
-                    MoteLog.event("上下文压缩接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
-                )
-                if (statusCode !in 200..299) {
-                    MoteLog.w(Component, MoteLog.event("上下文压缩接口返回失败状态", "status" to statusCode))
-                    val errorMessage = parseErrorMessage(responseText)
-                    throw IllegalStateException(errorMessage.ifBlank { "上下文压缩失败，HTTP $statusCode" })
-                }
-
-                val response = parseAssistantReply(responseText, appendFinishReasonNotice = false)
-                if (response.finishReason == "length") {
-                    MoteLog.w(Component, "上下文压缩结果因长度限制被截断。")
-                    throw IllegalStateException("上下文压缩结果被截断，请调大模型上下文或降低压缩长度后重试。")
-                }
-                response.content.trim().ifBlank { throw IllegalStateException("上下文压缩结果为空。") }
-                    .also { summary ->
-                        MoteLog.i(
-                            Component,
-                            MoteLog.event(
-                                "上下文压缩完成",
-                                "summaryLength" to summary.length,
-                                "finishReason" to (response.finishReason ?: "未返回"),
-                                "durationMs" to MoteLog.durationMs(startMs),
-                                *response.usage.safeLogFields()
-                            )
+            val requestBody = JSONObject().apply {
+                put("model", compressionModel)
+                put("stream", false)
+                put("temperature", 0.1)
+                put("max_tokens", maxSummaryTokens.coerceIn(256, 8192))
+                put(
+                    "messages",
+                    JSONArray().apply {
+                        put(
+                            JSONObject().apply {
+                                put("role", ChatRole.System.apiValue)
+                                put("content", buildCompressionSystemPrompt())
+                            }
+                        )
+                        put(
+                            JSONObject().apply {
+                                put("role", ChatRole.User.apiValue)
+                                put("content", buildCompressionTranscript(messages))
+                            }
                         )
                     }
-            } catch (error: Throwable) {
-                coroutineContext.ensureActive()
-                throw error
-            } finally {
-                cancellationHandle?.dispose()
-                runCatching { connection.disconnect() }
+                )
+            }.toString()
+
+            val request = buildRequest(settings, requestBody, isStreaming = false)
+            val response = executeRequest(request)
+
+            val statusCode = response.code
+            val responseText = response.body?.string() ?: ""
+            MoteLog.i(
+                Component,
+                MoteLog.event("上下文压缩接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+            )
+            if (!response.isSuccessful) {
+                MoteLog.w(Component, MoteLog.event("上下文压缩接口返回失败状态", "status" to statusCode))
+                val errorMessage = parseErrorMessage(responseText)
+                throw IllegalStateException(errorMessage.ifBlank { "上下文压缩失败，HTTP $statusCode" })
             }
+
+            val result = parseAssistantReply(responseText, appendFinishReasonNotice = false)
+            if (result.finishReason == "length") {
+                MoteLog.w(Component, "上下文压缩结果因长度限制被截断。")
+                throw IllegalStateException("上下文压缩结果被截断，请调大模型上下文或降低压缩长度后重试。")
+            }
+            result.content.trim().ifBlank { throw IllegalStateException("上下文压缩结果为空。") }
+                .also { summary ->
+                    MoteLog.i(
+                        Component,
+                        MoteLog.event(
+                            "上下文压缩完成",
+                            "summaryLength" to summary.length,
+                            "finishReason" to (result.finishReason ?: "未返回"),
+                            "durationMs" to MoteLog.durationMs(startMs),
+                            *result.usage.safeLogFields()
+                        )
+                    )
+                }
         }
     }
 
@@ -292,119 +257,94 @@ object ChatApiClient {
                     "modelLength" to settings.model.length
                 )
             )
-            val connection = (URL(resolveChatUrl(settings.baseUrl)).openConnection() as HttpURLConnection)
-            val coroutineContext = currentCoroutineContext()
-            val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion {
-                runCatching { connection.disconnect() }
-            }
-            try {
-                coroutineContext.ensureActive()
-                connection.requestMethod = "POST"
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 120_000
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                connection.setRequestProperty("Accept", "text/event-stream")
-                if (settings.apiKey.isNotBlank()) {
-                    connection.setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
-                }
 
-                val requestBody = JSONObject().apply {
-                    put("model", settings.model)
-                    put("stream", true)
-                    if (includeUsage) {
-                        put(
-                            "stream_options",
-                            JSONObject().apply {
-                                put("include_usage", true)
-                            }
-                        )
-                    }
-                    put("tools", toolDefinitions)
-                    if (settings.reasoningEffort.isNotBlank()) {
-                        put("reasoning_effort", settings.reasoningEffort)
-                    }
+            val requestBody = JSONObject().apply {
+                put("model", settings.model)
+                put("stream", true)
+                if (includeUsage) {
                     put(
-                        "messages",
-                        JSONArray().apply {
-                            messages.forEach { message ->
-                                put(buildApiMessage(message))
-                            }
+                        "stream_options",
+                        JSONObject().apply {
+                            put("include_usage", true)
                         }
                     )
-                }.toString()
-
-                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(requestBody)
                 }
-
-                coroutineContext.ensureActive()
-                val statusCode = connection.responseCode
-                MoteLog.i(
-                    Component,
-                    MoteLog.event("聊天接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
-                )
-                if (statusCode !in 200..299) {
-                    MoteLog.w(Component, MoteLog.event("聊天接口返回失败状态", "status" to statusCode))
-                    val responseText = readResponseText(connection, statusCode)
-                    val errorMessage = parseErrorMessage(responseText)
-                    throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
+                put("tools", toolDefinitions)
+                if (settings.reasoningEffort.isNotBlank()) {
+                    put("reasoning_effort", settings.reasoningEffort)
                 }
-
-                val contentType = connection.contentType.orEmpty()
-                MoteLog.d(
-                    Component,
-                    MoteLog.event("聊天响应内容类型", "contentType" to safeContentType(contentType))
-                )
-                if (contentType.contains("text/event-stream", ignoreCase = true)) {
-                    readStreamedReply(connection, onDelta, onThinkingDelta).also { response ->
-                        MoteLog.i(
-                            Component,
-                            MoteLog.event(
-                                "流式聊天请求完成",
-                                "finishReason" to (response.finishReason ?: "未返回"),
-                                "contentLength" to response.content.length,
-                                "thinkingLength" to response.thinkingContent.length,
-                                "toolCalls" to response.toolCalls.size,
-                                "durationMs" to MoteLog.durationMs(startMs),
-                                *response.usage.safeLogFields()
-                            )
-                        )
+                put(
+                    "messages",
+                    JSONArray().apply {
+                        messages.forEach { message ->
+                            put(buildApiMessage(message))
+                        }
                     }
-                } else {
-                    MoteLog.w(
+                )
+            }.toString()
+
+            val request = buildRequest(settings, requestBody, isStreaming = true)
+            val response = executeRequest(request)
+
+            val statusCode = response.code
+            MoteLog.i(
+                Component,
+                MoteLog.event("聊天接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+            )
+            if (!response.isSuccessful) {
+                MoteLog.w(Component, MoteLog.event("聊天接口返回失败状态", "status" to statusCode))
+                val responseText = response.body?.string() ?: ""
+                val errorMessage = parseErrorMessage(responseText)
+                throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
+            }
+
+            val contentType = response.header("Content-Type").orEmpty()
+            MoteLog.d(
+                Component,
+                MoteLog.event("聊天响应内容类型", "contentType" to safeContentType(contentType))
+            )
+            if (contentType.contains("text/event-stream", ignoreCase = true)) {
+                readStreamedReply(response, onDelta, onThinkingDelta).also { result ->
+                    MoteLog.i(
                         Component,
-                        MoteLog.event("聊天接口返回非 SSE 响应，使用非流式解析", "contentType" to safeContentType(contentType))
-                    )
-                    val responseText = readResponseText(connection, statusCode)
-                    coroutineContext.ensureActive()
-                    val response = parseAssistantReply(responseText)
-                    withContext(mainDispatcher) {
-                        if (response.content.isNotBlank()) {
-                            onDelta(response.content)
-                        }
-                    }
-                    response.also {
-                        MoteLog.i(
-                            Component,
-                            MoteLog.event(
-                                "非流式聊天请求完成",
-                                "finishReason" to (it.finishReason ?: "未返回"),
-                                "contentLength" to it.content.length,
-                                "thinkingLength" to it.thinkingContent.length,
-                                "toolCalls" to it.toolCalls.size,
-                                "durationMs" to MoteLog.durationMs(startMs),
-                                *it.usage.safeLogFields()
-                            )
+                        MoteLog.event(
+                            "流式聊天请求完成",
+                            "finishReason" to (result.finishReason ?: "未返回"),
+                            "contentLength" to result.content.length,
+                            "thinkingLength" to result.thinkingContent.length,
+                            "toolCalls" to result.toolCalls.size,
+                            "durationMs" to MoteLog.durationMs(startMs),
+                            *result.usage.safeLogFields()
                         )
+                    )
+                }
+            } else {
+                MoteLog.w(
+                    Component,
+                    MoteLog.event("聊天接口返回非 SSE 响应，使用非流式解析", "contentType" to safeContentType(contentType))
+                )
+                val responseText = response.body?.string() ?: ""
+                currentCoroutineContext().ensureActive()
+                val result = parseAssistantReply(responseText)
+                withContext(mainDispatcher) {
+                    if (result.content.isNotBlank()) {
+                        onDelta(result.content)
                     }
                 }
-            } catch (error: Throwable) {
-                coroutineContext.ensureActive()
-                throw error
-            } finally {
-                cancellationHandle?.dispose()
-                runCatching { connection.disconnect() }
+                result.also {
+                    MoteLog.i(
+                        Component,
+                        MoteLog.event(
+                            "非流式聊天请求完成",
+                            "finishReason" to (it.finishReason ?: "未返回"),
+                            "contentLength" to it.content.length,
+                            "thinkingLength" to it.thinkingContent.length,
+                            "toolCalls" to it.toolCalls.size,
+                            "durationMs" to MoteLog.durationMs(startMs),
+                            *it.usage.safeLogFields()
+                        )
+                    )
+                }
             }
         }
     }
@@ -422,13 +362,42 @@ object ChatApiClient {
         }
     }
 
-    private fun readResponseText(connection: HttpURLConnection, statusCode: Int): String {
-        val stream = if (statusCode in 200..299) {
-            connection.inputStream
-        } else {
-            connection.errorStream ?: connection.inputStream
+    private fun buildRequest(settings: ApiSettings, requestBody: String, isStreaming: Boolean): Request {
+        val url = resolveChatUrl(settings.baseUrl)
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        
+        return Request.Builder()
+            .url(url)
+            .post(requestBody.toRequestBody(mediaType))
+            .apply {
+                if (isStreaming) {
+                    addHeader("Accept", "text/event-stream")
+                } else {
+                    addHeader("Accept", "application/json")
+                }
+                if (settings.apiKey.isNotBlank()) {
+                    addHeader("Authorization", "Bearer ${settings.apiKey}")
+                }
+            }
+            .build()
+    }
+
+    private suspend fun executeRequest(request: Request): Response {
+        return suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation {
+                call.cancel()
+            }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    continuation.resume(response)
+                }
+            })
         }
-        return stream.bufferedReader(Charsets.UTF_8).use { reader -> reader.readText() }
     }
 
     fun buildContextSummaryPrompt(summary: String): String {
@@ -658,7 +627,7 @@ object ChatApiClient {
     }
 
     private suspend fun readStreamedReply(
-        connection: HttpURLConnection,
+        response: Response,
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit
     ): ChatCompletionResult {
@@ -670,11 +639,11 @@ object ChatApiClient {
         val toolCalls = linkedMapOf<Int, ToolCallAccumulator>()
         var usage: TokenUsage? = null
 
-        connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+        response.body?.source()?.let { source ->
             val eventPayload = StringBuilder()
-            while (true) {
+            while (!source.exhausted()) {
                 coroutineContext.ensureActive()
-                val line = reader.readLine() ?: break
+                val line = source.buffer.readUtf8Line() ?: break
                 if (line.isBlank()) {
                     if (eventPayload.isNotEmpty()) {
                         coroutineContext.ensureActive()

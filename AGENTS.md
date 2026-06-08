@@ -14,7 +14,7 @@ Mote 是运行在 Android 设备上的 AI Agent 聊天客户端，通过 OpenAI 
 | 构建 | Gradle Kotlin DSL + Version Catalog |
 | UI | 传统 View + ViewBinding，未使用 Compose |
 | 架构 | MVVM，AndroidViewModel，LiveData，Coroutines |
-| 网络 | HttpURLConnection |
+| 网络 | OkHttp 4.12.0 |
 | 序列化 | org.json |
 | Markdown | 自研原生视图树 + prism4j 语法高亮 + RaTeX 公式渲染 |
 

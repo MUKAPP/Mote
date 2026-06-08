@@ -63,6 +63,7 @@ dependencies {
     }
     implementation(libs.flexmark.html2md.converter)
     implementation(libs.ratex.android)
+    implementation(libs.okhttp)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     androidTestImplementation(libs.androidx.junit)

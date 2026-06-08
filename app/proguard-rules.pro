@@ -20,3 +20,8 @@
 -dontwarn javax.annotation.Nullable
 -dontwarn javax.annotation.ParametersAreNonnullByDefault
 -dontwarn javax.annotation.WillClose
+
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
