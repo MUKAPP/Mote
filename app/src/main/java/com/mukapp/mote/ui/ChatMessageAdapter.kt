@@ -236,50 +236,48 @@ class ChatMessageAdapter(
         private val binding: ItemChatMessageBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         init {
-            // 长按卡片弹出菜单（复制/编辑/删除/重试）
-            binding.cardMessage.setOnLongClickListener {
-                showAssistantPopupMenu(it)
-                true
+            // 长按卡片任意位置（含 Markdown 文本）在手指处弹出菜单（复制/编辑/删除/重试）
+            binding.cardMessage.setOnContentLongPressListener { x, y ->
+                showAssistantPopupMenu(x, y)
             }
         }
 
-        private fun showAssistantPopupMenu(view: android.view.View) {
+        private fun showAssistantPopupMenu(touchX: Int, touchY: Int) {
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
 
-            val popup = android.widget.PopupMenu(view.context, view)
-            if (hasCopyableContent(message)) {
-                popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
-            }
-            popup.menu.add(0, MENU_EDIT, 1, R.string.action_edit)
-            popup.menu.add(0, MENU_DELETE, 2, R.string.action_delete)
-            if (isLastAiMessage && !isSending) {
-                popup.menu.add(0, MENU_RETRY, 3, R.string.action_retry)
-            }
-
-            popup.setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    MENU_COPY -> {
-                        onCopyMessage(message)
-                        true
+            showMessagePopupAt(binding.cardMessage, touchX, touchY) { popup ->
+                if (hasCopyableContent(message)) {
+                    popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
+                }
+                popup.menu.add(0, MENU_EDIT, 1, R.string.action_edit)
+                popup.menu.add(0, MENU_DELETE, 2, R.string.action_delete)
+                if (isLastAiMessage && !isSending) {
+                    popup.menu.add(0, MENU_RETRY, 3, R.string.action_retry)
+                }
+                popup.setOnMenuItemClickListener { item ->
+                    when (item.itemId) {
+                        MENU_COPY -> {
+                            onCopyMessage(message)
+                            true
+                        }
+                        MENU_EDIT -> {
+                            onEditMessage(position)
+                            true
+                        }
+                        MENU_DELETE -> {
+                            onDeleteMessage(position)
+                            true
+                        }
+                        MENU_RETRY -> {
+                            onRetryMessage(position)
+                            true
+                        }
+                        else -> false
                     }
-                    MENU_EDIT -> {
-                        onEditMessage(position)
-                        true
-                    }
-                    MENU_DELETE -> {
-                        onDeleteMessage(position)
-                        true
-                    }
-                    MENU_RETRY -> {
-                        onRetryMessage(position)
-                        true
-                    }
-                    else -> false
                 }
             }
-            popup.show()
         }
 
         fun clear() {
@@ -394,53 +392,51 @@ class ChatMessageAdapter(
         private val binding: ItemChatMessageUserBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         init {
-            // 长按卡片弹出菜单（复制/展开/编辑/删除）
-            binding.cardMessage.setOnLongClickListener {
-                showUserPopupMenu(it)
-                true
+            // 长按卡片任意位置在手指处弹出菜单（复制/展开/编辑/删除）
+            binding.cardMessage.setOnContentLongPressListener { x, y ->
+                showUserPopupMenu(x, y)
             }
         }
 
-        private fun showUserPopupMenu(view: android.view.View) {
+        private fun showUserPopupMenu(touchX: Int, touchY: Int) {
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
 
-            val popup = android.widget.PopupMenu(view.context, view)
-            popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
-            if (isCollapsible(message)) {
-                val expanded = expandedUserMessageIds.contains(message.id)
-                popup.menu.add(
-                    0,
-                    MENU_TOGGLE_EXPAND,
-                    1,
-                    if (expanded) R.string.action_collapse else R.string.action_expand
-                )
-            }
-            popup.menu.add(0, MENU_EDIT, 2, R.string.action_edit)
-            popup.menu.add(0, MENU_DELETE, 3, R.string.action_delete)
-
-            popup.setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    MENU_COPY -> {
-                        onCopyMessage(message)
-                        true
+            showMessagePopupAt(binding.cardMessage, touchX, touchY) { popup ->
+                popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
+                if (isCollapsible(message)) {
+                    val expanded = expandedUserMessageIds.contains(message.id)
+                    popup.menu.add(
+                        0,
+                        MENU_TOGGLE_EXPAND,
+                        1,
+                        if (expanded) R.string.action_collapse else R.string.action_expand
+                    )
+                }
+                popup.menu.add(0, MENU_EDIT, 2, R.string.action_edit)
+                popup.menu.add(0, MENU_DELETE, 3, R.string.action_delete)
+                popup.setOnMenuItemClickListener { item ->
+                    when (item.itemId) {
+                        MENU_COPY -> {
+                            onCopyMessage(message)
+                            true
+                        }
+                        MENU_TOGGLE_EXPAND -> {
+                            toggleUserExpansion(message)
+                            true
+                        }
+                        MENU_EDIT -> {
+                            onEditMessage(position)
+                            true
+                        }
+                        MENU_DELETE -> {
+                            onDeleteMessage(position)
+                            true
+                        }
+                        else -> false
                     }
-                    MENU_TOGGLE_EXPAND -> {
-                        toggleUserExpansion(message)
-                        true
-                    }
-                    MENU_EDIT -> {
-                        onEditMessage(position)
-                        true
-                    }
-                    MENU_DELETE -> {
-                        onDeleteMessage(position)
-                        true
-                    }
-                    else -> false
                 }
             }
-            popup.show()
         }
 
         private fun toggleUserExpansion(message: ChatMessage) {
@@ -538,6 +534,42 @@ class ChatMessageAdapter(
             else -> ""
         }
         return name + suffix
+    }
+
+    /**
+     * 在手指按下位置弹出消息菜单：临时在卡片内放一个 1x1 锚点，菜单据此定位，
+     * 避免长消息时菜单吸附到卡片底部；按手指处于左/右半区决定向左或向右展开。
+     */
+    private fun showMessagePopupAt(
+        card: android.view.View,
+        touchX: Int,
+        touchY: Int,
+        configure: (android.widget.PopupMenu) -> Unit
+    ) {
+        val parent = card as? ViewGroup ?: return
+        val context = card.context
+        val anchor = android.view.View(context)
+        anchor.layoutParams = android.widget.FrameLayout.LayoutParams(1, 1).apply {
+            leftMargin = touchX.coerceIn(0, (card.width - 1).coerceAtLeast(0))
+            topMargin = touchY.coerceIn(0, (card.height - 1).coerceAtLeast(0))
+        }
+        parent.addView(anchor)
+        // 等待锚点完成布局后再弹出，确保定位准确
+        anchor.post {
+            if (!anchor.isAttachedToWindow) {
+                parent.removeView(anchor)
+                return@post
+            }
+            val gravity = if (touchX >= card.width / 2) {
+                android.view.Gravity.END
+            } else {
+                android.view.Gravity.START
+            }
+            val popup = android.widget.PopupMenu(context, anchor, gravity)
+            configure(popup)
+            popup.setOnDismissListener { parent.removeView(anchor) }
+            popup.show()
+        }
     }
 
     private companion object {

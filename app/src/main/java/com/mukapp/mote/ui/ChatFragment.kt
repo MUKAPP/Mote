@@ -208,7 +208,7 @@ class ChatFragment : Fragment() {
         ViewCompat.setWindowInsetsAnimationCallback(binding.root, animationCallback)
 
         setupToolbarOverlayTracking()
-        setupScrollToBottomFab()
+        setupScrollToBottomButton()
 
         val realWindowBackground = requireActivity().window.decorView.background
         val backgroundColor = ContextCompat.getColor(requireContext(), R.color.mote_background)
@@ -253,6 +253,7 @@ class ChatFragment : Fragment() {
 
         setupBlur(binding.cardInput, 20f, overlayColor, 36f)
         setupBlur(binding.cardShellConfirmation, 20f, overlayColor, 16f)
+        setupBlur(binding.blurScrollToBottom, 20f, overlayColor, 18f)
     }
 
     override fun onDestroyView() {
@@ -305,6 +306,11 @@ class ChatFragment : Fragment() {
                     override fun getVerticalSnapPreference(): Int {
                         return SNAP_TO_END
                     }
+
+                    override fun calculateSpeedPerPixel(displayMetrics: android.util.DisplayMetrics): Float {
+                        // 默认速度偏慢，回到底部时缩短动画时长
+                        return super.calculateSpeedPerPixel(displayMetrics) * ScrollSpeedFactor
+                    }
                 }
                 smoothScroller.targetPosition = position
                 startSmoothScroll(smoothScroller)
@@ -344,7 +350,7 @@ class ChatFragment : Fragment() {
                         }
                         userScrolling = false
                         scheduleMarkdownPreparse(immediate = true)
-                        updateScrollToBottomFab()
+                        updateScrollToBottomButton()
                     }
                 }
             }
@@ -358,7 +364,7 @@ class ChatFragment : Fragment() {
                     lastScrollDy = dy
                 }
                 scheduleMarkdownPreparse(immediate = false)
-                updateScrollToBottomFab()
+                updateScrollToBottomButton()
                 if (!userScrolling) {
                     return
                 }
@@ -651,14 +657,14 @@ class ChatFragment : Fragment() {
                 scrollRecyclerByBottomDelta = true
             )
         }
-        updateScrollToBottomFab()
+        updateScrollToBottomButton()
 
         binding.cardShellConfirmation.post {
             updateContentPadding(
                 bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset,
                 scrollRecyclerByBottomDelta = true
             )
-            updateScrollToBottomFab()
+            updateScrollToBottomButton()
         }
     }
 
@@ -721,25 +727,52 @@ class ChatFragment : Fragment() {
         toolbarLayoutChangeListener = listener
     }
 
-    private fun setupScrollToBottomFab() {
-        binding.fabScrollToBottom.setOnClickListener {
+    private fun setupScrollToBottomButton() {
+        binding.blurScrollToBottom.setOnClickListener {
             userScrolling = false
             followOutput = true
             postScrollToBottom(animated = true)
-            binding.fabScrollToBottom.hide()
+            setScrollToBottomVisible(false)
         }
     }
 
     /** 列表未到底（下方仍有内容）且无 Shell 确认条时显示"回到底部"按钮。 */
-    private fun updateScrollToBottomFab() {
+    private fun updateScrollToBottomButton() {
         val binding = _binding ?: return
         val shouldShow = binding.recyclerMessages.isVisible &&
             !binding.cardShellConfirmation.isVisible &&
             binding.recyclerMessages.canScrollVertically(1)
-        if (shouldShow) {
-            binding.fabScrollToBottom.show()
+        setScrollToBottomVisible(shouldShow)
+    }
+
+    private fun setScrollToBottomVisible(visible: Boolean) {
+        val binding = _binding ?: return
+        val button = binding.blurScrollToBottom
+        if (visible) {
+            if (button.isVisible && button.alpha == 1f) {
+                return
+            }
+            button.animate().cancel()
+            if (!button.isVisible) {
+                button.alpha = 0f
+                button.isVisible = true
+            }
+            button.isClickable = true
+            button.animate().alpha(1f).setDuration(ScrollButtonFadeMs).start()
         } else {
-            binding.fabScrollToBottom.hide()
+            if (!button.isVisible) {
+                return
+            }
+            button.isClickable = false
+            button.animate().cancel()
+            button.animate()
+                .alpha(0f)
+                .setDuration(ScrollButtonFadeMs)
+                .withEndAction {
+                    val b = _binding ?: return@withEndAction
+                    b.blurScrollToBottom.isVisible = false
+                }
+                .start()
         }
     }
 
@@ -781,7 +814,7 @@ class ChatFragment : Fragment() {
             pendingImmediateScrollToBottom = false
             postScrollToBottom(animated)
         }
-        binding.recyclerMessages.post { updateScrollToBottomFab() }
+        binding.recyclerMessages.post { updateScrollToBottomButton() }
     }
 
     /**
@@ -1437,6 +1470,8 @@ class ChatFragment : Fragment() {
         const val MarkdownPreparseFallbackTailItems = 18
         const val MarkdownPreparseMaxEntries = 32
         const val InitialImmediateScrollThreshold = 20
+        const val ScrollButtonFadeMs = 150L
+        const val ScrollSpeedFactor = 0.5f
         const val MenuAddImage = 1
         const val MenuAddFile = 2
         const val MaxImageBytes = 20 * 1024 * 1024

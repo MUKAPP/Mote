@@ -7,7 +7,7 @@
     android:paddingHorizontal="16dp"
     android:paddingVertical="10dp">
 
-    <com.google.android.material.card.MaterialCardView
+    <com.mukapp.mote.ui.MessageCardView
         android:id="@+id/card_message"
         style="@style/Widget.Mote.MessageCard.User"
         android:layout_width="match_parent"
@@ -39,6 +39,6 @@
                 app:chipSpacingHorizontal="8dp"
                 app:chipSpacingVertical="4dp" />
         </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
+    </com.mukapp.mote.ui.MessageCardView>
 
 </LinearLayout>
