@@ -17,7 +17,8 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingBottom="16dp">
 
             <TextView
                 android:id="@+id/text_ai_label"
@@ -42,9 +43,8 @@
                 android:id="@+id/text_status"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginLeft="16dp"
+                android:layout_marginStart="16dp"
                 android:layout_marginTop="8dp"
-                android:layout_marginBottom="0dp"
                 android:text="@string/status_generating"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="?attr/colorOnSurfaceVariant"
@@ -57,47 +57,8 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="16dp"
                 android:layout_marginTop="8dp"
-                android:layout_marginBottom="16dp"
                 android:visibility="gone"
                 tools:visibility="visible" />
-
-            <LinearLayout
-                android:id="@+id/layout_actions"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="end"
-                android:orientation="horizontal"
-                android:paddingHorizontal="12dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="12dp">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_copy"
-                    style="@style/Widget.Material3.Button.IconButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:contentDescription="@string/action_copy"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
-                    android:padding="4dp"
-                    app:icon="@drawable/ic_content_copy"
-                    app:iconSize="20dp"
-                    app:iconTint="?attr/colorOnSurfaceVariant" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_retry"
-                    style="@style/Widget.Material3.Button.IconButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:contentDescription="@string/action_retry"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
-                    android:padding="4dp"
-                    android:visibility="gone"
-                    app:icon="@drawable/ic_refresh"
-                    app:iconSize="20dp"
-                    app:iconTint="?attr/colorOnSurfaceVariant" />
-            </LinearLayout>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 

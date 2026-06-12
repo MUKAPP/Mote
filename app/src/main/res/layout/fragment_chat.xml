@@ -32,6 +32,24 @@
             layout="@layout/empty_chat_placeholder" />
     </FrameLayout>
 
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fab_scroll_to_bottom"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="4dp"
+        android:layout_marginBottom="10dp"
+        android:contentDescription="@string/action_scroll_to_bottom"
+        android:visibility="gone"
+        app:backgroundTint="@color/mote_popup_background"
+        app:borderWidth="0dp"
+        app:elevation="3dp"
+        app:fabSize="mini"
+        app:layout_constraintBottom_toTopOf="@id/card_input"
+        app:layout_constraintEnd_toEndOf="@id/card_input"
+        app:srcCompat="@drawable/ic_expand_more"
+        app:tint="?attr/colorPrimary"
+        tools:visibility="visible" />
+
     <eightbitlab.com.blurview.BlurView
         android:id="@+id/card_input"
         android:layout_width="0dp"

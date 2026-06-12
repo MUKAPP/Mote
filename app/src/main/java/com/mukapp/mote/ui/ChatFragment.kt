@@ -97,10 +97,14 @@ class ChatFragment : Fragment() {
 
     private var systemBottomInset = 0
     private var imeBottomInset = 0
-    private val topOffset = (56 + 16).dpInt
+    private var systemTopInset = 0
+    private var toolbarOverlayHeight = 0
+    private val topContentGap = 16.dpInt
+    private val fallbackToolbarHeight = 56.dpInt
     private val cardMarginBottom = 16.dpInt
     private val bottomOffset = cardMarginBottom + 8.dpInt
     private val confirmationCardGap = 8.dpInt
+    private var toolbarLayoutChangeListener: View.OnLayoutChangeListener? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -128,12 +132,13 @@ class ChatFragment : Fragment() {
 
             systemBottomInset = systemBars.bottom
             imeBottomInset = ime.bottom
+            systemTopInset = systemBars.top
 
             if (!imeAnimationRunning) {
                 val currentBottom = max(systemBottomInset, imeBottomInset)
 
                 updateContentPadding(
-                    top = systemBars.top + topOffset,
+                    top = resolvedTopPadding(systemBars.top),
                     bottom = currentBottom + inputStackHeight() + bottomOffset
                 )
 
@@ -202,6 +207,9 @@ class ChatFragment : Fragment() {
 
         ViewCompat.setWindowInsetsAnimationCallback(binding.root, animationCallback)
 
+        setupToolbarOverlayTracking()
+        setupScrollToBottomFab()
+
         val realWindowBackground = requireActivity().window.decorView.background
         val backgroundColor = ContextCompat.getColor(requireContext(), R.color.mote_background)
         val cardColor = ContextCompat.getColor(requireContext(), R.color.mote_card)
@@ -249,6 +257,10 @@ class ChatFragment : Fragment() {
 
     override fun onDestroyView() {
         parseCache.clear()
+        toolbarLayoutChangeListener?.let { listener ->
+            activity?.findViewById<View>(R.id.blur_view_toolbar)?.removeOnLayoutChangeListener(listener)
+        }
+        toolbarLayoutChangeListener = null
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(markdownPreparseRunnable)
@@ -332,6 +344,7 @@ class ChatFragment : Fragment() {
                         }
                         userScrolling = false
                         scheduleMarkdownPreparse(immediate = true)
+                        updateScrollToBottomFab()
                     }
                 }
             }
@@ -345,6 +358,7 @@ class ChatFragment : Fragment() {
                     lastScrollDy = dy
                 }
                 scheduleMarkdownPreparse(immediate = false)
+                updateScrollToBottomFab()
                 if (!userScrolling) {
                     return
                 }
@@ -637,12 +651,14 @@ class ChatFragment : Fragment() {
                 scrollRecyclerByBottomDelta = true
             )
         }
+        updateScrollToBottomFab()
 
         binding.cardShellConfirmation.post {
             updateContentPadding(
                 bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset,
                 scrollRecyclerByBottomDelta = true
             )
+            updateScrollToBottomFab()
         }
     }
 
@@ -671,6 +687,59 @@ class ChatFragment : Fragment() {
         val bottomDelta = bottom - previousBottom
         if (scrollRecyclerByBottomDelta && bottomDelta != 0) {
             recyclerView.scrollBy(0, bottomDelta)
+        }
+    }
+
+    private fun resolvedTopPadding(systemTop: Int): Int {
+        val toolbarHeight = if (toolbarOverlayHeight > 0) {
+            toolbarOverlayHeight
+        } else {
+            systemTop + fallbackToolbarHeight
+        }
+        return toolbarHeight + topContentGap
+    }
+
+    /**
+     * 跟踪活动顶栏（毛玻璃 Toolbar）的真实高度，替代写死的 56dp 假设。
+     * 大字体、横屏等情况下 Toolbar 高度会变化，监听其布局变化即可让内容顶部留白始终正确。
+     */
+    private fun setupToolbarOverlayTracking() {
+        val toolbarOverlay = activity?.findViewById<View>(R.id.blur_view_toolbar) ?: return
+        toolbarOverlayHeight = toolbarOverlay.height
+        val listener = View.OnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+            if (view.height == toolbarOverlayHeight) {
+                return@OnLayoutChangeListener
+            }
+            toolbarOverlayHeight = view.height
+            val binding = _binding ?: return@OnLayoutChangeListener
+            updateContentPadding(
+                top = resolvedTopPadding(systemTopInset),
+                bottom = binding.recyclerMessages.paddingBottom
+            )
+        }
+        toolbarOverlay.addOnLayoutChangeListener(listener)
+        toolbarLayoutChangeListener = listener
+    }
+
+    private fun setupScrollToBottomFab() {
+        binding.fabScrollToBottom.setOnClickListener {
+            userScrolling = false
+            followOutput = true
+            postScrollToBottom(animated = true)
+            binding.fabScrollToBottom.hide()
+        }
+    }
+
+    /** 列表未到底（下方仍有内容）且无 Shell 确认条时显示"回到底部"按钮。 */
+    private fun updateScrollToBottomFab() {
+        val binding = _binding ?: return
+        val shouldShow = binding.recyclerMessages.isVisible &&
+            !binding.cardShellConfirmation.isVisible &&
+            binding.recyclerMessages.canScrollVertically(1)
+        if (shouldShow) {
+            binding.fabScrollToBottom.show()
+        } else {
+            binding.fabScrollToBottom.hide()
         }
     }
 
@@ -712,6 +781,7 @@ class ChatFragment : Fragment() {
             pendingImmediateScrollToBottom = false
             postScrollToBottom(animated)
         }
+        binding.recyclerMessages.post { updateScrollToBottomFab() }
     }
 
     /**

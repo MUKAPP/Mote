@@ -26,6 +26,12 @@
         <item name="iconTint">@color/mote_primary</item>
     </style>
 
+    <!-- 圆角弹出菜单（长按消息、附件菜单等） -->
+    <style name="Widget.Mote.PopupMenu" parent="Widget.Material3.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_menu_background</item>
+        <item name="android:popupElevation">3dp</item>
+    </style>
+
     <!-- 思考强度选择 Chip -->
     <style name="Widget.Mote.Chip.Choice" parent="Widget.Material3.Chip.Filter">
         <item name="chipBackgroundColor">@color/mote_chip_background</item>

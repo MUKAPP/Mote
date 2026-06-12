@@ -41,7 +41,7 @@ class ChatMessageAdapter(
     }
 
     override fun getItemId(position: Int): Long {
-        return messages[position].id.hashCode().toLong()
+        return stableItemId(messages[position].id)
     }
 
     override fun getItemViewType(position: Int): Int {
@@ -76,7 +76,7 @@ class ChatMessageAdapter(
         when (holder) {
             is AssistantViewHolder -> {
                 if (STREAMING_PAYLOAD in payloads) {
-                    // 流式更新走精简路径：只更新内容和状态，跳过按钮和 layoutActions 等
+                    // 流式更新走精简路径：只更新内容和状态
                     holder.bindStreaming(messages[position])
                 } else {
                     holder.bind(messages[position], position)
@@ -236,35 +236,34 @@ class ChatMessageAdapter(
         private val binding: ItemChatMessageBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         init {
-            // OnClickListener 在创建时设置一次，通过 bindingAdapterPosition 动态获取位置
-            binding.btnCopy.setOnClickListener {
-                currentMessageOrNull()?.let(onCopyMessage)
-            }
-            binding.btnRetry.setOnClickListener {
-                currentPositionOrNull()?.let(onRetryMessage)
-            }
-            
-            // 长按卡片弹出菜单
+            // 长按卡片弹出菜单（复制/编辑/删除/重试）
             binding.cardMessage.setOnLongClickListener {
                 showAssistantPopupMenu(it)
                 true
             }
         }
-        
+
         private fun showAssistantPopupMenu(view: android.view.View) {
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
-            
+
             val popup = android.widget.PopupMenu(view.context, view)
-            popup.menu.add(0, MENU_EDIT, 0, R.string.action_edit)
-            popup.menu.add(0, MENU_DELETE, 1, R.string.action_delete)
-            if (isLastAiMessage && !isSending) {
-                popup.menu.add(0, MENU_RETRY, 2, R.string.action_retry)
+            if (hasCopyableContent(message)) {
+                popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
             }
-            
+            popup.menu.add(0, MENU_EDIT, 1, R.string.action_edit)
+            popup.menu.add(0, MENU_DELETE, 2, R.string.action_delete)
+            if (isLastAiMessage && !isSending) {
+                popup.menu.add(0, MENU_RETRY, 3, R.string.action_retry)
+            }
+
             popup.setOnMenuItemClickListener { item ->
                 when (item.itemId) {
+                    MENU_COPY -> {
+                        onCopyMessage(message)
+                        true
+                    }
                     MENU_EDIT -> {
                         onEditMessage(position)
                         true
@@ -297,8 +296,6 @@ class ChatMessageAdapter(
             val isStreamingMessage = isSending && message.id == streamingMessageId
             val hasContent = message.content.isNotBlank()
             val hasParts = message.assistantParts.isNotEmpty()
-            val hasCopyableContent = hasContent || hasCopyableMarkdownParts(message)
-            val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
             val showGeneratingStatus = isStreamingMessage && !hasContent && !hasParts
             syncThinkingPartExpansion(message, isStreamingMessage)
 
@@ -324,10 +321,6 @@ class ChatMessageAdapter(
             } else {
                 binding.markdownContent.clearMarkdown()
             }
-
-            binding.layoutActions.isVisible = !isStreamingMessage && (hasContent || hasParts)
-            binding.btnCopy.isEnabled = hasCopyableContent
-            binding.btnRetry.isVisible = isLastAiMessage && !isStreamingMessage
         }
 
         /** 流式更新精简路径：只更新 MarkdownView 内容和实时状态 */
@@ -401,43 +394,41 @@ class ChatMessageAdapter(
         private val binding: ItemChatMessageUserBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         init {
-            binding.btnCopy.setOnClickListener {
-                currentMessageOrNull()?.let(onCopyMessage)
-            }
-            binding.btnToggleExpand.setOnClickListener {
-                val message = currentMessageOrNull() ?: return@setOnClickListener
-                val isExpanded = expandedUserMessageIds.contains(message.id)
-                if (isExpanded) {
-                    expandedUserMessageIds.remove(message.id)
-                    binding.textContent.maxLines = COLLAPSED_MAX_LINES
-                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_more)
-                    binding.btnToggleExpand.contentDescription =
-                        itemView.context.getString(R.string.action_expand)
-                } else {
-                    expandedUserMessageIds.add(message.id)
-                    binding.textContent.maxLines = Int.MAX_VALUE
-                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_less)
-                    binding.btnToggleExpand.contentDescription =
-                        itemView.context.getString(R.string.action_collapse)
-                }
-            }
-            
-            // 长按卡片弹出菜单
+            // 长按卡片弹出菜单（复制/展开/编辑/删除）
             binding.cardMessage.setOnLongClickListener {
                 showUserPopupMenu(it)
                 true
             }
         }
-        
+
         private fun showUserPopupMenu(view: android.view.View) {
+            val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
-            
+
             val popup = android.widget.PopupMenu(view.context, view)
-            popup.menu.add(0, MENU_EDIT, 0, R.string.action_edit)
-            popup.menu.add(0, MENU_DELETE, 1, R.string.action_delete)
-            
+            popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
+            if (isCollapsible(message)) {
+                val expanded = expandedUserMessageIds.contains(message.id)
+                popup.menu.add(
+                    0,
+                    MENU_TOGGLE_EXPAND,
+                    1,
+                    if (expanded) R.string.action_collapse else R.string.action_expand
+                )
+            }
+            popup.menu.add(0, MENU_EDIT, 2, R.string.action_edit)
+            popup.menu.add(0, MENU_DELETE, 3, R.string.action_delete)
+
             popup.setOnMenuItemClickListener { item ->
                 when (item.itemId) {
+                    MENU_COPY -> {
+                        onCopyMessage(message)
+                        true
+                    }
+                    MENU_TOGGLE_EXPAND -> {
+                        toggleUserExpansion(message)
+                        true
+                    }
                     MENU_EDIT -> {
                         onEditMessage(position)
                         true
@@ -452,10 +443,20 @@ class ChatMessageAdapter(
             popup.show()
         }
 
+        private fun toggleUserExpansion(message: ChatMessage) {
+            val expanded = expandedUserMessageIds.contains(message.id)
+            if (expanded) {
+                expandedUserMessageIds.remove(message.id)
+                binding.textContent.maxLines = COLLAPSED_MAX_LINES
+            } else {
+                expandedUserMessageIds.add(message.id)
+                binding.textContent.maxLines = Int.MAX_VALUE
+            }
+        }
+
         fun bind(message: ChatMessage, position: Int) {
             binding.textContent.text = message.content
             binding.textContent.isVisible = message.content.isNotBlank()
-            binding.btnCopy.isEnabled = message.content.isNotBlank() || message.attachments.isNotEmpty()
 
             // 附件标签
             if (message.attachments.isNotEmpty()) {
@@ -490,27 +491,21 @@ class ChatMessageAdapter(
                 binding.chipGroupAttachments.isVisible = false
             }
 
+            // 折叠态由长按菜单切换；收起时配合 ellipsize 显示省略号
             val isExpanded = expandedUserMessageIds.contains(message.id)
-            val lineCount = message.content.count { it == '\n' } + 1
-            val needsCollapse = message.content.isNotBlank() && lineCount > COLLAPSED_MAX_LINES
-
-            if (needsCollapse) {
-                binding.btnToggleExpand.isVisible = true
-                if (isExpanded) {
-                    binding.textContent.maxLines = Int.MAX_VALUE
-                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_less)
-                    binding.btnToggleExpand.contentDescription =
-                        itemView.context.getString(R.string.action_collapse)
-                } else {
-                    binding.textContent.maxLines = COLLAPSED_MAX_LINES
-                    binding.btnToggleExpand.setIconResource(R.drawable.ic_expand_more)
-                    binding.btnToggleExpand.contentDescription =
-                        itemView.context.getString(R.string.action_expand)
-                }
+            binding.textContent.maxLines = if (isCollapsible(message) && !isExpanded) {
+                COLLAPSED_MAX_LINES
             } else {
-                binding.btnToggleExpand.isVisible = false
-                binding.textContent.maxLines = Int.MAX_VALUE
+                Int.MAX_VALUE
             }
+        }
+
+        private fun isCollapsible(message: ChatMessage): Boolean {
+            if (message.content.isBlank()) {
+                return false
+            }
+            val lineCount = message.content.count { it == '\n' } + 1
+            return lineCount > COLLAPSED_MAX_LINES
         }
 
         private fun currentPositionOrNull(): Int? {
@@ -530,6 +525,10 @@ class ChatMessageAdapter(
         }
     }
 
+    private fun hasCopyableContent(message: ChatMessage): Boolean {
+        return message.content.isNotBlank() || hasCopyableMarkdownParts(message)
+    }
+
     private fun buildChipLabel(attachment: ChatAttachment): String {
         val name = attachment.displayName.ifBlank { attachment.path.substringAfterLast('/') }
         val suffix = when {
@@ -547,10 +546,22 @@ class ChatMessageAdapter(
         const val STREAMING_PAYLOAD = "streaming"
         const val COLLAPSED_MAX_LINES = 10
         const val BulkInsertNotifyThreshold = 40
-        
+
         // PopupMenu 菜单项 ID
         const val MENU_EDIT = 1
         const val MENU_DELETE = 2
         const val MENU_RETRY = 3
+        const val MENU_COPY = 4
+        const val MENU_TOGGLE_EXPAND = 5
+
+        /** 优先把 UUID 形式的消息 ID 映射为稳定 long，非 UUID 时回退 FNV 风格折叠，避免 hashCode 截断碰撞。 */
+        fun stableItemId(id: String): Long {
+            return runCatching {
+                val uuid = java.util.UUID.fromString(id)
+                uuid.mostSignificantBits xor uuid.leastSignificantBits
+            }.getOrElse {
+                id.fold(1125899906842597L) { hash, char -> hash * 31 + char.code }
+            }
+        }
     }
 }

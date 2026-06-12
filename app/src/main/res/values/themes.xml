@@ -38,6 +38,10 @@
 
         <!-- Dialog -->
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.Mote.MaterialAlertDialog</item>
+
+        <!-- 圆角弹出菜单 -->
+        <item name="popupMenuStyle">@style/Widget.Mote.PopupMenu</item>
+        <item name="android:popupMenuStyle">@style/Widget.Mote.PopupMenu</item>
     </style>
 
     <style name="Theme.Mote" parent="Base.Theme.Mote" />

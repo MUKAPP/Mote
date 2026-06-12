@@ -23,6 +23,7 @@
     <string name="action_retry">重试</string>
     <string name="action_expand">展开</string>
     <string name="action_collapse">收起</string>
+    <string name="action_scroll_to_bottom">回到底部</string>
     <string name="action_confirm">确认</string>
     <string name="action_cancel">取消</string>
     <string name="hint_message_input">输入消息...</string>

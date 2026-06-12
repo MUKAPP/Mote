@@ -16,17 +16,18 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingBottom="16dp">
 
             <TextView
                 android:id="@+id/text_content"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:ellipsize="end"
                 android:paddingHorizontal="16dp"
                 android:paddingTop="16dp"
                 android:textAppearance="?attr/textAppearanceBodyLarge"
-                android:textColor="?attr/colorOnSurface"
-                android:textIsSelectable="true" />
+                android:textColor="?attr/colorOnSurface" />
 
             <com.google.android.material.chip.ChipGroup
                 android:id="@+id/chip_group_attachments"
@@ -37,47 +38,6 @@
                 android:visibility="gone"
                 app:chipSpacingHorizontal="8dp"
                 app:chipSpacingVertical="4dp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingHorizontal="12dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="12dp">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_toggle_expand"
-                    style="@style/Widget.Material3.Button.IconButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:contentDescription="@string/action_expand"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
-                    android:padding="4dp"
-                    android:visibility="gone"
-                    app:icon="@drawable/ic_expand_more"
-                    app:iconSize="20dp"
-                    app:iconTint="?attr/colorOnSurfaceVariant" />
-
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="0dp"
-                    android:layout_weight="1" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_copy"
-                    style="@style/Widget.Material3.Button.IconButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:contentDescription="@string/action_copy"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
-                    android:padding="4dp"
-                    app:icon="@drawable/ic_content_copy"
-                    app:iconSize="20dp"
-                    app:iconTint="?attr/colorOnSurfaceVariant" />
-            </LinearLayout>
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 

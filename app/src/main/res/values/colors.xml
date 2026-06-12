@@ -12,6 +12,7 @@
     <color name="mote_card">#14000000</color> <!-- Black 8% -->
     <color name="mote_card_nested">#14000000</color> <!-- Black 8%（叠加在 Card 上约 16%） -->
     <color name="mote_user_message_card">#2657A2DB</color> <!-- Primary 15% -->
+    <color name="mote_popup_background">#EBEBEB</color> <!-- 不透明弹层/悬浮底色（约等于 Card 叠加在白底上） -->
 
     <!-- 文字 -->
     <color name="mote_on_background">#DE000000</color> <!-- Black 87% -->
