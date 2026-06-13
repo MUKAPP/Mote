@@ -20,6 +20,8 @@ import android.text.style.URLSpan
 import android.util.LruCache
 import android.util.TypedValue
 import androidx.annotation.ColorInt
+import com.mukapp.mote.util.dp
+import com.mukapp.mote.util.dpInt
 import io.ratex.RaTeXEngine
 import io.ratex.RaTeXFontLoader
 import io.ratex.RaTeXRenderer
@@ -36,6 +38,18 @@ class SpannedBuilder(private val context: Context) {
 
     /** 表格可用绘制宽度（像素），由外部设置 */
     var tableAvailableWidth: Int = 0
+
+    /**
+     * 是否把表格渲染为纯文本（等宽对齐网格）而非 Canvas 绘制的 [TableSpan]。
+     * Canvas 绘制的表格不是真实文本、无法被选择复制；自由复制页开启此项以支持选取。
+     */
+    var tablesAsPlainText: Boolean = false
+
+    /**
+     * 是否启用「贴近 [MarkdownView] 外观」的整篇富样式（标题配色、引用块竖条、代码块圆角底色、
+     * 分割线、列表标记配色等）。仅自由复制页的整篇渲染路径开启；聊天页 [MarkdownView] 不受影响。
+     */
+    var standalone: Boolean = false
 
     /** 行内公式渲染字号（像素），由 MarkdownView 按当前 TextView 字号同步 */
     var inlineMathTextSizePx: Float = TypedValue.applyDimension(
@@ -78,6 +92,33 @@ class SpannedBuilder(private val context: Context) {
         resolveThemeColor(androidx.appcompat.R.attr.colorPrimary, 0xFF6750A4.toInt())
     }
 
+    private val bodyTextColor: Int by lazy {
+        resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
+    }
+
+    private val secondaryTextColor: Int by lazy {
+        resolveThemeColor(com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF49454F.toInt())
+    }
+
+    private val outlineVariantColor: Int by lazy {
+        resolveThemeColor(com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt())
+    }
+
+    private val primaryColor: Int by lazy {
+        resolveThemeColor(androidx.appcompat.R.attr.colorPrimary, 0xFF6750A4.toInt())
+    }
+
+    private val quoteBackgroundColor: Int by lazy { blendWithAlpha(primaryColor, 0x10) }
+    private val quoteStripeColor: Int by lazy { blendWithAlpha(primaryColor, 0x7A) }
+    private val horizontalRuleColor: Int by lazy { blendWithAlpha(outlineVariantColor, 0x88) }
+
+    private val quoteCornerRadiusPx: Float by lazy { 12f.dp }
+    private val quoteStripeWidthPx: Int by lazy { 6.dpInt }
+    private val quoteContentGapPx: Int by lazy { 12.dpInt }
+    private val codeBlockCornerRadiusPx: Float by lazy { 10f.dp }
+    private val codeBlockPaddingPx: Int by lazy { 12.dpInt }
+    private val horizontalRuleThicknessPx: Int by lazy { 1.dpInt.coerceAtLeast(1) }
+
     private val inlineMathTextColor: Int by lazy {
         resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
     }
@@ -91,7 +132,8 @@ class SpannedBuilder(private val context: Context) {
 
     fun build(blocks: List<MdBlock>, isStreaming: Boolean = false, linkDefs: Map<String, Pair<String, String>> = emptyMap()): SpannableStringBuilder {
         val ssb = SpannableStringBuilder()
-        appendBlocks(ssb, blocks, isStreaming, linkDefs)
+        // standalone（自由复制页）用空行分隔顶层块，贴近 MarkdownView 块间留白
+        appendBlocks(ssb, blocks, isStreaming, linkDefs, separator = if (standalone) "\n\n" else "\n")
         return ssb
     }
 
@@ -108,11 +150,11 @@ class SpannedBuilder(private val context: Context) {
         return ssb
     }
 
-    private fun appendBlocks(ssb: SpannableStringBuilder, blocks: List<MdBlock>, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
+    private fun appendBlocks(ssb: SpannableStringBuilder, blocks: List<MdBlock>, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>, separator: String = "\n") {
         for ((index, block) in blocks.withIndex()) {
             appendSingleBlock(ssb, block, isStreaming, linkDefs)
             if (index < blocks.lastIndex) {
-                ssb.append('\n')
+                ssb.append(separator)
             }
         }
     }
@@ -139,18 +181,45 @@ class SpannedBuilder(private val context: Context) {
         val end = ssb.length
         ssb.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         ssb.setSpan(RelativeSizeSpan(headingSize(heading.level)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        // standalone 下按层级着色，贴近 MarkdownView 标题观感
+        if (standalone) {
+            val color = when {
+                heading.level <= 2 -> bodyTextColor
+                heading.level <= 4 -> blendWithAlpha(bodyTextColor, 0xF0)
+                else -> secondaryTextColor
+            }
+            ssb.setSpan(ForegroundColorSpan(color), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     private fun appendCodeBlock(ssb: SpannableStringBuilder, codeBlock: MdBlock.CodeBlock) {
         val start = ssb.length
+        val langEnd: Int
         if (codeBlock.language.isNotBlank()) {
             ssb.append(codeBlock.language)
+            langEnd = ssb.length
             ssb.append('\n')
+        } else {
+            langEnd = start
         }
+        val codeStart = ssb.length
         ssb.append(codeSpanRenderer.buildCodeContent(codeBlock.code, codeBlock.language))
         val end = ssb.length
-        ssb.setSpan(BackgroundColorSpan(codeBlockBgColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        ssb.setSpan(TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+        if (standalone) {
+            ssb.setSpan(
+                CodeBlockBackgroundSpan(start, end, codeBlockBgColor, codeBlockPaddingPx, codeBlockCornerRadiusPx),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            if (langEnd > start) {
+                ssb.setSpan(ForegroundColorSpan(codeColors.headerTextColor), start, langEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                ssb.setSpan(RelativeSizeSpan(0.82f), start, langEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            ssb.setSpan(TypefaceSpan("monospace"), codeStart, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        } else {
+            ssb.setSpan(BackgroundColorSpan(codeBlockBgColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            ssb.setSpan(TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     fun buildCodeContent(code: String, language: String): SpannableStringBuilder {
@@ -162,7 +231,12 @@ class SpannedBuilder(private val context: Context) {
             val itemStart = ssb.length
             appendBlocks(ssb, childBlocks, isStreaming, linkDefs)
             val itemEnd = ssb.length
-            ssb.setSpan(BulletSpan(bulletGapWidth), itemStart, itemEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val bullet = if (standalone) {
+                BulletSpan(bulletGapWidth, secondaryTextColor)
+            } else {
+                BulletSpan(bulletGapWidth)
+            }
+            ssb.setSpan(bullet, itemStart, itemEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             if (index < list.items.lastIndex) {
                 ssb.append('\n')
             }
@@ -174,6 +248,9 @@ class SpannedBuilder(private val context: Context) {
             val itemStart = ssb.length
             val number = "${list.startNumber + index}. "
             ssb.append(number)
+            if (standalone) {
+                ssb.setSpan(ForegroundColorSpan(secondaryTextColor), itemStart, itemStart + number.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
             appendBlocks(ssb, childBlocks, isStreaming, linkDefs)
             val itemEnd = ssb.length
             val numberWidth = number.length * 12
@@ -188,8 +265,18 @@ class SpannedBuilder(private val context: Context) {
         for ((index, pair) in list.items.withIndex()) {
             val (taskItem, childBlocks) = pair
             val itemStart = ssb.length
-            val checkbox = if (taskItem.checked) "[x] " else "[ ] "
+            val checkbox = if (standalone) {
+                if (taskItem.checked) "☑ " else "☐ "
+            } else {
+                if (taskItem.checked) "[x] " else "[ ] "
+            }
             ssb.append(checkbox)
+            if (standalone) {
+                ssb.setSpan(
+                    ForegroundColorSpan(if (taskItem.checked) primaryColor else secondaryTextColor),
+                    itemStart, itemStart + checkbox.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
             appendBlocks(ssb, childBlocks, isStreaming, linkDefs)
             val itemEnd = ssb.length
             ssb.setSpan(LeadingMarginSpan.Standard(0), itemStart, itemEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -203,8 +290,23 @@ class SpannedBuilder(private val context: Context) {
         val start = ssb.length
         appendBlocks(ssb, blockquote.children, isStreaming, linkDefs)
         val end = ssb.length
-        val quoteMargin = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, context.resources.displayMetrics).toInt()
-        ssb.setSpan(LeadingMarginSpan.Standard(quoteMargin), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (standalone) {
+            ssb.setSpan(
+                QuoteBlockSpan(
+                    spanStart = start,
+                    spanEnd = end,
+                    backgroundColor = quoteBackgroundColor,
+                    stripeColor = quoteStripeColor,
+                    stripeWidth = quoteStripeWidthPx,
+                    gap = quoteContentGapPx,
+                    cornerRadius = quoteCornerRadiusPx
+                ),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        } else {
+            val quoteMargin = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, context.resources.displayMetrics).toInt()
+            ssb.setSpan(LeadingMarginSpan.Standard(quoteMargin), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     /** 表头背景色 */
@@ -246,6 +348,11 @@ class SpannedBuilder(private val context: Context) {
         val colCount = table.headers.size
         if (colCount == 0) return
 
+        if (tablesAsPlainText) {
+            appendTableAsPlainText(ssb, table, colCount)
+            return
+        }
+
         val width = if (tableAvailableWidth > 0) tableAvailableWidth else 800
         val start = ssb.length
         // 占位符：用单个特殊字符，TableSpan 会完全替换它的绘制
@@ -265,6 +372,81 @@ class SpannedBuilder(private val context: Context) {
         )
         ssb.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
+
+    /** 把表格渲染为等宽对齐的纯文本网格，保证内容可被选取复制。 */
+    private fun appendTableAsPlainText(ssb: SpannableStringBuilder, table: MdBlock.Table, colCount: Int) {
+        // 每列宽度取表头与各单元格的最大显示宽度（CJK 记为 2，其它记为 1）
+        val widths = IntArray(colCount) { displayWidth(table.headers.getOrElse(it) { "" }) }
+        for (row in table.rows) {
+            for (j in 0 until colCount) {
+                val w = displayWidth(row.getOrElse(j) { "" })
+                if (w > widths[j]) widths[j] = w
+            }
+        }
+
+        fun renderRow(cells: List<String>): String = buildString {
+            append("| ")
+            for (j in 0 until colCount) {
+                val cell = cells.getOrElse(j) { "" }
+                val align = table.alignments.getOrElse(j) { MdBlock.Alignment.LEFT }
+                append(padCell(cell, widths[j], align))
+                append(" | ")
+            }
+        }.trimEnd()
+
+        val separator = buildString {
+            append("|")
+            for (j in 0 until colCount) {
+                append(" ")
+                append("-".repeat(widths[j].coerceAtLeast(1)))
+                append(" |")
+            }
+        }
+
+        val start = ssb.length
+        ssb.append(renderRow(table.headers))
+        ssb.append('\n')
+        ssb.append(separator)
+        for (row in table.rows) {
+            ssb.append('\n')
+            ssb.append(renderRow(row))
+        }
+        val end = ssb.length
+        // 等宽字体保证列对齐
+        ssb.setSpan(TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    private fun displayWidth(text: String): Int {
+        var width = 0
+        for (ch in text) {
+            width += if (isWideChar(ch)) 2 else 1
+        }
+        return width
+    }
+
+    private fun isWideChar(ch: Char): Boolean {
+        val code = ch.code
+        return (code in 0x1100..0x115F) ||      // Hangul Jamo
+            (code in 0x2E80..0xA4CF) ||          // CJK 部首、假名、CJK 统一表意文字等
+            (code in 0xAC00..0xD7A3) ||          // Hangul 音节
+            (code in 0xF900..0xFAFF) ||          // CJK 兼容表意文字
+            (code in 0xFE30..0xFE4F) ||          // CJK 兼容形式
+            (code in 0xFF00..0xFF60) ||          // 全角 ASCII
+            (code in 0xFFE0..0xFFE6)             // 全角符号
+    }
+
+    private fun padCell(text: String, targetWidth: Int, align: MdBlock.Alignment): String {
+        val pad = (targetWidth - displayWidth(text)).coerceAtLeast(0)
+        return when (align) {
+            MdBlock.Alignment.RIGHT -> " ".repeat(pad) + text
+            MdBlock.Alignment.CENTER -> {
+                val left = pad / 2
+                " ".repeat(left) + text + " ".repeat(pad - left)
+            }
+            MdBlock.Alignment.LEFT -> text + " ".repeat(pad)
+        }
+    }
+
 
     private fun appendParagraph(ssb: SpannableStringBuilder, paragraph: MdBlock.Paragraph, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         val inlineElements = inlineParser.parse(paragraph.text, isStreaming, linkDefs)
@@ -292,9 +474,19 @@ class SpannedBuilder(private val context: Context) {
 
     private fun appendHorizontalRule(ssb: SpannableStringBuilder) {
         val start = ssb.length
-        ssb.append("───────────────────")
-        val end = ssb.length
-        ssb.setSpan(LeadingMarginSpan.Standard(0), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (standalone) {
+            // 占位空白行 + 整行细线 Span，模仿 MarkdownView 的分割线
+            ssb.append(" ")
+            val end = ssb.length
+            ssb.setSpan(
+                HorizontalRuleLineSpan(horizontalRuleColor, horizontalRuleThicknessPx),
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        } else {
+            ssb.append("───────────────────")
+            val end = ssb.length
+            ssb.setSpan(LeadingMarginSpan.Standard(0), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     private fun appendInlineElements(ssb: SpannableStringBuilder, elements: List<InlineElement>) {

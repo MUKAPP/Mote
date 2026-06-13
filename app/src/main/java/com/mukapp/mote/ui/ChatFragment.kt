@@ -274,6 +274,7 @@ class ChatFragment : Fragment() {
     private fun setupRecyclerView() {
         adapter = ChatMessageAdapter(
             onCopyMessage = { message -> copyMessage(message) },
+            onFreeCopyMessage = { message -> openFreeCopy(message) },
             onEditMessage = { index ->
                 showConfirmationDialog(
                     R.string.dialog_edit_title,
@@ -1412,15 +1413,7 @@ class ChatFragment : Fragment() {
         val copyText = if (message.role == ChatRole.User) {
             buildUserCopyText(message)
         } else {
-            message.assistantParts.asSequence()
-                .mapNotNull { part ->
-                    when (part) {
-                        is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
-                        else -> null
-                    }
-                }
-                .joinToString(separator = "\n\n")
-                .ifBlank { message.content }
+            buildAssistantCopyText(message)
         }
         val clipboard =
             requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -1431,6 +1424,31 @@ class ChatFragment : Fragment() {
             )
         )
         Toast.makeText(requireContext(), getString(R.string.action_copy), Toast.LENGTH_SHORT).show()
+    }
+
+    /** 打开自由复制页：用旧的「仅 TextView」Markdown 渲染展示内容，便于用户自由选取复制。 */
+    private fun openFreeCopy(message: ChatMessage) {
+        val content = if (message.role == ChatRole.User) {
+            buildUserCopyText(message)
+        } else {
+            buildAssistantCopyText(message)
+        }
+        startActivity(
+            Intent(requireContext(), com.mukapp.mote.FreeCopyActivity::class.java)
+                .putExtra(com.mukapp.mote.FreeCopyActivity.EXTRA_CONTENT, content)
+        )
+    }
+
+    private fun buildAssistantCopyText(message: ChatMessage): String {
+        return message.assistantParts.asSequence()
+            .mapNotNull { part ->
+                when (part) {
+                    is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
+                    else -> null
+                }
+            }
+            .joinToString(separator = "\n\n")
+            .ifBlank { message.content }
     }
 
     private fun buildUserCopyText(message: ChatMessage): String {

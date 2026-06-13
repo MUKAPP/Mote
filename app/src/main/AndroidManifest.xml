@@ -25,6 +25,12 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".FreeCopyActivity"
+            android:exported="false"
+            android:label="@string/title_free_copy"
+            android:theme="@style/Theme.Mote" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"

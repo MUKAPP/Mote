@@ -37,6 +37,7 @@ import com.mukapp.mote.util.dpInt
 
 class ChatMessageAdapter(
     private val onCopyMessage: (ChatMessage) -> Unit,
+    private val onFreeCopyMessage: (ChatMessage) -> Unit,
     private val onEditMessage: (Int) -> Unit,
     private val onDeleteMessage: (Int) -> Unit,
     private val onRetryMessage: (Int) -> Unit
@@ -267,6 +268,7 @@ class ChatMessageAdapter(
             val popupItems = buildList {
                 if (hasCopyableContent(message)) {
                     add(MessagePopupItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
+                    add(MessagePopupItem(MENU_FREE_COPY, R.string.action_free_copy, R.drawable.ic_text_select_start))
                 }
                 add(MessagePopupItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
                 add(MessagePopupItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
@@ -277,6 +279,7 @@ class ChatMessageAdapter(
             showMessagePopupAt(binding.cardMessage, touchX, touchY, popupItems) { itemId ->
                 when (itemId) {
                     MENU_COPY -> onCopyMessage(message)
+                    MENU_FREE_COPY -> onFreeCopyMessage(message)
                     MENU_EDIT -> onEditMessage(position)
                     MENU_DELETE -> onDeleteMessage(position)
                     MENU_RETRY -> onRetryMessage(position)
@@ -686,6 +689,7 @@ class ChatMessageAdapter(
         const val MENU_RETRY = 3
         const val MENU_COPY = 4
         const val MENU_TOGGLE_EXPAND = 5
+        const val MENU_FREE_COPY = 6
         const val PopupMenuMinWidthDp = 156
         const val PopupMenuElevationDp = 3
         const val PopupMenuVerticalPaddingDp = 12
