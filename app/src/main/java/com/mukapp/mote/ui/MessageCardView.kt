@@ -1,6 +1,8 @@
 package com.mukapp.mote.ui
 
 import android.content.Context
+import android.text.Spanned
+import android.text.style.ClickableSpan
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
@@ -16,7 +18,7 @@ import com.google.android.material.card.MaterialCardView
  *   任意位置长按都能触发菜单，而非只有文本与卡片之间的空白边距。
  * - 记录按下坐标，供调用方在手指位置弹出菜单。
  * - 借助 clickable 状态 + 手动驱动 pressed/hotspot，绘制覆盖整卡片（含子视图区域）的圆角波纹反馈。
- * - 命中可选文本（思考过程、工具结果）时不触发菜单，保留这些区域的文本选择能力。
+ * - 当按下位置被上层交互元素消费时（可点击控件、可选文本、链接等），不触发波纹与菜单，交由其自身处理。
  */
 class MessageCardView @JvmOverloads constructor(
     context: Context,
@@ -27,6 +29,7 @@ class MessageCardView @JvmOverloads constructor(
     private var longPressListener: ((x: Int, y: Int) -> Unit)? = null
     private var downX = 0
     private var downY = 0
+    private var consumedByChild = false
 
     private val gestureDetector = GestureDetector(
         context,
@@ -35,8 +38,8 @@ class MessageCardView @JvmOverloads constructor(
 
             override fun onLongPress(e: MotionEvent) {
                 val listener = longPressListener ?: return
-                // 命中可选文本区域时让其自行处理选择，不弹消息菜单
-                if (isOverSelectableText(downX, downY)) {
+                // 被上层交互元素消费的位置不弹菜单
+                if (consumedByChild) {
                     return
                 }
                 performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -61,9 +64,12 @@ class MessageCardView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.x.toInt()
                 downY = ev.y.toInt()
-                // 手动驱动波纹起点与按下态，使子视图（Markdown 文本等）区域同样显示波纹
-                drawableHotspotChanged(ev.x, ev.y)
-                isPressed = true
+                consumedByChild = isOverConsumingTarget(downX, downY)
+                if (!consumedByChild) {
+                    // 仅在未被上层消费时显示波纹，并将起点定位到手指处
+                    drawableHotspotChanged(ev.x, ev.y)
+                    isPressed = true
+                }
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -74,31 +80,55 @@ class MessageCardView @JvmOverloads constructor(
         return super.dispatchTouchEvent(ev)
     }
 
-    private fun isOverSelectableText(x: Int, y: Int): Boolean {
-        return hitTestSelectableText(this, x, y)
+    private fun isOverConsumingTarget(x: Int, y: Int): Boolean {
+        return hitTestConsuming(this, x, y, isRoot = true)
     }
 
-    /** 递归判断坐标（相对 [view]）下方是否为可选文本视图。 */
-    private fun hitTestSelectableText(view: View, x: Int, y: Int): Boolean {
-        if (view is TextView && view.isTextSelectable) {
-            return true
-        }
-        if (view !is ViewGroup) {
-            return false
-        }
-        for (index in view.childCount - 1 downTo 0) {
-            val child = view.getChildAt(index)
-            if (child.visibility != View.VISIBLE) {
-                continue
-            }
-            val px = x + view.scrollX
-            val py = y + view.scrollY
-            if (px >= child.left && px < child.right && py >= child.top && py < child.bottom) {
-                if (hitTestSelectableText(child, px - child.left, py - child.top)) {
-                    return true
+    /** 递归判断坐标（相对 [view]）下方是否存在会消费触摸的交互元素。 */
+    private fun hitTestConsuming(view: View, x: Int, y: Int, isRoot: Boolean): Boolean {
+        if (view is ViewGroup) {
+            for (index in view.childCount - 1 downTo 0) {
+                val child = view.getChildAt(index)
+                if (child.visibility != View.VISIBLE) {
+                    continue
+                }
+                val px = x + view.scrollX
+                val py = y + view.scrollY
+                if (px >= child.left && px < child.right && py >= child.top && py < child.bottom) {
+                    if (hitTestConsuming(child, px - child.left, py - child.top, false)) {
+                        return true
+                    }
                 }
             }
         }
-        return false
+        if (isRoot) {
+            // 根卡片自身的 clickable 仅用于绘制波纹，不算消费
+            return false
+        }
+        if (view is TextView) {
+            // 普通正文文本不算消费（放行波纹与菜单）；仅可选文本或命中链接时算消费
+            if (view.isTextSelectable) {
+                return true
+            }
+            return hasLinkAt(view, x, y)
+        }
+        return view.isClickable || view.isLongClickable
+    }
+
+    /** 判断坐标（相对 [textView]）是否落在可点击的链接 span 上。 */
+    private fun hasLinkAt(textView: TextView, x: Int, y: Int): Boolean {
+        val spanned = textView.text as? Spanned ?: return false
+        val layout = textView.layout ?: return false
+        val px = x - textView.totalPaddingLeft + textView.scrollX
+        val py = y - textView.totalPaddingTop + textView.scrollY
+        if (px < 0 || py < 0) {
+            return false
+        }
+        val line = layout.getLineForVertical(py)
+        if (px > layout.getLineRight(line)) {
+            return false
+        }
+        val offset = layout.getOffsetForHorizontal(line, px.toFloat())
+        return spanned.getSpans(offset, offset, ClickableSpan::class.java).isNotEmpty()
     }
 }

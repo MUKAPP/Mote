@@ -250,11 +250,15 @@ class ChatMessageAdapter(
             showMessagePopupAt(binding.cardMessage, touchX, touchY) { popup ->
                 if (hasCopyableContent(message)) {
                     popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
+                        .setIcon(R.drawable.ic_content_copy)
                 }
                 popup.menu.add(0, MENU_EDIT, 1, R.string.action_edit)
+                    .setIcon(R.drawable.ic_edit)
                 popup.menu.add(0, MENU_DELETE, 2, R.string.action_delete)
+                    .setIcon(R.drawable.ic_delete)
                 if (isLastAiMessage && !isSending) {
                     popup.menu.add(0, MENU_RETRY, 3, R.string.action_retry)
+                        .setIcon(R.drawable.ic_refresh)
                 }
                 popup.setOnMenuItemClickListener { item ->
                     when (item.itemId) {
@@ -401,9 +405,15 @@ class ChatMessageAdapter(
         private fun showUserPopupMenu(touchX: Int, touchY: Int) {
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
+            // 该用户消息对应最后一条 AI 回复时，提供重试（重试入口仍作用于最后一条 AI 消息）
+            val lastIndex = messages.lastIndex
+            val canRetryLastTurn = !isSending &&
+                position == lastIndex - 1 &&
+                messages.getOrNull(lastIndex)?.role == ChatRole.Assistant
 
             showMessagePopupAt(binding.cardMessage, touchX, touchY) { popup ->
                 popup.menu.add(0, MENU_COPY, 0, R.string.action_copy)
+                    .setIcon(R.drawable.ic_content_copy)
                 if (isCollapsible(message)) {
                     val expanded = expandedUserMessageIds.contains(message.id)
                     popup.menu.add(
@@ -411,10 +421,16 @@ class ChatMessageAdapter(
                         MENU_TOGGLE_EXPAND,
                         1,
                         if (expanded) R.string.action_collapse else R.string.action_expand
-                    )
+                    ).setIcon(if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more)
                 }
                 popup.menu.add(0, MENU_EDIT, 2, R.string.action_edit)
+                    .setIcon(R.drawable.ic_edit)
                 popup.menu.add(0, MENU_DELETE, 3, R.string.action_delete)
+                    .setIcon(R.drawable.ic_delete)
+                if (canRetryLastTurn) {
+                    popup.menu.add(0, MENU_RETRY, 4, R.string.action_retry)
+                        .setIcon(R.drawable.ic_refresh)
+                }
                 popup.setOnMenuItemClickListener { item ->
                     when (item.itemId) {
                         MENU_COPY -> {
@@ -431,6 +447,10 @@ class ChatMessageAdapter(
                         }
                         MENU_DELETE -> {
                             onDeleteMessage(position)
+                            true
+                        }
+                        MENU_RETRY -> {
+                            onRetryMessage(lastIndex)
                             true
                         }
                         else -> false
@@ -567,8 +587,43 @@ class ChatMessageAdapter(
             }
             val popup = android.widget.PopupMenu(context, anchor, gravity)
             configure(popup)
+            applyPopupIcons(popup, card)
             popup.setOnDismissListener { parent.removeView(anchor) }
             popup.show()
+        }
+    }
+
+    /** 强制 PopupMenu 显示菜单项图标，并统一着色为次要文字色。 */
+    private fun applyPopupIcons(popup: android.widget.PopupMenu, anchorView: android.view.View) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            popup.setForceShowIcon(true)
+        } else {
+            runCatching {
+                val field = popup.javaClass.getDeclaredField("mPopup")
+                field.isAccessible = true
+                val helper = field.get(popup)
+                helper.javaClass
+                    .getMethod("setForceShowIcon", Boolean::class.javaPrimitiveType)
+                    .invoke(helper, true)
+            }
+        }
+        val typedValue = android.util.TypedValue()
+        anchorView.context.theme.resolveAttribute(
+            com.google.android.material.R.attr.colorOnSurfaceVariant,
+            typedValue,
+            true
+        )
+        val iconColor = if (typedValue.resourceId != 0) {
+            androidx.core.content.ContextCompat.getColor(anchorView.context, typedValue.resourceId)
+        } else {
+            typedValue.data
+        }
+        val menu = popup.menu
+        for (index in 0 until menu.size()) {
+            menu.getItem(index).icon?.let { icon ->
+                icon.mutate()
+                icon.setTint(iconColor)
+            }
         }
     }
 

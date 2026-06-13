@@ -253,7 +253,7 @@ class ChatFragment : Fragment() {
 
         setupBlur(binding.cardInput, 20f, overlayColor, 36f)
         setupBlur(binding.cardShellConfirmation, 20f, overlayColor, 16f)
-        setupBlur(binding.blurScrollToBottom, 20f, overlayColor, 18f)
+        setupBlur(binding.blurScrollToBottom, 20f, overlayColor, 22f)
     }
 
     override fun onDestroyView() {
@@ -396,6 +396,8 @@ class ChatFragment : Fragment() {
                 viewModel.stopGenerating()
             } else {
                 followOutput = true
+                // 发送后首帧直接吸附到底，避免输出开始时的平滑滚动动画
+                pendingImmediateScrollToBottom = true
                 viewModel.sendMessage()
             }
         }
@@ -522,6 +524,7 @@ class ChatFragment : Fragment() {
             latestIsSending = sending
             scheduleRenderMessages()
             renderSendButton()
+            updateScrollToBottomButton()
         }
 
         viewModel.shellConfirmation.observe(viewLifecycleOwner) { confirmation ->
@@ -736,41 +739,42 @@ class ChatFragment : Fragment() {
         }
     }
 
-    /** 列表未到底（下方仍有内容）且无 Shell 确认条时显示"回到底部"按钮。 */
+    /** 列表未到底（下方仍有内容）且无 Shell 确认条时显示"回到底部"按钮；输出过程中按钮边框显示加载环。 */
     private fun updateScrollToBottomButton() {
         val binding = _binding ?: return
         val shouldShow = binding.recyclerMessages.isVisible &&
             !binding.cardShellConfirmation.isVisible &&
             binding.recyclerMessages.canScrollVertically(1)
         setScrollToBottomVisible(shouldShow)
+        binding.progressScrollToBottom.isVisible = shouldShow && latestIsSending
     }
 
     private fun setScrollToBottomVisible(visible: Boolean) {
         val binding = _binding ?: return
-        val button = binding.blurScrollToBottom
+        val container = binding.scrollToBottomContainer
         if (visible) {
-            if (button.isVisible && button.alpha == 1f) {
+            if (container.isVisible && container.alpha == 1f) {
                 return
             }
-            button.animate().cancel()
-            if (!button.isVisible) {
-                button.alpha = 0f
-                button.isVisible = true
+            container.animate().cancel()
+            if (!container.isVisible) {
+                container.alpha = 0f
+                container.isVisible = true
             }
-            button.isClickable = true
-            button.animate().alpha(1f).setDuration(ScrollButtonFadeMs).start()
+            binding.blurScrollToBottom.isClickable = true
+            container.animate().alpha(1f).setDuration(ScrollButtonFadeMs).start()
         } else {
-            if (!button.isVisible) {
+            if (!container.isVisible) {
                 return
             }
-            button.isClickable = false
-            button.animate().cancel()
-            button.animate()
+            binding.blurScrollToBottom.isClickable = false
+            container.animate().cancel()
+            container.animate()
                 .alpha(0f)
                 .setDuration(ScrollButtonFadeMs)
                 .withEndAction {
                     val b = _binding ?: return@withEndAction
-                    b.blurScrollToBottom.isVisible = false
+                    b.scrollToBottomContainer.isVisible = false
                 }
                 .start()
         }

@@ -32,29 +32,50 @@
             layout="@layout/empty_chat_placeholder" />
     </FrameLayout>
 
-    <eightbitlab.com.blurview.BlurView
-        android:id="@+id/blur_scroll_to_bottom"
-        android:layout_width="36dp"
-        android:layout_height="36dp"
+    <FrameLayout
+        android:id="@+id/scroll_to_bottom_container"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_marginBottom="12dp"
-        android:clickable="true"
-        android:contentDescription="@string/action_scroll_to_bottom"
-        android:focusable="true"
-        android:foreground="?attr/selectableItemBackgroundBorderless"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/card_input"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         tools:visibility="visible">
 
-        <ImageView
-            android:layout_width="20dp"
-            android:layout_height="20dp"
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:id="@+id/progress_scroll_to_bottom"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="center"
-            android:importantForAccessibility="no"
-            android:src="@drawable/ic_expand_more"
-            app:tint="?attr/colorPrimary" />
-    </eightbitlab.com.blurview.BlurView>
+            android:indeterminate="true"
+            android:visibility="gone"
+            app:indicatorColor="?attr/colorPrimary"
+            app:indicatorInset="0dp"
+            app:indicatorSize="46dp"
+            app:trackColor="@android:color/transparent"
+            app:trackThickness="3dp"
+            tools:visibility="visible" />
+
+        <eightbitlab.com.blurview.BlurView
+            android:id="@+id/blur_scroll_to_bottom"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="center"
+            android:clickable="true"
+            android:contentDescription="@string/action_scroll_to_bottom"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackgroundBorderless">
+
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_gravity="center"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_expand_more"
+                app:tint="?attr/colorPrimary" />
+        </eightbitlab.com.blurview.BlurView>
+    </FrameLayout>
 
     <eightbitlab.com.blurview.BlurView
         android:id="@+id/card_input"
