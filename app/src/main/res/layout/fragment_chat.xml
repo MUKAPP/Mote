@@ -4,6 +4,8 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false"
     android:background="?attr/colorSurface">
 
     <FrameLayout
@@ -36,45 +38,57 @@
         android:id="@+id/scroll_to_bottom_container"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="12dp"
+        android:layout_marginBottom="0dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/card_input"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         tools:visibility="visible">
 
-        <com.google.android.material.progressindicator.CircularProgressIndicator
-            android:id="@+id/progress_scroll_to_bottom"
+        <FrameLayout
+            android:id="@+id/scroll_to_bottom_content"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:indeterminate="true"
-            android:visibility="gone"
-            app:indicatorColor="?attr/colorPrimary"
-            app:indicatorInset="0dp"
-            app:indicatorSize="46dp"
-            app:trackColor="@android:color/transparent"
-            app:trackThickness="3dp"
-            tools:visibility="visible" />
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:padding="12dp">
 
-        <eightbitlab.com.blurview.BlurView
-            android:id="@+id/blur_scroll_to_bottom"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:layout_gravity="center"
-            android:clickable="true"
-            android:contentDescription="@string/action_scroll_to_bottom"
-            android:focusable="true"
-            android:foreground="?attr/selectableItemBackgroundBorderless">
-
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
+            <eightbitlab.com.blurview.BlurView
+                android:id="@+id/blur_scroll_to_bottom"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
                 android:layout_gravity="center"
-                android:importantForAccessibility="no"
-                android:src="@drawable/ic_expand_more"
-                app:tint="?attr/colorPrimary" />
-        </eightbitlab.com.blurview.BlurView>
+                android:clickable="true"
+                android:contentDescription="@string/action_scroll_to_bottom"
+                android:focusable="true"
+                android:foreground="?attr/selectableItemBackgroundBorderless">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="center"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_expand_more"
+                    app:tint="?attr/colorPrimary" />
+
+                <com.google.android.material.progressindicator.CircularProgressIndicator
+                    android:id="@+id/progress_scroll_to_bottom"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:indeterminate="true"
+                    android:visibility="gone"
+                    app:indicatorColor="?attr/colorPrimary"
+                    app:indicatorInset="0dp"
+                    app:indicatorSize="44dp"
+                    app:trackColor="@android:color/transparent"
+                    app:trackCornerRadius="1dp"
+                    app:trackThickness="2dp"
+                    tools:visibility="visible" />
+            </eightbitlab.com.blurview.BlurView>
+        </FrameLayout>
     </FrameLayout>
 
     <eightbitlab.com.blurview.BlurView

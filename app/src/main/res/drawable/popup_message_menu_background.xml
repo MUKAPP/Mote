@@ -4,8 +4,8 @@
     <solid android:color="@color/mote_popup_background" />
     <corners android:radius="16dp" />
     <padding
-        android:left="8dp"
+        android:left="0dp"
         android:top="12dp"
-        android:right="8dp"
+        android:right="0dp"
         android:bottom="12dp" />
 </shape>

@@ -32,6 +32,16 @@
         <item name="android:popupElevation">3dp</item>
     </style>
 
+    <!-- 消息长按菜单：自绘 PopupWindow 使用同一背景与窗口动画。 -->
+    <style name="Widget.Mote.PopupMenu.Message" parent="Widget.Mote.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_message_menu_background</item>
+    </style>
+
+    <style name="Animation.Mote.MessagePopupMenu" parent="">
+        <item name="android:windowEnterAnimation">@anim/message_popup_menu_enter</item>
+        <item name="android:windowExitAnimation">@anim/message_popup_menu_exit</item>
+    </style>
+
     <!-- 思考强度选择 Chip -->
     <style name="Widget.Mote.Chip.Choice" parent="Widget.Material3.Chip.Filter">
         <item name="chipBackgroundColor">@color/mote_chip_background</item>

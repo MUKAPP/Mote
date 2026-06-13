@@ -89,7 +89,7 @@ class ChatFragment : Fragment() {
     private var lastRenderedMessageCount: Int = 0
     private var scrollAfterLayoutPending: Boolean = false
     private val smoothScrollToBottomRunnable = Runnable { scrollToBottomIfScrollable(animated = true) }
-    private val immediateScrollToBottomRunnable = Runnable { scrollToBottom(animated = false) }
+    private val immediateScrollToBottomRunnable = Runnable { scrollToBottomIfScrollable(animated = false) }
     private val markdownPreparseRunnable = Runnable { runMarkdownPreparseForViewport() }
     private var lastMarkdownPreparseSignature: String? = null
     private var lastMarkdownPreparseUptime: Long = 0L
@@ -739,11 +739,12 @@ class ChatFragment : Fragment() {
         }
     }
 
-    /** 列表未到底（下方仍有内容）且无 Shell 确认条时显示"回到底部"按钮；输出过程中按钮边框显示加载环。 */
+    /** 用户未跟随输出（向上滚离底部）且下方仍有内容、无 Shell 确认条时显示"回到底部"按钮；输出过程中按钮边框显示加载环。 */
     private fun updateScrollToBottomButton() {
         val binding = _binding ?: return
         val shouldShow = binding.recyclerMessages.isVisible &&
             !binding.cardShellConfirmation.isVisible &&
+            !followOutput &&
             binding.recyclerMessages.canScrollVertically(1)
         setScrollToBottomVisible(shouldShow)
         binding.progressScrollToBottom.isVisible = shouldShow && latestIsSending
@@ -752,24 +753,25 @@ class ChatFragment : Fragment() {
     private fun setScrollToBottomVisible(visible: Boolean) {
         val binding = _binding ?: return
         val container = binding.scrollToBottomContainer
+        val content = binding.scrollToBottomContent
         if (visible) {
-            if (container.isVisible && container.alpha == 1f) {
+            if (container.isVisible && content.alpha == 1f) {
                 return
             }
-            container.animate().cancel()
+            content.animate().cancel()
             if (!container.isVisible) {
-                container.alpha = 0f
+                content.alpha = 0f
                 container.isVisible = true
             }
             binding.blurScrollToBottom.isClickable = true
-            container.animate().alpha(1f).setDuration(ScrollButtonFadeMs).start()
+            content.animate().alpha(1f).setDuration(ScrollButtonFadeMs).start()
         } else {
             if (!container.isVisible) {
                 return
             }
             binding.blurScrollToBottom.isClickable = false
-            container.animate().cancel()
-            container.animate()
+            content.animate().cancel()
+            content.animate()
                 .alpha(0f)
                 .setDuration(ScrollButtonFadeMs)
                 .withEndAction {
@@ -996,16 +998,37 @@ class ChatFragment : Fragment() {
         }
 
         recyclerView.stopScroll()
-        val targetView = recyclerView.findViewHolderForAdapterPosition(lastPosition)?.itemView
-            ?: layoutManager.findViewByPosition(lastPosition)
-        if (targetView != null && targetView.height > 0) {
-            val offset = recyclerView.height -
-                    recyclerView.paddingTop -
-                    recyclerView.paddingBottom -
-                    targetView.height
-            layoutManager.scrollToPositionWithOffset(lastPosition, offset)
+        if (layoutManager.findViewByPosition(lastPosition) != null) {
+            // 末条已在视图树（跟随输出时）：直接按实测底部做单次像素吸附，
+            // 不先 scrollToPosition 顶对齐，避免长消息流式时"顶对齐→跳底"的闪跳。
+            snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
         } else {
+            // 末条不在视图树（首次加载/切换对话等大跳转）：先定位，布局完成后再吸附。
             layoutManager.scrollToPosition(lastPosition)
+            recyclerView.post {
+                if (_binding == null || adapter.itemCount - 1 != lastPosition) {
+                    return@post
+                }
+                if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                    return@post
+                }
+                snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
+            }
+        }
+    }
+
+    private fun snapPositionEndToRecyclerBottom(
+        layoutManager: LinearLayoutManager,
+        position: Int
+    ) {
+        val binding = _binding ?: return
+        val targetView = layoutManager.findViewByPosition(position) ?: return
+        val recyclerView = binding.recyclerMessages
+        val viewportBottom = recyclerView.height - recyclerView.paddingBottom
+        val targetBottom = layoutManager.getDecoratedBottom(targetView)
+        val delta = targetBottom - viewportBottom
+        if (delta != 0) {
+            recyclerView.scrollBy(0, delta)
         }
     }
 
