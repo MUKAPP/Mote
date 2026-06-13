@@ -34,6 +34,8 @@ object ChatApiClient {
     private const val Component = "Api"
     private val mainDispatcher = Dispatchers.Main
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
+    private const val MODEL_API_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 Mote/1.0"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -369,6 +371,7 @@ object ChatApiClient {
         return Request.Builder()
             .url(url)
             .post(requestBody.toRequestBody(mediaType))
+            .header("User-Agent", MODEL_API_USER_AGENT)
             .apply {
                 if (isStreaming) {
                     addHeader("Accept", "text/event-stream")
