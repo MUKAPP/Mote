@@ -67,7 +67,6 @@ object ChatApiClient {
                 put("model", model.model)
                 put("stream", false)
                 put("temperature", 0.2)
-                put("max_tokens", 48)
                 put(
                     "messages",
                     JSONArray().apply {
@@ -110,7 +109,19 @@ object ChatApiClient {
                 throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
             }
 
-            parseAssistantReply(responseText).content.also { title ->
+            val titleResult = parseAssistantReply(responseText, appendFinishReasonNotice = false)
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "标题响应已解析",
+                    "contentLength" to titleResult.content.length,
+                    "thinkingLength" to titleResult.thinkingContent.length,
+                    "toolCalls" to titleResult.toolCalls.size,
+                    "finishReason" to (titleResult.finishReason ?: "未返回"),
+                    "responseLength" to responseText.length
+                )
+            )
+            titleResult.content.also { title ->
                 MoteLog.i(
                     Component,
                     MoteLog.event(
@@ -121,6 +132,10 @@ object ChatApiClient {
                 )
             }
         }
+    }
+
+    internal fun parseConversationTitleResponse(responseText: String): String {
+        return parseAssistantReply(responseText, appendFinishReasonNotice = false).content
     }
 
     suspend fun compressConversation(

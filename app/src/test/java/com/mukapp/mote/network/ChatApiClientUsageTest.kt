@@ -6,6 +6,7 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -124,5 +125,48 @@ class ChatApiClientUsageTest {
     fun parseTokenUsageIgnoresEmptyOrInvalidUsage() {
         assertNull(ChatApiClient.parseTokenUsage(null))
         assertNull(ChatApiClient.parseTokenUsage(JSONObject("{\"input_tokens\": -1, \"total_tokens\": \"bad\"}")))
+    }
+
+    @Test
+    fun parseConversationTitleResponseKeepsLengthTruncatedTextOnly() {
+        val title = ChatApiClient.parseConversationTitleResponse(
+            """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "role": "assistant",
+                    "content": "这是一个因为模型没有遵守长度要求而过长的标题"
+                  },
+                  "finish_reason": "length"
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertEquals("这是一个因为模型没有遵守长度要求而过长的标题", title)
+        assertFalse(title.contains("提示：模型输出因达到长度限制被截断"))
+    }
+
+    @Test
+    fun parseConversationTitleResponseReturnsBlankWhenContentIsMissing() {
+        val title = ChatApiClient.parseConversationTitleResponse(
+            """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "role": "assistant",
+                    "reasoning_content": "我在思考标题"
+                  },
+                  "finish_reason": "stop"
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertEquals("", title)
     }
 }

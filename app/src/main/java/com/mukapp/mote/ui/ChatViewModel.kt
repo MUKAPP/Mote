@@ -1977,10 +1977,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 MoteLog.e(logComponent, "生成对话标题失败", error)
             }.getOrNull()
 
-            val normalizedTitle = generatedTitle
+            val modelTitle = generatedTitle
                 ?.let { normalizeTitle(it) }
                 ?.takeIf { it.isNotBlank() }
-                ?: buildFallbackTitle(firstUserMessage)
+            val usedFallbackTitle = modelTitle == null
+            val normalizedTitle = modelTitle ?: buildFallbackTitle(firstUserMessage)
             val summaries = runCatching {
                 persistenceMutex.withLock {
                     val deleted = synchronized(persistenceStateLock) {
@@ -2016,7 +2017,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 MoteLog.event(
                     "对话标题生成流程完成",
                     "conversationId" to MoteLog.shortId(conversationIdSnapshot),
-                    "generatedByModel" to (generatedTitle != null),
+                    "modelTitleAvailable" to (modelTitle != null),
+                    "usedFallbackTitle" to usedFallbackTitle,
                     "titleLength" to normalizedTitle.length
                 )
             )
