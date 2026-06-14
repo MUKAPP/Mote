@@ -34,8 +34,7 @@ object ChatApiClient {
     private const val Component = "Api"
     private val mainDispatcher = Dispatchers.Main
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
-    private const val MODEL_API_USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 Mote/1.0"
+    private const val MODEL_API_USER_AGENT = "Mote/1.0 (Android; OpenAI-Compatible Client)"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -835,7 +834,15 @@ object ChatApiClient {
         responseText: String,
         appendFinishReasonNotice: Boolean = true
     ): ChatCompletionResult {
-        val responseJson = JSONObject(responseText)
+        val trimmedResponse = responseText.trim()
+        val responseJson = runCatching { JSONObject(trimmedResponse) }.getOrElse { error ->
+            val message = if (looksLikeHtml(trimmedResponse)) {
+                "接口返回了 HTML 页面，不是 OpenAI 兼容的 JSON 响应。请检查 API 地址是否填到了网页入口，或服务商/反代是否返回了验证页。"
+            } else {
+                "接口返回了非 JSON 响应：${truncateForError(trimmedResponse)}"
+            }
+            throw IllegalStateException(message, error)
+        }
         val choices = responseJson.optJSONArray("choices")
             ?: throw IllegalStateException("接口返回缺少 choices 字段。")
         if (choices.length() == 0) {
@@ -981,8 +988,17 @@ object ChatApiClient {
                 ?: root.optString("message").takeIf { it.isNotBlank() }
                 ?: "接口请求失败，错误响应缺少可读消息。"
         }.getOrElse {
-            "接口请求失败，服务器返回了非 JSON 错误响应：${truncateForError(trimmedResponse)}"
+            if (looksLikeHtml(trimmedResponse)) {
+                "接口请求失败，服务器返回了 HTML 页面。请检查 API 地址是否填到了网页入口，或服务商/反代是否返回了验证页。"
+            } else {
+                "接口请求失败，服务器返回了非 JSON 错误响应：${truncateForError(trimmedResponse)}"
+            }
         }.let { truncateForError(it.trim()) }
+    }
+
+    private fun looksLikeHtml(text: String): Boolean {
+        val normalized = text.trimStart().lowercase()
+        return normalized.startsWith("<!doctype") || normalized.startsWith("<html")
     }
 
     private fun shouldRetryWithoutStreamUsage(error: Throwable): Boolean {
