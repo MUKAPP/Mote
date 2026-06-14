@@ -1,7 +1,6 @@
 package com.mukapp.mote.ui
 
 import com.mukapp.mote.data.model.AiToolCall
-import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ChatAttachment
@@ -157,7 +156,7 @@ class ChatConversationContextHelperTest {
         assertTrue(estimatedTokens > 10)
         assertThrows(IllegalStateException::class.java) {
             ChatConversationContextHelper.requireWithinModelContextLength(
-                settings = ApiSettings(modelContextLength = 10),
+                modelContextLength = 10,
                 contextTokens = estimatedTokens
             )
         }

@@ -25,6 +25,13 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".ProviderEditorActivity"
+            android:exported="false"
+            android:label="@string/title_provider_editor"
+            android:theme="@style/Theme.Mote"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".FreeCopyActivity"
             android:exported="false"
             android:label="@string/title_free_copy"

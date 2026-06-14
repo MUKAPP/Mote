@@ -21,6 +21,7 @@
     <string name="title_free_copy">自由复制</string>
     <string name="action_edit">编辑</string>
     <string name="action_delete">删除</string>
+    <string name="action_clear">清除</string>
     <string name="action_delete_conversation">删除对话</string>
     <string name="action_retry">重试</string>
     <string name="action_expand">展开</string>
@@ -96,6 +97,61 @@
     <string name="settings_number_invalid">请输入 0 到 2147483647 之间的整数。</string>
     <string name="settings_compression_trigger_too_large">压缩长度不能大于模型上下文长度。</string>
     <string name="settings_search_provider_conflict">Tavily API Key 和 SearXNG 地址只能填写一个。</string>
+
+    <!-- 多提供商 -->
+    <string name="settings_providers_title">模型提供商</string>
+    <string name="settings_providers_empty">尚未添加提供商，点击下方按钮添加。</string>
+    <string name="settings_add_provider">添加提供商</string>
+    <string name="settings_provider_models_count">%1$d 个模型</string>
+    <string name="settings_roles_title">模型用途</string>
+    <string name="settings_role_chat">对话模型</string>
+    <string name="settings_role_title_model">标题模型</string>
+    <string name="settings_role_compression">压缩模型</string>
+    <string name="settings_role_unset">未选择</string>
+    <string name="settings_role_chat_hint">首页对话默认使用的模型，可在对话页随时切换。</string>
+    <string name="settings_role_title_hint">用于自动生成历史对话标题；未选择时使用首条消息作为标题。</string>
+    <string name="settings_role_compression_hint">上下文过长时总结旧消息；未选择时回退到对话模型。</string>
+    <string name="settings_label_compression_trigger_percent">压缩触发百分比</string>
+    <string name="hint_compression_trigger_percent">80</string>
+    <string name="settings_compression_trigger_percent_hint">当历史上下文估算达到对话模型上下文长度的该百分比后自动压缩旧消息；对话模型未填上下文长度时不会自动压缩。填 0 关闭压缩。</string>
+    <string name="settings_compression_percent_invalid">请输入 0 到 100 之间的整数。</string>
+
+    <!-- 提供商编辑页 -->
+    <string name="title_provider_editor">编辑提供商</string>
+    <string name="provider_editor_name_label">提供商名称</string>
+    <string name="hint_provider_name">OpenAI</string>
+    <string name="provider_editor_models_title">模型列表</string>
+    <string name="provider_editor_models_empty">尚无模型，点击下方按钮获取或手动添加。</string>
+    <string name="provider_editor_fetch_models">获取模型</string>
+    <string name="provider_editor_fetching">正在获取模型…</string>
+    <string name="provider_editor_add_model">手动添加模型</string>
+    <string name="provider_editor_save">保存提供商</string>
+    <string name="provider_editor_delete">删除提供商</string>
+    <string name="provider_editor_fetch_failed">获取模型失败：%1$s</string>
+    <string name="provider_editor_fetch_success">已获取 %1$d 个模型</string>
+    <string name="provider_editor_base_url_required">请填写有效的 API 地址。</string>
+    <string name="provider_editor_name_required">请填写提供商名称。</string>
+    <string name="provider_editor_discard_title">放弃修改？</string>
+    <string name="provider_editor_discard_message">当前提供商的修改尚未保存，确定要放弃吗？</string>
+    <string name="provider_editor_delete_model_title">删除模型</string>
+    <string name="provider_editor_delete_model_message">确定要删除模型「%1$s」吗？</string>
+
+    <!-- 模型编辑对话框 -->
+    <string name="model_dialog_add_title">添加模型</string>
+    <string name="model_dialog_edit_title">编辑模型</string>
+    <string name="model_dialog_id_label">模型 ID</string>
+    <string name="model_dialog_display_name_label">显示名称（可选）</string>
+    <string name="model_dialog_context_length_label">上下文长度（可选）</string>
+    <string name="model_dialog_id_required">请填写模型 ID。</string>
+    <string name="model_context_length_set">上下文 %1$d</string>
+    <string name="model_context_length_unset">上下文未设置</string>
+    <string name="model_reasoning_summary">思考 %1$s</string>
+    <string name="action_save">保存</string>
+
+    <!-- 模型选择面板 -->
+    <string name="model_picker_title">选择模型</string>
+    <string name="model_picker_empty">请先在设置页添加提供商和模型。</string>
+    <string name="model_selector_unset">选择模型</string>
     <string name="settings_contract_title">接口约定</string>
     <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 聊天请求体会发送 model、messages、stream=true、tools 和 reasoning_effort\n• 轻量模型只用于生成历史对话标题\n• 压缩模型只用于上下文过长时总结旧消息\n• 搜索工具支持 SearXNG 或 Tavily，二者只能配置一个；都留空时不会暴露搜索工具\n• 若要访问外部存储文件，请先授予文件管理权限</string>
     <string name="dialog_edit_title">编辑消息</string>

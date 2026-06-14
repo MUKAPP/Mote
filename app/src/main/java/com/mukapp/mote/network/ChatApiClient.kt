@@ -7,6 +7,8 @@ import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.ModelInfo
+import com.mukapp.mote.data.model.ResolvedModel
 import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.ToolCallAccumulator
 import com.mukapp.mote.tools.LocalAiTools
@@ -43,26 +45,26 @@ object ChatApiClient {
         .build()
 
     suspend fun generateConversationTitle(
-        settings: ApiSettings,
+        model: ResolvedModel,
         userMessage: String
     ): String {
         return withContext(Dispatchers.IO) {
-            require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
-            require(settings.titleModel.isNotBlank()) { "标题模型不能为空。" }
+            require(model.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            require(model.model.isNotBlank()) { "标题模型不能为空。" }
 
             val startMs = System.currentTimeMillis()
             MoteLog.i(
                 Component,
                 MoteLog.event(
                     "开始生成对话标题",
-                    "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
-                    "modelLength" to settings.titleModel.length,
+                    "baseUrl" to MoteLog.safeUrlOrigin(model.baseUrl),
+                    "modelLength" to model.model.length,
                     "userMessageLength" to userMessage.length
                 )
             )
 
             val requestBody = JSONObject().apply {
-                put("model", settings.titleModel)
+                put("model", model.model)
                 put("stream", false)
                 put("temperature", 0.2)
                 put("max_tokens", 48)
@@ -93,7 +95,7 @@ object ChatApiClient {
                 )
             }.toString()
 
-            val request = buildRequest(settings, requestBody, isStreaming = false)
+            val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = false)
             val response = executeRequest(request)
 
             val statusCode = response.code
@@ -122,13 +124,13 @@ object ChatApiClient {
     }
 
     suspend fun compressConversation(
-        settings: ApiSettings,
+        model: ResolvedModel,
         messages: List<ChatMessage>,
         maxSummaryTokens: Int
     ): String {
         return withContext(Dispatchers.IO) {
-            require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
-            val compressionModel = settings.compressionModel.ifBlank { settings.model }
+            require(model.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            val compressionModel = model.model
             require(compressionModel.isNotBlank()) { "压缩模型不能为空。" }
             require(messages.isNotEmpty()) { "没有可压缩的上下文。" }
 
@@ -137,7 +139,7 @@ object ChatApiClient {
                 Component,
                 MoteLog.event(
                     "开始压缩对话上下文",
-                    "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                    "baseUrl" to MoteLog.safeUrlOrigin(model.baseUrl),
                     "messages" to messages.size,
                     "maxSummaryTokens" to maxSummaryTokens,
                     "modelLength" to compressionModel.length
@@ -168,7 +170,7 @@ object ChatApiClient {
                 )
             }.toString()
 
-            val request = buildRequest(settings, requestBody, isStreaming = false)
+            val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = false)
             val response = executeRequest(request)
 
             val statusCode = response.code
@@ -205,6 +207,7 @@ object ChatApiClient {
     }
 
     suspend fun streamChat(
+        model: ResolvedModel,
         settings: ApiSettings,
         messages: List<ChatMessage>,
         onDelta: suspend (String) -> Unit,
@@ -212,6 +215,7 @@ object ChatApiClient {
     ): ChatCompletionResult {
         return try {
             streamChatOnce(
+                model = model,
                 settings = settings,
                 messages = messages,
                 includeUsage = true,
@@ -225,6 +229,7 @@ object ChatApiClient {
             }
             MoteLog.w(Component, "接口不兼容 stream_options.include_usage，改为不请求 usage 后重试。", error)
             streamChatOnce(
+                model = model,
                 settings = settings,
                 messages = messages,
                 includeUsage = false,
@@ -235,6 +240,7 @@ object ChatApiClient {
     }
 
     private suspend fun streamChatOnce(
+        model: ResolvedModel,
         settings: ApiSettings,
         messages: List<ChatMessage>,
         includeUsage: Boolean,
@@ -242,25 +248,25 @@ object ChatApiClient {
         onThinkingDelta: suspend (String) -> Unit
     ): ChatCompletionResult {
         return withContext(Dispatchers.IO) {
-            require(settings.baseUrl.isNotBlank()) { "API 地址不能为空。" }
-            require(settings.model.isNotBlank()) { "模型不能为空。" }
+            require(model.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            require(model.model.isNotBlank()) { "模型不能为空。" }
             val startMs = System.currentTimeMillis()
             val toolDefinitions = LocalAiTools.toolDefinitions(settings)
             MoteLog.i(
                 Component,
                 MoteLog.event(
                     "开始流式聊天请求",
-                    "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
+                    "baseUrl" to MoteLog.safeUrlOrigin(model.baseUrl),
                     "messages" to messages.size,
                     "tools" to toolDefinitions.length(),
                     "includeUsage" to includeUsage,
-                    "reasoningEffortConfigured" to settings.reasoningEffort.isNotBlank(),
-                    "modelLength" to settings.model.length
+                    "reasoningEffortConfigured" to model.reasoningEffort.isNotBlank(),
+                    "modelLength" to model.model.length
                 )
             )
 
             val requestBody = JSONObject().apply {
-                put("model", settings.model)
+                put("model", model.model)
                 put("stream", true)
                 if (includeUsage) {
                     put(
@@ -271,8 +277,8 @@ object ChatApiClient {
                     )
                 }
                 put("tools", toolDefinitions)
-                if (settings.reasoningEffort.isNotBlank()) {
-                    put("reasoning_effort", settings.reasoningEffort)
+                if (model.reasoningEffort.isNotBlank()) {
+                    put("reasoning_effort", model.reasoningEffort)
                 }
                 put(
                     "messages",
@@ -284,7 +290,7 @@ object ChatApiClient {
                 )
             }.toString()
 
-            val request = buildRequest(settings, requestBody, isStreaming = true)
+            val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = true)
             val response = executeRequest(request)
 
             val statusCode = response.code
@@ -363,10 +369,125 @@ object ChatApiClient {
         }
     }
 
-    private fun buildRequest(settings: ApiSettings, requestBody: String, isStreaming: Boolean): Request {
-        val url = resolveChatUrl(settings.baseUrl)
+    private fun resolveModelsUrl(baseUrl: String): String {
+        var normalized = baseUrl.trim().trimEnd('/')
+        require(normalized.isNotBlank()) { "API 地址不能为空。" }
+        require(normalized.startsWith("http://") || normalized.startsWith("https://")) {
+            "API 地址需要以 http:// 或 https:// 开头。"
+        }
+        if (normalized.endsWith("/chat/completions")) {
+            normalized = normalized.removeSuffix("/chat/completions")
+        }
+        return if (normalized.endsWith("/models")) normalized else "$normalized/models"
+    }
+
+    /**
+     * 拉取提供商可用模型列表（OpenAI 兼容 GET {baseUrl}/models）。
+     * 上下文长度等详情尽力从常见非标准字段解析，解析不到留默认值。
+     */
+    suspend fun listModels(baseUrl: String, apiKey: String): List<ModelInfo> {
+        return withContext(Dispatchers.IO) {
+            require(baseUrl.isNotBlank()) { "API 地址不能为空。" }
+            val url = resolveModelsUrl(baseUrl)
+            val startMs = System.currentTimeMillis()
+            MoteLog.i(
+                Component,
+                MoteLog.event("开始拉取模型列表", "baseUrl" to MoteLog.safeUrlOrigin(baseUrl))
+            )
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .header("User-Agent", MODEL_API_USER_AGENT)
+                .addHeader("Accept", "application/json")
+                .apply {
+                    if (apiKey.isNotBlank()) {
+                        addHeader("Authorization", "Bearer $apiKey")
+                    }
+                }
+                .build()
+            val response = executeRequest(request)
+            val statusCode = response.code
+            val responseText = response.body?.string() ?: ""
+            MoteLog.i(
+                Component,
+                MoteLog.event("模型列表接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+            )
+            if (!response.isSuccessful) {
+                val errorMessage = parseErrorMessage(responseText)
+                throw IllegalStateException(errorMessage.ifBlank { "拉取模型列表失败，HTTP $statusCode" })
+            }
+            parseModelList(responseText)
+        }
+    }
+
+    private fun parseModelList(responseText: String): List<ModelInfo> {
+        val trimmed = responseText.trim()
+        val root = runCatching { JSONObject(trimmed) }.getOrElse { error ->
+            val message = if (looksLikeHtml(trimmed)) {
+                "模型列表接口返回了 HTML 页面，不是 OpenAI 兼容的 JSON 响应。"
+            } else {
+                "模型列表接口返回了非 JSON 响应：${truncateForError(trimmed)}"
+            }
+            throw IllegalStateException(message, error)
+        }
+        val array = root.optJSONArray("data")
+            ?: root.optJSONArray("models")
+            ?: throw IllegalStateException("模型列表接口缺少 data 字段。")
+        val seen = linkedSetOf<String>()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index)
+                val id = (item?.optString("id").orEmpty()
+                    .ifBlank { item?.optString("name").orEmpty() })
+                    .ifBlank { array.optString(index) }
+                    .trim()
+                if (id.isBlank() || !seen.add(id)) {
+                    continue
+                }
+                add(
+                    ModelInfo(
+                        id = id,
+                        contextLength = item?.let { parseContextLength(it) } ?: 0
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parseContextLength(model: JSONObject): Int {
+        val candidateKeys = listOf(
+            "context_length",
+            "context_window",
+            "max_context_length",
+            "max_context_window_tokens",
+            "max_input_tokens",
+            "max_tokens"
+        )
+        for (key in candidateKeys) {
+            val direct = model.optTokenInt(key)
+            if (direct != null && direct > 0) return direct
+        }
+        // 部分接口把详情嵌在嵌套对象里。
+        val nestedObjects = listOf("top_provider", "architecture", "limits", "meta")
+        for (nestedKey in nestedObjects) {
+            val nested = model.optJSONObject(nestedKey) ?: continue
+            for (key in candidateKeys) {
+                val value = nested.optTokenInt(key)
+                if (value != null && value > 0) return value
+            }
+        }
+        return 0
+    }
+
+    private fun buildRequest(
+        baseUrl: String,
+        apiKey: String,
+        requestBody: String,
+        isStreaming: Boolean
+    ): Request {
+        val url = resolveChatUrl(baseUrl)
         val mediaType = "application/json; charset=utf-8".toMediaType()
-        
+
         return Request.Builder()
             .url(url)
             .post(requestBody.toRequestBody(mediaType))
@@ -377,8 +498,8 @@ object ChatApiClient {
                 } else {
                     addHeader("Accept", "application/json")
                 }
-                if (settings.apiKey.isNotBlank()) {
-                    addHeader("Authorization", "Bearer ${settings.apiKey}")
+                if (apiKey.isNotBlank()) {
+                    addHeader("Authorization", "Bearer $apiKey")
                 }
             }
             .build()

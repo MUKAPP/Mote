@@ -71,18 +71,83 @@ data class AssistantToolPart(
     val isLoading: Boolean = false
 ) : AssistantPart
 
-data class ApiSettings(
+/** 单个模型的配置。`id` 即发给 API 的模型名。 */
+data class ModelInfo(
+    val id: String,
+    val displayName: String = "",
+    val contextLength: Int = 0,
+    val reasoningEffort: String = "high"
+) {
+    val label: String get() = displayName.ifBlank { id }
+}
+
+/** 一个 OpenAI 兼容提供商：独立的 baseUrl/apiKey 与模型列表。 */
+data class ModelProvider(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
-    val model: String = "",
-    val titleModel: String = "",
-    val compressionModel: String = "",
-    val modelContextLength: Int = 0,
-    val compressionTriggerLength: Int = 0,
-    val searxngUrl: String = "",
-    val tavilyApiKey: String = "",
-    val reasoningEffort: String = "high"
+    val models: List<ModelInfo> = emptyList()
+) {
+    val label: String get() = name.ifBlank { baseUrl }
+}
+
+/** 指向某提供商下某模型的引用。 */
+data class ModelRef(
+    val providerId: String,
+    val modelId: String
 )
+
+/** 网络层发起一次请求所需的完整解析结果。 */
+data class ResolvedModel(
+    val baseUrl: String,
+    val apiKey: String,
+    val model: String,
+    val reasoningEffort: String,
+    val contextLength: Int
+)
+
+data class ApiSettings(
+    val providers: List<ModelProvider> = emptyList(),
+    val chatModel: ModelRef? = null,
+    val titleModel: ModelRef? = null,
+    val compressionModel: ModelRef? = null,
+    val compressionTriggerPercent: Int = DefaultCompressionTriggerPercent,
+    val searxngUrl: String = "",
+    val tavilyApiKey: String = ""
+) {
+    companion object {
+        const val DefaultCompressionTriggerPercent: Int = 80
+    }
+}
+
+/** 在 providers 中定位提供商。 */
+fun ApiSettings.findProvider(providerId: String?): ModelProvider? {
+    if (providerId.isNullOrBlank()) return null
+    return providers.firstOrNull { it.id == providerId }
+}
+
+/** 把模型引用解析为网络层可用的 [ResolvedModel]，找不到返回 null。 */
+fun ApiSettings.resolve(ref: ModelRef?): ResolvedModel? {
+    ref ?: return null
+    val provider = findProvider(ref.providerId) ?: return null
+    if (provider.baseUrl.isBlank()) return null
+    val model = provider.models.firstOrNull { it.id == ref.modelId } ?: return null
+    return ResolvedModel(
+        baseUrl = provider.baseUrl,
+        apiKey = provider.apiKey,
+        model = model.id,
+        reasoningEffort = model.reasoningEffort,
+        contextLength = model.contextLength
+    )
+}
+
+fun ApiSettings.resolvedChatModel(): ResolvedModel? = resolve(chatModel)
+
+fun ApiSettings.resolvedTitleModel(): ResolvedModel? = resolve(titleModel)
+
+/** 压缩模型未配置或解析失败时回退到聊天模型，保留旧 `compressionModel.ifBlank{model}` 语义。 */
+fun ApiSettings.resolvedCompressionModel(): ResolvedModel? = resolve(compressionModel) ?: resolvedChatModel()
 
 data class AiToolCall(
     val id: String,

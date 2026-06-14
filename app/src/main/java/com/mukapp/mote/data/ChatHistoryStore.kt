@@ -14,6 +14,7 @@ import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.SavedConversationState
+import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.toChatRoleOrNull
 import org.json.JSONArray
@@ -77,8 +78,8 @@ object ChatHistoryStore {
             put("title", savedTitle)
             put("createdAt", createdAt)
             put("updatedAt", now)
-            put("baseUrl", settings.baseUrl)
-            put("model", settings.model)
+            put("baseUrl", settings.resolvedChatModel()?.baseUrl.orEmpty())
+            put("model", settings.resolvedChatModel()?.model.orEmpty())
             put("uiMessageCount", uiMessages.size)
             put("conversationMessageCount", conversationMessages.size)
             put("contextSummaryCount", contextSummaries.size)

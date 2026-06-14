@@ -70,7 +70,7 @@ app/src/main/java/com/mukapp/mote/
 - 压缩不删除原始消息，而是向 `contextSummariesInternal` 追加新摘要（保留旧摘要，后续摘要可引用旧摘要 ID）。
 - 发送请求时只用最新可用摘要；摘要依赖旧摘要时递归解析，临时作为 User 消息放在未压缩消息前发送。
 - 删除/编辑/重试消息命中摘要的 `sourceMessageIds` 时，删除命中摘要及其后续依赖；最新摘要被删则自动回退旧摘要。
-- 触发值基于 `compressionTriggerLength`，`modelContextLength > 0` 时限制到 80%；至少需要 2 条消息和 2 条用户消息。
+- 触发值基于 `compressionTriggerPercent`（占当前对话模型 `contextLength` 的百分比，默认 80%）；对话模型未填上下文长度时不自动压缩；至少需要 2 条消息和 2 条用户消息。
 - 最近上下文预算约 35%（`1024..32000`），摘要预算约 12%（`512..8192`）。
 
 ### Token 计数
@@ -126,12 +126,14 @@ app/src/main/java/com/mukapp/mote/
 
 ## 网络请求
 
-- 主聊天：`ChatApiClient.streamChat()`，固定 `model` + `messages` + `stream=true` + `Accept: text/event-stream`。
-- 优先携带 `stream_options.include_usage=true`，不兼容时自动降级重试。`reasoning_effort` 仅非空时发送。
+- 多提供商：每个 `ModelProvider` 有独立 baseUrl/apiKey + 模型列表；`ChatApiClient` 的聊天/标题/压缩方法接收 `ResolvedModel`（由 `ApiSettings.resolve*()` 从 `ModelRef` 解析）。`streamChat()` 另收 `ApiSettings` 仅用于工具/搜索可用性。
+- 主聊天：`ChatApiClient.streamChat(model, settings, ...)`，固定 `model` + `messages` + `stream=true` + `Accept: text/event-stream`。
+- 优先携带 `stream_options.include_usage=true`，不兼容时自动降级重试。`reasoning_effort` 取所选模型的设置，仅非空时发送。
 - 流式解析：`delta.content`、`delta.reasoning_content`、`delta.tool_calls`。非流式回退兼容多种格式。
 - `usage` 兼容 `input_tokens/prompt_tokens`、`output_tokens/completion_tokens`、cached tokens、reasoning tokens。
-- 上下文压缩：`compressConversation()`，`stream=false`、`temperature=0.1`、`max_tokens 256..8192`，不携带 tools；`finish_reason=length` 视为失败。
-- 标题生成：`generateConversationTitle()`，`stream=false`、`temperature=0.2`、`max_tokens=48`；`titleModel` 为空时用本地备用标题。
+- 模型列表：`listModels(baseUrl, apiKey)`，`GET {baseUrl}/models`，解析 `data[].id`，上下文长度尽力从 `context_length`/`context_window` 等字段解析。
+- 上下文压缩：`compressConversation(model, ...)`，`stream=false`、`temperature=0.1`、`max_tokens 256..8192`，不携带 tools；`finish_reason=length` 视为失败。
+- 标题生成：`generateConversationTitle(model, ...)`，`stream=false`、`temperature=0.2`、`max_tokens=48`；未选择标题模型时用本地备用标题。
 
 ## Markdown 渲染
 
@@ -164,14 +166,14 @@ Start-Process -FilePath ".\gradlew.bat" -ArgumentList "connectedAndroidTest", "-
 | 修改范围 | 需同步更新 |
 | --- | --- |
 | 数据模型 | `ChatHistoryStore` 序列化/反序列化 |
-| `ApiSettings` 设置字段 | `ApiSettingsStore`、`SettingsActivity`、设置页布局 |
+| `ApiSettings`/`ModelProvider`/`ModelInfo`/`ModelRef` 字段 | `ApiSettingsStore`（JSON 序列化 + 旧键迁移）、`SettingsActivity`、`ProviderEditorActivity`、`ModelPickerBottomSheet`、设置页布局、`ApiSettingsStoreTest` |
 | `ConversationSummary`/`SavedConversationState`/历史根字段 | 多对话索引、旧历史迁移、侧栏刷新 |
 | `ContextSummary`/上下文压缩/token 估算 | 摘要替换、摘要失效、usage 锚点、历史迁移、`ChatConversationContextHelperTest` |
 | `AssistantPart` 字段 | `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter`、工具结果展开状态 |
 | 新增 AI 工具 | `LocalAiTools` 定义 + 执行 + `IntermediateStepsHelper.parseToolSummary` |
 | Shell 风险检测 | `ShellRiskDetectorTest`；`confirmation_id` 不暴露为模型可构造输入 |
-| API 请求体 | 保持 OpenAI 兼容；注意 `stream_options.include_usage` 降级和 `reasoning_effort` 条件发送 |
-| 标题生成 | 保持空 `titleModel` 的本地备用标题兼容 |
+| API 请求体 | 保持 OpenAI 兼容；注意 `stream_options.include_usage` 降级和按模型发送 `reasoning_effort`；聊天/标题/压缩各自解析为 `ResolvedModel`（provider baseUrl/apiKey + model + 上下文长度 + 思考强度） |
+| 标题生成 | 保持未选择标题模型时的本地备用标题兼容 |
 | 外部存储权限 | `Utils.kt` + `SettingsActivity.kt` |
 | Markdown 渲染/RecyclerView 绑定/LaTeX 公式 | `MarkdownParseCache`、`MarkdownView`、`ChatMessageAdapter`、`ChatFragment.preparseVisibleMessages()`、公式分隔符流式解析与 RaTeX 渲染兼容 |
 | 图标更新 | Material Symbols Rounded，命名 `ic_{name}.xml`（不加 `_24px`） |

@@ -2,30 +2,88 @@ package com.mukapp.mote.data
 
 import android.content.SharedPreferences
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.ModelInfo
+import com.mukapp.mote.data.model.ModelProvider
+import com.mukapp.mote.data.model.ModelRef
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ApiSettingsStoreTest {
 
     @Test
-    fun saveAndLoadRoundTripsCompressionSettings() {
+    fun saveAndLoadRoundTripsProviders() {
         val preferences = InMemorySharedPreferences()
-        val settings = ApiSettings(
+        val provider = ModelProvider(
+            id = "provider-1",
+            name = "OpenAI",
             baseUrl = "https://api.example.com/v1",
             apiKey = "sk-test",
-            model = "chat-model",
-            titleModel = "title-model",
-            compressionModel = "summary-model",
-            modelContextLength = 128_000,
-            compressionTriggerLength = 96_000,
+            models = listOf(
+                ModelInfo(id = "chat-model", contextLength = 128_000, reasoningEffort = "high"),
+                ModelInfo(id = "title-model", displayName = "标题", reasoningEffort = "low")
+            )
+        )
+        val settings = ApiSettings(
+            providers = listOf(provider),
+            chatModel = ModelRef("provider-1", "chat-model"),
+            titleModel = ModelRef("provider-1", "title-model"),
+            compressionModel = ModelRef("provider-1", "chat-model"),
+            compressionTriggerPercent = 70,
             searxngUrl = "https://search.example.com",
-            tavilyApiKey = "tvly-test",
-            reasoningEffort = "medium"
+            tavilyApiKey = ""
         )
 
         ApiSettingsStore.save(preferences, settings)
 
         assertEquals(settings, ApiSettingsStore.load(preferences))
+    }
+
+    @Test
+    fun migratesLegacySingleProviderSettings() {
+        val preferences = InMemorySharedPreferences()
+        preferences.edit()
+            .putString("base_url", "https://api.example.com/v1")
+            .putString("api_key", "sk-legacy")
+            .putString("model", "gpt-4o")
+            .putString("title_model", "gpt-4o-mini")
+            .putString("compression_model", "gpt-4o")
+            .putInt("model_context_length", 100_000)
+            .putInt("compression_trigger_length", 80_000)
+            .putString("reasoning_effort", "medium")
+            .putString("searxng_url", "https://search.example.com")
+            .commit()
+
+        val migrated = ApiSettingsStore.load(preferences)
+
+        assertEquals(1, migrated.providers.size)
+        val provider = migrated.providers.first()
+        assertEquals("https://api.example.com/v1", provider.baseUrl)
+        assertEquals("sk-legacy", provider.apiKey)
+        // gpt-4o 与 gpt-4o-mini 两个模型（compression 复用 gpt-4o）
+        assertEquals(2, provider.models.size)
+        val chat = provider.models.first { it.id == "gpt-4o" }
+        assertEquals(100_000, chat.contextLength)
+        assertEquals("medium", chat.reasoningEffort)
+        assertNotNull(migrated.chatModel)
+        assertEquals("gpt-4o", migrated.chatModel?.modelId)
+        assertEquals("gpt-4o-mini", migrated.titleModel?.modelId)
+        // 80000 / 100000 = 80%
+        assertEquals(80, migrated.compressionTriggerPercent)
+        assertEquals("https://search.example.com", migrated.searxngUrl)
+
+        // 迁移后应已写回新版 JSON，再次加载结果一致。
+        assertEquals(migrated, ApiSettingsStore.load(preferences))
+    }
+
+    @Test
+    fun loadReturnsEmptyWhenNothingStored() {
+        val settings = ApiSettingsStore.load(InMemorySharedPreferences())
+        assertTrue(settings.providers.isEmpty())
+        assertNull(settings.chatModel)
+        assertEquals(ApiSettings.DefaultCompressionTriggerPercent, settings.compressionTriggerPercent)
     }
 
     private class InMemorySharedPreferences : SharedPreferences {

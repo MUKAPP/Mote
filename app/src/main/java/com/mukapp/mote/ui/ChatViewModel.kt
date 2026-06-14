@@ -21,8 +21,13 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.ContextSummary
+import com.mukapp.mote.data.model.ModelRef
+import com.mukapp.mote.data.model.ResolvedModel
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.data.model.TokenUsage
+import com.mukapp.mote.data.model.resolvedChatModel
+import com.mukapp.mote.data.model.resolvedCompressionModel
+import com.mukapp.mote.data.model.resolvedTitleModel
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.tools.ShellProcessManager
@@ -177,16 +182,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             logComponent,
             MoteLog.event(
                 "用户保存设置",
-                "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
-                "modelConfigured" to settings.model.isNotBlank(),
-                "titleModelEnabled" to settings.titleModel.isNotBlank(),
-                "compressionEnabled" to (settings.compressionTriggerLength > 0),
+                "providers" to settings.providers.size,
+                "models" to settings.providers.sumOf { it.models.size },
+                "chatModelConfigured" to (settings.resolvedChatModel() != null),
+                "titleModelConfigured" to (settings.titleModel != null),
+                "compressionTriggerPercent" to settings.compressionTriggerPercent,
                 "searchEnabled" to settings.searxngUrl.isNotBlank()
             )
         )
         if (uiMessagesInternal.isNotEmpty() || conversationMessagesInternal.isNotEmpty()) {
             persistConversationAsync()
         }
+    }
+
+    /** 首页切换当前对话模型：更新 chatModel 引用并持久化设置。 */
+    fun selectChatModel(ref: ModelRef) {
+        val current = _savedSettings.value ?: ApiSettingsStore.load(appContext)
+        if (current.chatModel == ref) {
+            return
+        }
+        val updated = current.copy(chatModel = ref)
+        ApiSettingsStore.save(appContext, updated)
+        _savedSettings.value = updated
+        MoteLog.i(
+            logComponent,
+            MoteLog.event("切换对话模型", "providerId" to MoteLog.shortId(ref.providerId), "model" to ref.modelId)
+        )
     }
 
     fun startNewConversation() {
@@ -401,11 +422,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val settings = _savedSettings.value ?: ApiSettingsStore.load(appContext)
-        if (settings.baseUrl.isBlank() || settings.model.isBlank()) {
-            MoteLog.w(logComponent, "发送被拒绝：API 地址或模型未配置。")
+        val chatModel = settings.resolvedChatModel()
+        if (chatModel == null) {
+            MoteLog.w(logComponent, "发送被拒绝：未配置可用的对话模型。")
             uiMessagesInternal += ChatMessage(
                 role = ChatRole.Assistant,
-                content = "请先在设置页填写 API 地址和模型，然后再开始对话。"
+                content = "请先在设置页添加提供商并选择对话模型，然后再开始对话。"
             )
             publishMessagesImmediately()
             return
@@ -432,8 +454,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "uiMessages" to uiMessagesInternal.size,
                 "conversationMessages" to conversationMessagesInternal.size,
                 "contextSummaries" to contextSummariesInternal.size,
-                "baseUrl" to MoteLog.safeUrlOrigin(settings.baseUrl),
-                "modelLength" to settings.model.length
+                "baseUrl" to MoteLog.safeUrlOrigin(chatModel.baseUrl),
+                "modelLength" to chatModel.model.length
             )
         )
         if (isFirstUserMessage) {
@@ -473,6 +495,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                 repeat(MaxToolRounds) { roundIndex ->
                     val streamResult = streamChatWithRetries(
+                        chatModel = chatModel,
                         settings = settings,
                         messages = buildRequestMessages(workingConversation),
                         assistantParts = assistantParts,
@@ -1159,6 +1182,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun streamChatWithRetries(
+        chatModel: ResolvedModel,
         settings: ApiSettings,
         messages: List<ChatMessage>,
         assistantParts: MutableList<AssistantPart>,
@@ -1183,6 +1207,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
                 val response = ChatApiClient.streamChat(
+                    model = chatModel,
                     settings = settings,
                     messages = messages,
                     onDelta = { delta ->
@@ -1663,8 +1688,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
         val summary = try {
+            val compressionModel = settings.resolvedCompressionModel()
+                ?: throw IllegalStateException("未配置可用的压缩模型。")
             val summary = ChatApiClient.compressConversation(
-                settings = settings,
+                model = compressionModel,
                 messages = plan.messagesToCompress,
                 maxSummaryTokens = plan.maxSummaryTokens
             )
@@ -1699,7 +1726,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        val hardLimit = settings.modelContextLength.takeIf { it > 0 }
+        val hardLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
         if (hardLimit == null || plan.tokenCount.tokens <= hardLimit) {
             MoteLog.w(
                 logComponent,
@@ -1795,20 +1822,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         settings: ApiSettings,
         tokenCount: ChatConversationContextHelper.ContextTokenCount
     ) {
-        ChatConversationContextHelper.requireWithinModelContextLength(settings, tokenCount.tokens)
+        ChatConversationContextHelper.requireWithinModelContextLength(
+            modelContextLength = settings.resolvedChatModel()?.contextLength ?: 0,
+            contextTokens = tokenCount.tokens
+        )
     }
 
+    /** 触发阈值 = 聊天模型上下文长度 × compressionTriggerPercent%；上下文长度未知则不自动压缩。 */
     private fun calculateEffectiveCompressionTrigger(settings: ApiSettings): Int? {
-        val configuredTrigger = settings.compressionTriggerLength.takeIf { it > 0 } ?: return null
-        val contextSoftLimit = settings.modelContextLength
-            .takeIf { it > 0 }
-            ?.let { (it * ModelContextCompressionRatio).toInt().coerceAtLeast(1) }
-        return minPositive(configuredTrigger, contextSoftLimit ?: 0)
+        val contextLength = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 } ?: return null
+        val percent = settings.compressionTriggerPercent.takeIf { it > 0 } ?: return null
+        return (contextLength.toLong() * percent / 100L).toInt().coerceAtLeast(1)
     }
 
     private fun calculateRecentContextBudget(settings: ApiSettings): Int {
-        val referenceLimit = minPositive(settings.modelContextLength, settings.compressionTriggerLength)
-            ?: settings.compressionTriggerLength.takeIf { it > 0 }
+        val referenceLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
             ?: DefaultRecentContextBudget
         return (referenceLimit * RecentContextBudgetRatio)
             .toInt()
@@ -1816,16 +1844,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun calculateSummaryTokenBudget(settings: ApiSettings): Int {
-        val referenceLimit = minPositive(settings.modelContextLength, settings.compressionTriggerLength)
-            ?: settings.compressionTriggerLength.takeIf { it > 0 }
+        val referenceLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
             ?: DefaultRecentContextBudget
         return (referenceLimit * SummaryBudgetRatio)
             .toInt()
             .coerceIn(MinSummaryTokenBudget, MaxSummaryTokenBudget)
-    }
-
-    private fun minPositive(first: Int, second: Int): Int? {
-        return listOf(first, second).filter { it > 0 }.minOrNull()
     }
 
     private fun commitRawConversation(workingConversation: List<ChatMessage>) {
@@ -1918,12 +1941,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun generateConversationTitleAsync(settings: ApiSettings, firstUserMessage: String) {
-        if (settings.titleModel.isBlank() || firstUserMessage.isBlank()) {
+        val titleModel = settings.resolvedTitleModel()
+        if (titleModel == null || firstUserMessage.isBlank()) {
             MoteLog.d(
                 logComponent,
                 MoteLog.event(
                     "跳过模型标题生成",
-                    "titleModelConfigured" to settings.titleModel.isNotBlank(),
+                    "titleModelConfigured" to (titleModel != null),
                     "firstUserMessageBlank" to firstUserMessage.isBlank()
                 )
             )
@@ -1948,7 +1972,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         viewModelScope.launch(Dispatchers.IO) {
             val generatedTitle = runCatching {
-                ChatApiClient.generateConversationTitle(settings, firstUserMessage)
+                ChatApiClient.generateConversationTitle(titleModel, firstUserMessage)
             }.onFailure { error ->
                 MoteLog.e(logComponent, "生成对话标题失败", error)
             }.getOrNull()
@@ -2159,7 +2183,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         const val MaxSummaryTokenBudget = 8_192
         const val RecentContextBudgetRatio = 0.35f
         const val SummaryBudgetRatio = 0.12f
-        const val ModelContextCompressionRatio = 0.8f
 
         fun buildFallbackTitle(message: String): String {
             return normalizeTitle(message).ifBlank { DefaultConversationTitle }

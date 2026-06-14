@@ -42,6 +42,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.ChatAttachment
 import com.mukapp.mote.data.model.ChatAttachmentType
@@ -1077,7 +1078,7 @@ class ChatFragment : Fragment() {
         binding.emptyPlaceholder.root.visibility = if (showEmptyState) View.VISIBLE else View.GONE
         binding.recyclerMessages.visibility = if (showEmptyState) View.INVISIBLE else View.VISIBLE
         
-        val isConfigured = latestSettings.baseUrl.isNotBlank() && latestSettings.model.isNotBlank()
+        val isConfigured = latestSettings.resolvedChatModel() != null
         binding.emptyPlaceholder.textEmptySubtitle.text = getString(
             if (isConfigured) {
                 R.string.empty_subtitle_configured

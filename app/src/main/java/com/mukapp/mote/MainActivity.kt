@@ -25,9 +25,12 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.mukapp.mote.databinding.ActivityMainBinding
+import com.mukapp.mote.data.model.findProvider
+import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.ui.ChatFragment
 import com.mukapp.mote.ui.ChatViewModel
 import com.mukapp.mote.ui.ConversationSummaryAdapter
+import com.mukapp.mote.ui.ModelPickerBottomSheet
 import com.mukapp.mote.util.dpInt
 import eightbitlab.com.blurview.BlurTarget
 import kotlin.math.min
@@ -49,6 +52,7 @@ class MainActivity : AppCompatActivity() {
         setupChrome()
         setupNavigation()
         observeConversations()
+        observeModelSelector()
         setupBackPressHandler()
 
         supportFragmentManager.registerFragmentLifecycleCallbacks(object :
@@ -109,11 +113,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupChrome() {
-        binding.toolbar.setTitle(R.string.title_chat)
         binding.toolbar.setNavigationIcon(R.drawable.ic_menu)
         binding.toolbar.setNavigationOnClickListener {
             binding.drawerLayout.openDrawer(GravityCompat.START)
         }
+        binding.modelSelector.setOnClickListener { showModelPicker() }
         binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.action_delete_conversation -> {
@@ -125,6 +129,13 @@ class MainActivity : AppCompatActivity() {
 
                 else -> false
             }
+        }
+    }
+
+    private fun showModelPicker() {
+        val settings = viewModel.savedSettings.value ?: return
+        ModelPickerBottomSheet.show(this, settings, settings.chatModel) { ref ->
+            viewModel.selectChatModel(ref)
         }
     }
 
@@ -177,6 +188,18 @@ class MainActivity : AppCompatActivity() {
             }
             Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
             viewModel.clearUserNotice()
+        }
+    }
+
+    private fun observeModelSelector() {
+        viewModel.savedSettings.observe(this) { settings ->
+            val label = settings?.resolvedChatModel()?.let { resolved ->
+                settings.findProvider(settings.chatModel?.providerId)?.let { provider ->
+                    val model = provider.models.firstOrNull { it.id == resolved.model }
+                    model?.label ?: resolved.model
+                } ?: resolved.model
+            }
+            binding.textModelSelector.text = label ?: getString(R.string.model_selector_unset)
         }
     }
 

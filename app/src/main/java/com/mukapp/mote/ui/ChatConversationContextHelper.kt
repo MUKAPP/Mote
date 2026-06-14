@@ -1,6 +1,5 @@
 package com.mukapp.mote.ui
 
-import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ChatAttachmentType
@@ -293,13 +292,13 @@ internal object ChatConversationContextHelper {
         )
     }
 
-    fun isOverModelContextLength(settings: ApiSettings, contextTokens: Int): Boolean {
-        val hardLimit = settings.modelContextLength.takeIf { it > 0 } ?: return false
+    fun isOverModelContextLength(modelContextLength: Int, contextTokens: Int): Boolean {
+        val hardLimit = modelContextLength.takeIf { it > 0 } ?: return false
         return contextTokens > hardLimit
     }
 
-    fun requireWithinModelContextLength(settings: ApiSettings, contextTokens: Int) {
-        if (!isOverModelContextLength(settings, contextTokens)) {
+    fun requireWithinModelContextLength(modelContextLength: Int, contextTokens: Int) {
+        if (!isOverModelContextLength(modelContextLength, contextTokens)) {
             return
         }
         throw IllegalStateException(
