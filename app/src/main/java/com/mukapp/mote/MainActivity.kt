@@ -113,6 +113,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupChrome() {
+        supportActionBar?.setDisplayShowTitleEnabled(false)
         binding.toolbar.setNavigationIcon(R.drawable.ic_menu)
         binding.toolbar.setNavigationOnClickListener {
             binding.drawerLayout.openDrawer(GravityCompat.START)

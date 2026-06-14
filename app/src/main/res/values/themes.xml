@@ -38,6 +38,8 @@
 
         <!-- Dialog -->
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.Mote.MaterialAlertDialog</item>
+        <!-- 底部弹出面板 -->
+        <item name="bottomSheetDialogTheme">@style/ThemeOverlay.Mote.BottomSheetDialog</item>
 
         <!-- 圆角弹出菜单 -->
         <item name="popupMenuStyle">@style/Widget.Mote.PopupMenu</item>
@@ -49,7 +51,39 @@
     <style name="ThemeOverlay.Mote.MaterialAlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
         <item name="colorSurface">@color/mote_background</item>
         <item name="colorSurfaceContainerHigh">@color/mote_background</item>
+        <item name="colorSurfaceContainerLow">@color/mote_background</item>
+        <item name="colorSurfaceContainer">@color/mote_background</item>
+        <item name="android:colorBackground">@color/mote_background</item>
+        <!-- 关闭高度色调叠加，保证对话框背景与页面一致 -->
+        <item name="elevationOverlayEnabled">false</item>
         <item name="buttonBarPositiveButtonStyle">@style/Widget.Mote.Button.Dialog.Positive</item>
+    </style>
+
+    <!-- 底部弹出面板：页面背景色 + 顶部圆角，去除高度色调 -->
+    <style name="ThemeOverlay.Mote.BottomSheetDialog" parent="ThemeOverlay.Material3.BottomSheetDialog">
+        <item name="colorSurface">@color/mote_background</item>
+        <item name="colorSurfaceContainerHigh">@color/mote_background</item>
+        <item name="colorSurfaceContainerLow">@color/mote_background</item>
+        <item name="colorSurfaceContainer">@color/mote_background</item>
+        <item name="android:colorBackground">@color/mote_background</item>
+        <item name="elevationOverlayEnabled">false</item>
+        <item name="bottomSheetStyle">@style/Widget.Mote.BottomSheet</item>
+        <item name="android:navigationBarColor">@color/mote_background</item>
+        <item name="android:windowLightNavigationBar">@bool/mote_light_system_bars</item>
+    </style>
+
+    <style name="Widget.Mote.BottomSheet" parent="Widget.Material3.BottomSheet.Modal">
+        <item name="backgroundTint">@color/mote_background</item>
+        <item name="shapeAppearanceOverlay">@style/ShapeAppearanceOverlay.Mote.BottomSheet</item>
+        <item name="elevationOverlayEnabled">false</item>
+    </style>
+
+    <style name="ShapeAppearanceOverlay.Mote.BottomSheet" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSizeTopLeft">24dp</item>
+        <item name="cornerSizeTopRight">24dp</item>
+        <item name="cornerSizeBottomLeft">0dp</item>
+        <item name="cornerSizeBottomRight">0dp</item>
     </style>
 
     <!-- 对话框积极按钮：胶囊型主题色填充 -->

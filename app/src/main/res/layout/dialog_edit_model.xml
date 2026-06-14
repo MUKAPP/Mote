@@ -23,6 +23,7 @@
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/edit_model_id"
+                style="@style/Widget.Mote.TextInputEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:singleLine="true" />
@@ -37,6 +38,7 @@
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/edit_model_display_name"
+                style="@style/Widget.Mote.TextInputEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:singleLine="true" />
@@ -52,6 +54,7 @@
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/edit_model_context_length"
+                style="@style/Widget.Mote.TextInputEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="number"

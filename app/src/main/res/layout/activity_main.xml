@@ -46,30 +46,46 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:clickable="true"
                     android:focusable="true"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingStart="12dp"
-                    android:paddingEnd="8dp"
-                    android:paddingVertical="6dp">
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingVertical="4dp">
 
                     <TextView
-                        android:id="@+id/text_model_selector"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:ellipsize="end"
-                        android:maxLines="1"
-                        android:maxWidth="220dp"
-                        android:text="@string/model_selector_unset"
+                        android:text="@string/title_chat"
                         android:textAppearance="?attr/textAppearanceTitleMedium"
+                        android:textSize="18sp"
                         android:textColor="?attr/colorOnSurface" />
 
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:layout_marginStart="2dp"
-                        android:importantForAccessibility="no"
-                        android:src="@drawable/ic_expand_more"
-                        app:tint="?attr/colorOnSurfaceVariant" />
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/text_model_selector"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:maxWidth="200dp"
+                            android:layout_marginLeft="16dp"
+                            android:text="@string/model_selector_unset"
+                            android:textAppearance="?attr/textAppearanceBodySmall"
+                            android:textColor="?attr/colorOnSurfaceVariant" />
+
+                        <ImageView
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:layout_marginStart="2dp"
+                            android:importantForAccessibility="no"
+                            android:src="@drawable/ic_expand_more"
+                            app:tint="?attr/colorOnSurfaceVariant" />
+                    </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.appbar.MaterialToolbar>
         </eightbitlab.com.blurview.BlurView>

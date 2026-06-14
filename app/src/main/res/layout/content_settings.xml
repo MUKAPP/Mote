@@ -169,11 +169,14 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:background="?attr/selectableItemBackground"
+                    android:background="@drawable/settings_field_background"
+                    android:foreground="?attr/selectableItemBackground"
                     android:gravity="center_vertical"
-                    android:minHeight="48dp"
+                    android:minHeight="56dp"
                     android:orientation="horizontal"
-                    android:paddingVertical="4dp">
+                    android:paddingStart="16dp"
+                    android:paddingEnd="12dp"
+                    android:paddingVertical="8dp">
 
                     <LinearLayout
                         android:layout_width="0dp"
@@ -220,11 +223,14 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
-                    android:background="?attr/selectableItemBackground"
+                    android:background="@drawable/settings_field_background"
+                    android:foreground="?attr/selectableItemBackground"
                     android:gravity="center_vertical"
-                    android:minHeight="48dp"
+                    android:minHeight="56dp"
                     android:orientation="horizontal"
-                    android:paddingVertical="4dp">
+                    android:paddingStart="16dp"
+                    android:paddingEnd="6dp"
+                    android:paddingVertical="6dp">
 
                     <LinearLayout
                         android:layout_width="0dp"
@@ -280,11 +286,14 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
-                    android:background="?attr/selectableItemBackground"
+                    android:background="@drawable/settings_field_background"
+                    android:foreground="?attr/selectableItemBackground"
                     android:gravity="center_vertical"
-                    android:minHeight="48dp"
+                    android:minHeight="56dp"
                     android:orientation="horizontal"
-                    android:paddingVertical="4dp">
+                    android:paddingStart="16dp"
+                    android:paddingEnd="6dp"
+                    android:paddingVertical="6dp">
 
                     <LinearLayout
                         android:layout_width="0dp"
@@ -372,6 +381,7 @@
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_compression_trigger_percent"
+                        style="@style/Widget.Mote.TextInputEditText"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:inputType="number"
@@ -405,6 +415,7 @@
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_searxng_url"
+                        style="@style/Widget.Mote.TextInputEditText"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:inputType="textUri"
@@ -431,6 +442,7 @@
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/edit_tavily_api_key"
+                        style="@style/Widget.Mote.TextInputEditText"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:inputType="textPassword|textNoSuggestions"

@@ -45,6 +45,29 @@
                         android:orientation="vertical"
                         android:padding="16dp">
 
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <ImageView
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:importantForAccessibility="no"
+                                android:src="@drawable/ic_key"
+                                app:tint="?attr/colorPrimary" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="10dp"
+                                android:text="@string/settings_group_basic"
+                                android:textAppearance="?attr/textAppearanceTitleSmall"
+                                android:textColor="?attr/colorPrimary" />
+                        </LinearLayout>
+
                         <com.google.android.material.textfield.TextInputLayout
                             android:id="@+id/input_provider_name"
                             style="@style/Widget.Mote.TextInputLayout"
@@ -55,6 +78,7 @@
 
                             <com.google.android.material.textfield.TextInputEditText
                                 android:id="@+id/edit_provider_name"
+                                style="@style/Widget.Mote.TextInputEditText"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:singleLine="true" />
@@ -71,6 +95,7 @@
 
                             <com.google.android.material.textfield.TextInputEditText
                                 android:id="@+id/edit_provider_base_url"
+                                style="@style/Widget.Mote.TextInputEditText"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:inputType="textUri"
@@ -88,6 +113,7 @@
 
                             <com.google.android.material.textfield.TextInputEditText
                                 android:id="@+id/edit_provider_api_key"
+                                style="@style/Widget.Mote.TextInputEditText"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:inputType="textPassword|textNoSuggestions"
