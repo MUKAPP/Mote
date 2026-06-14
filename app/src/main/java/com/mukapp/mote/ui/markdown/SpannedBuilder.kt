@@ -58,6 +58,9 @@ class SpannedBuilder(private val context: Context) {
         context.resources.displayMetrics
     )
 
+    /** 是否解析并渲染行内公式；自由复制页关闭以保留公式原文可选取复制。 */
+    var parseInlineMath: Boolean = true
+
     private data class InlineMathRenderKey(
         val formula: String,
         val fontSizePx: Int,
@@ -82,6 +85,10 @@ class SpannedBuilder(private val context: Context) {
 
     private val inlineCodeBgColor: Int by lazy {
         codeColors.inlineCodeBackgroundColor
+    }
+
+    private val highlightBgColor: Int by lazy {
+        blendWithAlpha(primaryColor, 0x36)
     }
 
     private val inlineCodeTextColor: Int by lazy {
@@ -145,7 +152,7 @@ class SpannedBuilder(private val context: Context) {
 
     fun buildInlineText(text: String, isStreaming: Boolean = false, linkDefs: Map<String, Pair<String, String>> = emptyMap()): SpannableStringBuilder {
         val ssb = SpannableStringBuilder()
-        val inlineElements = inlineParser.parse(text, isStreaming, linkDefs)
+        val inlineElements = inlineParser.parse(text, isStreaming, linkDefs, parseMath = parseInlineMath)
         appendInlineElements(ssb, inlineElements)
         return ssb
     }
@@ -176,7 +183,7 @@ class SpannedBuilder(private val context: Context) {
 
     private fun appendHeading(ssb: SpannableStringBuilder, heading: MdBlock.Heading, linkDefs: Map<String, Pair<String, String>>) {
         val start = ssb.length
-        val inlineElements = inlineParser.parse(heading.text, isStreaming = false, linkDefs = linkDefs)
+        val inlineElements = inlineParser.parse(heading.text, isStreaming = false, linkDefs = linkDefs, parseMath = parseInlineMath)
         appendInlineElements(ssb, inlineElements)
         val end = ssb.length
         ssb.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -449,7 +456,7 @@ class SpannedBuilder(private val context: Context) {
 
 
     private fun appendParagraph(ssb: SpannableStringBuilder, paragraph: MdBlock.Paragraph, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
-        val inlineElements = inlineParser.parse(paragraph.text, isStreaming, linkDefs)
+        val inlineElements = inlineParser.parse(paragraph.text, isStreaming, linkDefs, parseMath = parseInlineMath)
         appendInlineElements(ssb, inlineElements)
     }
 
@@ -513,12 +520,19 @@ class SpannedBuilder(private val context: Context) {
                     appendInlineElements(ssb, element.children)
                     ssb.setSpan(SuperscriptSpan(), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     ssb.setSpan(RelativeSizeSpan(0.75f), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    ssb.setSpan(ScriptLineHeightSpan(), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
                 is InlineElement.Subscript -> {
                     val start = ssb.length
                     appendInlineElements(ssb, element.children)
                     ssb.setSpan(SubscriptSpan(), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     ssb.setSpan(RelativeSizeSpan(0.75f), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    ssb.setSpan(ScriptLineHeightSpan(), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                is InlineElement.Highlight -> {
+                    val start = ssb.length
+                    appendInlineElements(ssb, element.children)
+                    ssb.setSpan(BackgroundColorSpan(highlightBgColor), start, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
                 is InlineElement.InlineCode -> {
                     val start = ssb.length
@@ -538,7 +552,7 @@ class SpannedBuilder(private val context: Context) {
                 }
                 is InlineElement.AutoLink -> {
                     val start = ssb.length
-                    ssb.append(element.url)
+                    ssb.append(element.text)
                     val end = ssb.length
                     ssb.setSpan(URLSpan(element.url), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     ssb.setSpan(ForegroundColorSpan(linkColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)

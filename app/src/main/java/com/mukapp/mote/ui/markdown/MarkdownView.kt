@@ -6,6 +6,9 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.method.LinkMovementMethod
+import android.text.Spanned
+import android.text.style.SubscriptSpan
+import android.text.style.SuperscriptSpan
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
@@ -802,6 +805,9 @@ class MarkdownView @JvmOverloads constructor(
         val textView = createBaseTextView()
         val text = spannedBuilder.buildSingleBlock(block, isStreaming = isStreaming, linkDefs = linkDefs)
         textView.text = text
+        if (text.hasScriptSpan()) {
+            textView.includeFontPadding = true
+        }
         applyTextBlockStyle(textView, block, nested, isLastInContainer)
         if (isStreaming) {
             textView.movementMethod = null
@@ -1227,6 +1233,12 @@ class MarkdownView @JvmOverloads constructor(
             linksClickable = true
             setLineSpacing(0f, 1.15f)
         }
+    }
+
+    private fun CharSequence.hasScriptSpan(): Boolean {
+        if (this !is Spanned) return false
+        return getSpans(0, length, SuperscriptSpan::class.java).isNotEmpty() ||
+            getSpans(0, length, SubscriptSpan::class.java).isNotEmpty()
     }
 
     private fun defaultBlockBottomMargin(nested: Boolean): Int {

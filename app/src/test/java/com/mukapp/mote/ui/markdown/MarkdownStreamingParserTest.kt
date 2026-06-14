@@ -171,6 +171,100 @@ class MarkdownStreamingParserTest {
     }
 
     @Test
+    fun inlineHighlightParsesDoubleEquals() {
+        val elements = InlineParser().parse("这是 ==重点 **内容**==", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("这是 "),
+                InlineElement.Highlight(
+                    listOf(
+                        InlineElement.Text("重点 "),
+                        InlineElement.Bold(listOf(InlineElement.Text("内容")))
+                    )
+                )
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun inlineLinkParsesOptionalTitle() {
+        val elements = InlineParser().parse("查看 [文档](https://example.com \"标题\")", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("查看 "),
+                InlineElement.Link("文档", "https://example.com", "标题")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun bareAutoLinkParsesUrlAndKeepsTrailingPunctuation() {
+        val elements = InlineParser().parse("访问 https://example.com/path?q=1。", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("访问 "),
+                InlineElement.AutoLink("https://example.com/path?q=1"),
+                InlineElement.Text("。")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun bareAutoLinkParsesAfterChinesePunctuation() {
+        val elements = InlineParser().parse("自动链接：https://example.com", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("自动链接："),
+                InlineElement.AutoLink("https://example.com")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun bareEmailLinkParsesAfterChinesePunctuation() {
+        val elements = InlineParser().parse("邮箱链接：test@example.com", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("邮箱链接："),
+                InlineElement.AutoLink("mailto:test@example.com", "test@example.com")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun bareAutoLinkAddsSchemeForWwwDisplayText() {
+        val elements = InlineParser().parse("访问 www.example.com", isStreaming = false)
+
+        assertEquals(
+            listOf(
+                InlineElement.Text("访问 "),
+                InlineElement.AutoLink("https://www.example.com", "www.example.com")
+            ),
+            elements
+        )
+    }
+
+    @Test
+    fun inlineMathCanBeDisabledForCopyRenderer() {
+        val elements = InlineParser().parse("公式 \\(x^2\\) 保留", isStreaming = false, parseMath = false)
+
+        assertEquals(
+            listOf(InlineElement.Text("公式 \\(x^2\\) 保留")),
+            elements
+        )
+    }
+
+    @Test
     fun blockMathParsesDollarDelimiter() {
         val blocks = BlockParser().parse("$$\na^2 + b^2 = c^2\n$$", isStreaming = false)
 

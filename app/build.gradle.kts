@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
 plugins {
     alias(libs.plugins.android.application)
 }
@@ -68,4 +70,22 @@ dependencies {
     testImplementation(libs.org.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+}
+
+androidComponents {
+    onVariants { variant ->
+        val capitalizedVariantName = variant.name.replaceFirstChar { char ->
+            if (char.isLowerCase()) char.titlecase() else char.toString()
+        }
+        val bindingSourceDir = layout.buildDirectory.dir(
+            "generated/data_binding_base_class_source_out/${variant.name}/out"
+        )
+        tasks.withType<JavaCompile>().configureEach {
+            if (name == "compile${capitalizedVariantName}JavaWithJavac") {
+                dependsOn("dataBindingGenBaseClasses$capitalizedVariantName")
+                source(bindingSourceDir)
+                outputs.cacheIf { false }
+            }
+        }
+    }
 }

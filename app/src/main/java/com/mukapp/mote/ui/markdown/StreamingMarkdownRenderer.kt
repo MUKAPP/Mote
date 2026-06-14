@@ -10,6 +10,10 @@ class StreamingMarkdownRenderer(context: Context) {
 
     private var lastText: String = ""
 
+    init {
+        spannedBuilder.parseInlineMath = false
+    }
+
     /** 设置表格绘制的可用宽度（像素） */
     var tableAvailableWidth: Int
         get() = spannedBuilder.tableAvailableWidth

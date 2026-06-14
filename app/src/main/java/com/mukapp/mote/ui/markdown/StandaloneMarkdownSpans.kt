@@ -7,6 +7,7 @@ import android.graphics.RectF
 import android.text.Layout
 import android.text.style.LeadingMarginSpan
 import android.text.style.LineBackgroundSpan
+import android.text.style.LineHeightSpan
 import androidx.annotation.ColorInt
 
 /**
@@ -142,5 +143,26 @@ class HorizontalRuleLineSpan(
         this.paint.style = Paint.Style.FILL
         this.paint.color = lineColor
         canvas.drawRect(left.toFloat(), centerY - half, right.toFloat(), centerY + half, this.paint)
+    }
+}
+
+/** 为上下标所在行补充少量高度，避免 TextView 关闭字体内边距时裁切。 */
+class ScriptLineHeightSpan : LineHeightSpan {
+    override fun chooseHeight(
+        text: CharSequence?,
+        start: Int,
+        end: Int,
+        spanstartv: Int,
+        v: Int,
+        fm: Paint.FontMetricsInt
+    ) {
+        val lineHeight = fm.descent - fm.ascent
+        val extra = (lineHeight * 0.16f).toInt().coerceAtLeast(1)
+        val topExtra = (extra * 0.65f).toInt().coerceAtLeast(1)
+        val bottomExtra = (extra - topExtra).coerceAtLeast(1)
+        fm.ascent -= topExtra
+        fm.top -= topExtra
+        fm.descent += bottomExtra
+        fm.bottom += bottomExtra
     }
 }
