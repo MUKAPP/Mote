@@ -92,6 +92,9 @@
     <string name="settings_reasoning_medium">中</string>
     <string name="settings_reasoning_high">高</string>
     <string name="settings_reasoning_xhigh">极高</string>
+    <string name="reasoning_off">关闭</string>
+    <string name="reasoning_on">开启</string>
+    <string name="reasoning_max">最高</string>
     <string name="settings_save">保存设置</string>
     <string name="settings_saved">设置已保存</string>
     <string name="settings_number_invalid">请输入 0 到 2147483647 之间的整数。</string>
@@ -120,6 +123,12 @@
     <string name="title_provider_editor">编辑提供商</string>
     <string name="provider_editor_name_label">提供商名称</string>
     <string name="hint_provider_name">OpenAI</string>
+    <string name="provider_editor_type_label">提供商类型</string>
+    <string name="provider_type_generic">通用 (OpenAI)</string>
+    <string name="provider_type_deepseek">DeepSeek</string>
+    <string name="provider_type_gemini">Gemini</string>
+    <string name="provider_type_qwen">通义千问</string>
+    <string name="provider_type_claude">Claude</string>
     <string name="provider_editor_models_title">模型列表</string>
     <string name="provider_editor_models_empty">尚无模型，点击下方按钮获取或手动添加。</string>
     <string name="provider_editor_fetch_models">获取模型</string>
@@ -151,9 +160,12 @@
     <!-- 模型选择面板 -->
     <string name="model_picker_title">选择模型</string>
     <string name="model_picker_empty">请先在设置页添加提供商和模型。</string>
+    <string name="model_picker_reasoning_label">思考强度</string>
     <string name="model_selector_unset">选择模型</string>
+    <string name="model_selector_with_effort">%1$s · %2$s</string>
+    <string name="model_selector_effort_temporary">%1$s（临时）</string>
     <string name="settings_contract_title">接口约定</string>
-    <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 聊天请求体会发送 model、messages、stream=true、tools 和 reasoning_effort\n• 轻量模型只用于生成历史对话标题\n• 压缩模型只用于上下文过长时总结旧消息\n• 搜索工具支持 SearXNG 或 Tavily，二者只能配置一个；都留空时不会暴露搜索工具\n• 若要访问外部存储文件，请先授予文件管理权限</string>
+    <string name="settings_contract_body">• 地址末尾不是 /chat/completions 时会自动拼接\n• 聊天请求体会发送 model、messages、stream=true 和 tools；思考字段按提供商类型写入\n• 轻量模型只用于生成历史对话标题\n• 压缩模型只用于上下文过长时总结旧消息\n• 搜索工具支持 SearXNG 或 Tavily，二者只能配置一个；都留空时不会暴露搜索工具\n• 若要访问外部存储文件，请先授予文件管理权限</string>
     <string name="dialog_edit_title">编辑消息</string>
     <string name="dialog_edit_message">编辑将删除此消息及之后的所有消息，并将内容填入输入框。</string>
     <string name="dialog_delete_title">删除消息</string>

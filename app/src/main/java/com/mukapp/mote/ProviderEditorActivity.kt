@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -15,11 +16,15 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipDrawable
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
+import com.mukapp.mote.data.model.ProviderType
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.databinding.ActivityProviderEditorBinding
 import com.mukapp.mote.databinding.DialogEditModelBinding
 import com.mukapp.mote.network.ChatApiClient
@@ -36,6 +41,7 @@ class ProviderEditorActivity : AppCompatActivity() {
     private val models = mutableListOf<ModelInfo>()
     private var isExistingProvider = false
     private var isFetching = false
+    private var selectedProviderType: ProviderType = ProviderType.Generic
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,9 +95,11 @@ class ProviderEditorActivity : AppCompatActivity() {
     }
 
     private fun setupModels(provider: ModelProvider) {
+        selectedProviderType = provider.type
         models.clear()
         models.addAll(provider.models)
         modelAdapter = ProviderModelAdapter(
+            providerType = { selectedProviderType },
             onEdit = { index, model -> showModelDialog(index, model) },
             onDelete = { index, model -> confirmDeleteModel(index, model) }
         )
@@ -114,6 +122,32 @@ class ProviderEditorActivity : AppCompatActivity() {
         binding.editProviderName.setText(provider.name)
         binding.editProviderBaseUrl.setText(provider.baseUrl)
         binding.editProviderApiKey.setText(provider.apiKey)
+        binding.toggleProviderType.check(chipIdForType(provider.type))
+        binding.toggleProviderType.setOnCheckedStateChangeListener { _, checkedIds ->
+            val checkedId = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
+            val newType = typeForChipId(checkedId)
+            if (newType != selectedProviderType) {
+                selectedProviderType = newType
+                // 思考档标签随类型变化，重新渲染模型副标题。
+                refreshModels()
+            }
+        }
+    }
+
+    private fun chipIdForType(type: ProviderType): Int = when (type) {
+        ProviderType.Generic -> R.id.chip_type_generic
+        ProviderType.DeepSeek -> R.id.chip_type_deepseek
+        ProviderType.Gemini -> R.id.chip_type_gemini
+        ProviderType.Qwen -> R.id.chip_type_qwen
+        ProviderType.Claude -> R.id.chip_type_claude
+    }
+
+    private fun typeForChipId(id: Int): ProviderType = when (id) {
+        R.id.chip_type_deepseek -> ProviderType.DeepSeek
+        R.id.chip_type_gemini -> ProviderType.Gemini
+        R.id.chip_type_qwen -> ProviderType.Qwen
+        R.id.chip_type_claude -> ProviderType.Claude
+        else -> ProviderType.Generic
     }
 
     private fun refreshModels() {
@@ -143,7 +177,11 @@ class ProviderEditorActivity : AppCompatActivity() {
                 var added = 0
                 fetched.forEach { model ->
                     if (existingIds.add(model.id)) {
-                        models.add(model)
+                        models.add(
+                            model.copy(
+                                reasoningEffort = ReasoningEffortOptions.defaultKeyFor(selectedProviderType)
+                            )
+                        )
                         added += 1
                     }
                 }
@@ -171,14 +209,32 @@ class ProviderEditorActivity : AppCompatActivity() {
         dialogBinding.editModelContextLength.setText(
             existing?.contextLength?.takeIf { it > 0 }?.toString().orEmpty()
         )
-        dialogBinding.toggleModelReasoning.check(
-            when (existing?.reasoningEffort) {
-                "low" -> R.id.chip_effort_low
-                "medium" -> R.id.chip_effort_medium
-                "xhigh" -> R.id.chip_effort_xhigh
-                else -> R.id.chip_effort_high
+
+        // 思考强度档位随提供商类型变化，运行时按当前类型动态构建。
+        val effortChipGroup = dialogBinding.toggleModelReasoning
+        val initialKey = ReasoningEffortOptions.normalizeKey(selectedProviderType, existing?.reasoningEffort)
+        effortChipGroup.removeAllViews()
+        var initialChipId = View.NO_ID
+        ReasoningEffortOptions.optionsFor(selectedProviderType).forEach { option ->
+            val chip = Chip(this, null, com.google.android.material.R.attr.chipStyle).apply {
+                setChipDrawable(
+                    ChipDrawable.createFromAttributes(
+                        this@ProviderEditorActivity, null, 0, R.style.Widget_Mote_Chip_Choice
+                    )
+                )
+                id = View.generateViewId()
+                text = getString(option.labelRes)
+                tag = option.key
+                isCheckable = true
             }
-        )
+            effortChipGroup.addView(chip)
+            if (option.key == initialKey) {
+                initialChipId = chip.id
+            }
+        }
+        if (initialChipId != View.NO_ID) {
+            effortChipGroup.check(initialChipId)
+        }
 
         val titleRes = if (index == null) R.string.model_dialog_add_title else R.string.model_dialog_edit_title
         val dialog = MaterialAlertDialogBuilder(this)
@@ -194,12 +250,10 @@ class ProviderEditorActivity : AppCompatActivity() {
                     dialogBinding.inputModelId.error = getString(R.string.model_dialog_id_required)
                     return@setOnClickListener
                 }
-                val reasoning = when (dialogBinding.toggleModelReasoning.checkedChipId) {
-                    R.id.chip_effort_low -> "low"
-                    R.id.chip_effort_medium -> "medium"
-                    R.id.chip_effort_xhigh -> "xhigh"
-                    else -> "high"
-                }
+                val reasoning = effortChipGroup.checkedChipId
+                    .takeIf { it != View.NO_ID }
+                    ?.let { effortChipGroup.findViewById<Chip>(it)?.tag as? String }
+                    ?: ReasoningEffortOptions.defaultKeyFor(selectedProviderType)
                 val contextLength = dialogBinding.editModelContextLength.text?.toString()
                     ?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
                 val newModel = ModelInfo(
@@ -245,6 +299,7 @@ class ProviderEditorActivity : AppCompatActivity() {
             name = binding.editProviderName.text?.toString().orEmpty().trim(),
             baseUrl = binding.editProviderBaseUrl.text?.toString().orEmpty().trim(),
             apiKey = binding.editProviderApiKey.text?.toString().orEmpty().trim(),
+            type = selectedProviderType,
             models = models.toList()
         )
     }

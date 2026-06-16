@@ -75,35 +75,6 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             app:selectionRequired="true"
-            app:singleSelection="true">
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/chip_effort_low"
-                style="@style/Widget.Mote.Chip.Choice"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_reasoning_low" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/chip_effort_medium"
-                style="@style/Widget.Mote.Chip.Choice"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_reasoning_medium" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/chip_effort_high"
-                style="@style/Widget.Mote.Chip.Choice"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_reasoning_high" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/chip_effort_xhigh"
-                style="@style/Widget.Mote.Chip.Choice"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_reasoning_xhigh" />
-        </com.google.android.material.chip.ChipGroup>
+            app:singleSelection="true" />
     </LinearLayout>
 </ScrollView>

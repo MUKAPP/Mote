@@ -26,6 +26,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.mukapp.mote.databinding.ActivityMainBinding
 import com.mukapp.mote.data.model.findProvider
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.ui.ChatFragment
 import com.mukapp.mote.ui.ChatViewModel
@@ -135,9 +136,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun showModelPicker() {
         val settings = viewModel.savedSettings.value ?: return
-        ModelPickerBottomSheet.show(this, settings, settings.chatModel) { ref ->
-            viewModel.selectChatModel(ref)
-        }
+        val currentModel = settings.findProvider(settings.chatModel?.providerId)
+            ?.models?.firstOrNull { it.id == settings.chatModel?.modelId }
+        val currentEffort = viewModel.temporaryReasoningEffort.value ?: currentModel?.reasoningEffort
+        ModelPickerBottomSheet.show(
+            context = this,
+            settings = settings,
+            selected = settings.chatModel,
+            currentEffortKey = currentEffort,
+            onSelected = { ref -> viewModel.selectChatModel(ref) },
+            onReasoningSelected = { effort -> viewModel.setTemporaryReasoningEffort(effort) }
+        )
     }
 
     private fun setupNavigation() {
@@ -193,14 +202,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun observeModelSelector() {
-        viewModel.savedSettings.observe(this) { settings ->
-            val label = settings?.resolvedChatModel()?.let { resolved ->
-                settings.findProvider(settings.chatModel?.providerId)?.let { provider ->
-                    val model = provider.models.firstOrNull { it.id == resolved.model }
-                    model?.label ?: resolved.model
-                } ?: resolved.model
-            }
-            binding.textModelSelector.text = label ?: getString(R.string.model_selector_unset)
+        viewModel.savedSettings.observe(this) { renderModelSelector() }
+        viewModel.temporaryReasoningEffort.observe(this) { renderModelSelector() }
+    }
+
+    /** 副标题显示"模型名 · 思考档位"；存在临时覆盖时追加"（临时）"。 */
+    private fun renderModelSelector() {
+        val settings = viewModel.savedSettings.value
+        val resolved = settings?.resolvedChatModel()
+        val provider = settings?.findProvider(settings.chatModel?.providerId)
+        val model = provider?.models?.firstOrNull { it.id == settings.chatModel?.modelId }
+        if (settings == null || resolved == null || provider == null || model == null) {
+            binding.textModelSelector.text = getString(R.string.model_selector_unset)
+            return
+        }
+        val override = viewModel.temporaryReasoningEffort.value
+        val effortKey = override ?: model.reasoningEffort
+        val effortLabel = getString(ReasoningEffortOptions.labelRes(provider.type, effortKey))
+        val base = getString(R.string.model_selector_with_effort, model.label, effortLabel)
+        binding.textModelSelector.text = if (override != null) {
+            getString(R.string.model_selector_effort_temporary, base)
+        } else {
+            base
         }
     }
 

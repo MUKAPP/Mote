@@ -124,6 +124,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _userNotice = MutableLiveData<String?>()
     val userNotice: LiveData<String?> = _userNotice
 
+    /** 本次会话临时覆盖的思考强度档位 key；为 null 时用模型的持久化档位。切换模型/对话即重置。 */
+    private val _temporaryReasoningEffort = MutableLiveData<String?>(null)
+    val temporaryReasoningEffort: LiveData<String?> = _temporaryReasoningEffort
+
     private var pendingStreamingPublishJob: Job? = null
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
@@ -171,7 +175,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reloadSettings() {
-        _savedSettings.value = ApiSettingsStore.load(appContext)
+        val previousModel = _savedSettings.value?.resolvedChatModel()
+        val loadedSettings = ApiSettingsStore.load(appContext)
+        val loadedModel = loadedSettings.resolvedChatModel()
+        _savedSettings.value = loadedSettings
+        if (previousModel != loadedModel) {
+            clearTemporaryReasoningEffort()
+        }
         MoteLog.d(logComponent, "已重新加载设置。")
     }
 
@@ -204,10 +214,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val updated = current.copy(chatModel = ref)
         ApiSettingsStore.save(appContext, updated)
         _savedSettings.value = updated
+        clearTemporaryReasoningEffort()
         MoteLog.i(
             logComponent,
             MoteLog.event("切换对话模型", "providerId" to MoteLog.shortId(ref.providerId), "model" to ref.modelId)
         )
+    }
+
+    /** 底部选择框临时修改思考强度（不写入持久化设置）。 */
+    fun setTemporaryReasoningEffort(effortKey: String?) {
+        if (_temporaryReasoningEffort.value == effortKey) {
+            return
+        }
+        _temporaryReasoningEffort.value = effortKey
+        MoteLog.i(logComponent, MoteLog.event("临时调整思考强度", "effort" to (effortKey ?: "默认")))
+    }
+
+    private fun clearTemporaryReasoningEffort() {
+        if (_temporaryReasoningEffort.value != null) {
+            _temporaryReasoningEffort.value = null
+        }
     }
 
     fun startNewConversation() {
@@ -221,6 +247,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         conversationMessagesInternal.clear()
         contextSummariesInternal.clear()
         clearContextTokenUsageAnchor()
+        clearTemporaryReasoningEffort()
         currentConversationTitle = DefaultConversationTitle
         val newConversationId = ChatHistoryStore.newConversationId()
         setCurrentConversationId(newConversationId)
@@ -248,6 +275,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         clearPendingShellConfirmation(discardToken = true)
+        clearTemporaryReasoningEffort()
         val requestVersion = markStateChanged()
         MoteLog.i(
             logComponent,
@@ -288,6 +316,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         clearPendingShellConfirmation(discardToken = true)
+        clearTemporaryReasoningEffort()
         val conversationId = _currentConversationId.value.orEmpty()
         if (conversationId.isBlank()) {
             startNewConversation()
@@ -422,7 +451,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val settings = _savedSettings.value ?: ApiSettingsStore.load(appContext)
-        val chatModel = settings.resolvedChatModel()
+        val chatModel = settings.resolvedChatModel()?.let { base ->
+            _temporaryReasoningEffort.value?.let { base.copy(reasoningEffort = it) } ?: base
+        }
         if (chatModel == null) {
             MoteLog.w(logComponent, "发送被拒绝：未配置可用的对话模型。")
             uiMessagesInternal += ChatMessage(

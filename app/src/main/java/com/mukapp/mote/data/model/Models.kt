@@ -87,6 +87,7 @@ data class ModelProvider(
     val name: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
+    val type: ProviderType = ProviderType.Generic,
     val models: List<ModelInfo> = emptyList()
 ) {
     val label: String get() = name.ifBlank { baseUrl }
@@ -104,7 +105,8 @@ data class ResolvedModel(
     val apiKey: String,
     val model: String,
     val reasoningEffort: String,
-    val contextLength: Int
+    val contextLength: Int,
+    val providerType: ProviderType = ProviderType.Generic
 )
 
 data class ApiSettings(
@@ -138,7 +140,8 @@ fun ApiSettings.resolve(ref: ModelRef?): ResolvedModel? {
         apiKey = provider.apiKey,
         model = model.id,
         reasoningEffort = model.reasoningEffort,
-        contextLength = model.contextLength
+        contextLength = model.contextLength,
+        providerType = provider.type
     )
 }
 

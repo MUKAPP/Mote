@@ -6,6 +6,8 @@ import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
+import com.mukapp.mote.data.model.ProviderType
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.findProvider
 import com.mukapp.mote.util.MoteLog
 import androidx.core.content.edit
@@ -107,6 +109,7 @@ object ApiSettingsStore {
             put("name", provider.name)
             put("baseUrl", provider.baseUrl)
             put("apiKey", provider.apiKey)
+            put("type", provider.type.storageKey)
             put("models", JSONArray().apply {
                 provider.models.forEach { model -> put(serializeModel(model)) }
             })
@@ -152,6 +155,7 @@ object ApiSettingsStore {
     }
 
     private fun deserializeProvider(json: JSONObject): ModelProvider {
+        val providerType = ProviderType.fromStorage(json.optString("type"))
         val models = json.optJSONArray("models")?.let { array ->
             buildList {
                 for (index in 0 until array.length()) {
@@ -163,7 +167,10 @@ object ApiSettingsStore {
                             id = id,
                             displayName = item.optString("displayName"),
                             contextLength = item.optInt("contextLength", 0).coerceAtLeast(0),
-                            reasoningEffort = item.optString("reasoningEffort").ifBlank { "high" }
+                            reasoningEffort = ReasoningEffortOptions.normalizeKey(
+                                providerType,
+                                item.optString("reasoningEffort")
+                            )
                         )
                     )
                 }
@@ -174,6 +181,7 @@ object ApiSettingsStore {
             name = json.optString("name"),
             baseUrl = json.optString("baseUrl"),
             apiKey = json.optString("apiKey"),
+            type = providerType,
             models = models
         )
     }

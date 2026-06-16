@@ -4,9 +4,11 @@ import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.data.model.ModelInfo
+import com.mukapp.mote.data.model.ProviderType
 import com.mukapp.mote.databinding.ItemProviderModelBinding
 
 class ProviderModelAdapter(
+    private val providerType: () -> ProviderType,
     private val onEdit: (Int, ModelInfo) -> Unit,
     private val onDelete: (Int, ModelInfo) -> Unit
 ) : RecyclerView.Adapter<ProviderModelAdapter.ViewHolder>() {
@@ -55,7 +57,7 @@ class ProviderModelAdapter(
         fun bind(model: ModelInfo) {
             binding.textModelName.text = model.label
             binding.textModelSubtitle.text =
-                ModelPickerBottomSheet.modelSubtitle(binding.root.context, model)
+                ModelPickerBottomSheet.modelSubtitle(binding.root.context, model, providerType())
         }
     }
 }

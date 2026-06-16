@@ -8,6 +8,7 @@ import com.mukapp.mote.data.model.ChatCompletionResult
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ModelInfo
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.ResolvedModel
 import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.ToolCallAccumulator
@@ -67,6 +68,7 @@ object ChatApiClient {
                 put("model", model.model)
                 put("stream", false)
                 put("temperature", 0.2)
+                put("max_tokens", 48)
                 put(
                     "messages",
                     JSONArray().apply {
@@ -254,6 +256,33 @@ object ChatApiClient {
         }
     }
 
+    /** 把 [ReasoningRequestFields.topLevel] 里的嵌套 Map/List 递归转为 org.json 类型；null 跳过。 */
+    private fun toJsonValue(value: Any?): Any? = when (value) {
+        null -> null
+        is Map<*, *> -> JSONObject().apply {
+            value.forEach { (key, child) ->
+                if (key != null) put(key.toString(), toJsonValue(child) ?: JSONObject.NULL)
+            }
+        }
+        is List<*> -> JSONArray().apply { value.forEach { put(toJsonValue(it) ?: JSONObject.NULL) } }
+        else -> value
+    }
+
+    private fun JSONObject.putReasoningFields(
+        model: ResolvedModel,
+        skipKeys: Set<String> = emptySet()
+    ) {
+        val reasoningFields = ReasoningEffortOptions.encode(model.providerType, model.reasoningEffort)
+        if ("reasoning_effort" !in skipKeys) {
+            reasoningFields.reasoningEffort?.let { put("reasoning_effort", it) }
+        }
+        reasoningFields.topLevel.forEach { (key, value) ->
+            if (key !in skipKeys) {
+                toJsonValue(value)?.let { put(key, it) }
+            }
+        }
+    }
+
     private suspend fun streamChatOnce(
         model: ResolvedModel,
         settings: ApiSettings,
@@ -276,6 +305,7 @@ object ChatApiClient {
                     "tools" to toolDefinitions.length(),
                     "includeUsage" to includeUsage,
                     "reasoningEffortConfigured" to model.reasoningEffort.isNotBlank(),
+                    "providerType" to model.providerType.storageKey,
                     "modelLength" to model.model.length
                 )
             )
@@ -292,9 +322,7 @@ object ChatApiClient {
                     )
                 }
                 put("tools", toolDefinitions)
-                if (model.reasoningEffort.isNotBlank()) {
-                    put("reasoning_effort", model.reasoningEffort)
-                }
+                putReasoningFields(model)
                 put(
                     "messages",
                     JSONArray().apply {

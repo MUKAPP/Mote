@@ -5,6 +5,7 @@ import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
+import com.mukapp.mote.data.model.ProviderType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -21,9 +22,10 @@ class ApiSettingsStoreTest {
             name = "OpenAI",
             baseUrl = "https://api.example.com/v1",
             apiKey = "sk-test",
+            type = ProviderType.DeepSeek,
             models = listOf(
-                ModelInfo(id = "chat-model", contextLength = 128_000, reasoningEffort = "high"),
-                ModelInfo(id = "title-model", displayName = "标题", reasoningEffort = "low")
+                ModelInfo(id = "chat-model", contextLength = 128_000, reasoningEffort = "max"),
+                ModelInfo(id = "title-model", displayName = "标题", reasoningEffort = "high")
             )
         )
         val settings = ApiSettings(
@@ -62,6 +64,8 @@ class ApiSettingsStoreTest {
         val provider = migrated.providers.first()
         assertEquals("https://api.example.com/v1", provider.baseUrl)
         assertEquals("sk-legacy", provider.apiKey)
+        // 旧版迁移没有类型信息，应回退到 Generic。
+        assertEquals(ProviderType.Generic, provider.type)
         // gpt-4o 与 gpt-4o-mini 两个模型（compression 复用 gpt-4o）
         assertEquals(2, provider.models.size)
         val chat = provider.models.first { it.id == "gpt-4o" }
@@ -76,6 +80,25 @@ class ApiSettingsStoreTest {
 
         // 迁移后应已写回新版 JSON，再次加载结果一致。
         assertEquals(migrated, ApiSettingsStore.load(preferences))
+    }
+
+    @Test
+    fun loadNormalizesReasoningEffortForProviderType() {
+        val preferences = InMemorySharedPreferences()
+        val settings = ApiSettings(
+            providers = listOf(
+                ModelProvider(
+                    id = "provider-qwen",
+                    type = ProviderType.Qwen,
+                    models = listOf(ModelInfo(id = "qwen", reasoningEffort = "high"))
+                )
+            )
+        )
+
+        ApiSettingsStore.save(preferences, settings)
+
+        val loaded = ApiSettingsStore.load(preferences)
+        assertEquals("on", loaded.providers.first().models.first().reasoningEffort)
     }
 
     @Test
