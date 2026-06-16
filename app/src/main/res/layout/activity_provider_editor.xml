@@ -206,12 +206,17 @@
                             android:textAppearance="?attr/textAppearanceBodySmall"
                             android:textColor="?attr/colorOnSurfaceVariant" />
 
-                        <androidx.recyclerview.widget.RecyclerView
+                        <com.mukapp.mote.ui.MaxHeightRecyclerView
                             android:id="@+id/recycler_provider_models"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
-                            android:nestedScrollingEnabled="false" />
+                            android:fadeScrollbars="false"
+                            android:nestedScrollingEnabled="true"
+                            android:overScrollMode="ifContentScrolls"
+                            android:scrollbarStyle="insideInset"
+                            android:scrollbars="vertical"
+                            app:maxHeight="360dp" />
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/button_fetch_models"

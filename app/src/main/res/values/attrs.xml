@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <attr name="maxHeight" format="dimension" />
+
     <declare-styleable name="InnerNestedScrollView">
-        <attr name="maxHeight" format="dimension" />
+        <attr name="maxHeight" />
+    </declare-styleable>
+
+    <declare-styleable name="MaxHeightRecyclerView">
+        <attr name="maxHeight" />
     </declare-styleable>
 </resources>
