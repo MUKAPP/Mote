@@ -26,13 +26,16 @@ import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
-import com.mukapp.mote.data.model.ChatAttachment
 import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.shortName
+import com.mukapp.mote.databinding.ItemAttachmentFileBinding
+import com.mukapp.mote.databinding.ItemAttachmentImageBinding
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
 import com.mukapp.mote.ui.markdown.MarkdownParseCache
+import com.mukapp.mote.util.AttachmentThumbnailLoader
 import com.mukapp.mote.util.dpInt
 
 class ChatMessageAdapter(
@@ -458,35 +461,34 @@ class ChatMessageAdapter(
 
             // 附件标签
             if (message.attachments.isNotEmpty()) {
-                binding.chipGroupAttachments.isVisible = true
-                binding.chipGroupAttachments.removeAllViews()
+                binding.scrollAttachments.isVisible = true
+                binding.containerAttachments.removeAllViews()
+                val inflater = LayoutInflater.from(itemView.context)
+                val container = binding.containerAttachments
                 message.attachments.forEach { attachment ->
-                    val chip = com.google.android.material.chip.Chip(
-                        itemView.context,
-                        null,
-                        com.google.android.material.R.attr.chipStyle
-                    ).apply {
-                        setChipDrawable(
-                            com.google.android.material.chip.ChipDrawable.createFromAttributes(
-                                context, null, 0, R.style.Widget_Mote_Chip_Attachment_User
+                    val view = when (attachment.type) {
+                        ChatAttachmentType.Image -> {
+                            val itemBinding = ItemAttachmentImageBinding.inflate(inflater, container, false)
+                            itemBinding.imageAttachmentRemove.isVisible = false
+                            AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt)
+                            itemBinding.root
+                        }
+
+                        ChatAttachmentType.File -> {
+                            val itemBinding = ItemAttachmentFileBinding.inflate(inflater, container, false)
+                            itemBinding.textAttachmentName.text = attachment.shortName()
+                            itemBinding.imageAttachmentRemove.isVisible = false
+                            itemBinding.root.backgroundTintList = ColorStateList.valueOf(
+                                ContextCompat.getColor(itemView.context, R.color.mote_background)
                             )
-                        )
-                        text = buildChipLabel(attachment)
-                        isClickable = false
-                        isCheckable = false
-                        chipIcon = androidx.core.content.ContextCompat.getDrawable(
-                            context,
-                            when (attachment.type) {
-                                ChatAttachmentType.Image -> R.drawable.ic_image
-                                ChatAttachmentType.File -> R.drawable.ic_description
-                            }
-                        )
-                        isChipIconVisible = true
+                            itemBinding.root
+                        }
                     }
-                    binding.chipGroupAttachments.addView(chip)
+                    container.addView(view)
                 }
+                binding.scrollAttachments.scrollX = 0
             } else {
-                binding.chipGroupAttachments.isVisible = false
+                binding.scrollAttachments.isVisible = false
             }
 
             // 折叠态由长按菜单切换；收起时配合 ellipsize 显示省略号
@@ -525,17 +527,6 @@ class ChatMessageAdapter(
 
     private fun hasCopyableContent(message: ChatMessage): Boolean {
         return message.content.isNotBlank() || hasCopyableMarkdownParts(message)
-    }
-
-    private fun buildChipLabel(attachment: ChatAttachment): String {
-        val name = attachment.displayName.ifBlank { attachment.path.substringAfterLast('/') }
-        val suffix = when {
-            attachment.type == ChatAttachmentType.Image -> ""
-            attachment.directReadable -> ""
-            attachment.textContent != null && attachment.truncated -> " (已截断)"
-            else -> ""
-        }
-        return name + suffix
     }
 
     /** 在手指按下位置弹出消息菜单，图标间距由图标槽控制，不改变图标绘制尺寸。 */

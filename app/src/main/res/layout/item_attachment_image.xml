@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="96dp"
+    android:layout_height="64dp"
+    android:layout_marginEnd="8dp"
+    android:background="@drawable/attachment_thumb_placeholder">
+
+    <com.google.android.material.imageview.ShapeableImageView
+        android:id="@+id/image_attachment_thumb"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop"
+        app:shapeAppearanceOverlay="@style/ShapeAppearanceOverlay.Mote.AttachmentThumb" />
+
+    <ImageView
+        android:id="@+id/image_attachment_remove"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="4dp"
+        android:background="@drawable/attachment_remove_badge"
+        android:clickable="true"
+        android:contentDescription="@string/action_remove_attachment"
+        android:focusable="true"
+        android:padding="5dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_close"
+        app:tint="#5F6368" />
+</FrameLayout>

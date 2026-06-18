@@ -26,6 +26,12 @@ data class ChatAttachment(
     val truncated: Boolean = false
 )
 
+/** 仅取文件名（去掉任何路径前缀），用于附件 UI 展示，避免暴露完整路径。 */
+fun ChatAttachment.shortName(): String =
+    displayName.ifBlank { path }
+        .substringAfterLast('/')
+        .substringAfterLast('\\')
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: ChatRole,

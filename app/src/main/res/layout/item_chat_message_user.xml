@@ -29,15 +29,22 @@
                 android:textAppearance="?attr/textAppearanceBodyLarge"
                 android:textColor="?attr/colorOnSurface" />
 
-            <com.google.android.material.chip.ChipGroup
-                android:id="@+id/chip_group_attachments"
+            <HorizontalScrollView
+                android:id="@+id/scroll_attachments"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:clipToPadding="false"
                 android:paddingHorizontal="12dp"
                 android:paddingTop="8dp"
-                android:visibility="gone"
-                app:chipSpacingHorizontal="8dp"
-                app:chipSpacingVertical="4dp" />
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/container_attachments"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
         </LinearLayout>
     </com.mukapp.mote.ui.MessageCardView>
 

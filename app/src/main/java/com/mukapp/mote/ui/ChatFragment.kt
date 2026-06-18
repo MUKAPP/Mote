@@ -6,6 +6,7 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
@@ -48,8 +49,12 @@ import com.mukapp.mote.data.model.ChatAttachment
 import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.shortName
 import com.mukapp.mote.databinding.FragmentChatBinding
+import com.mukapp.mote.databinding.ItemAttachmentFileBinding
+import com.mukapp.mote.databinding.ItemAttachmentImageBinding
 import com.mukapp.mote.ui.markdown.MarkdownParseCache
+import com.mukapp.mote.util.AttachmentThumbnailLoader
 import com.mukapp.mote.util.dpInt
 import kotlin.math.max
 import androidx.core.view.isVisible
@@ -590,42 +595,37 @@ class ChatFragment : Fragment() {
     private fun renderAttachmentPreview() {
         val attachments = latestDraftAttachments
         binding.layoutAttachmentPreview.isVisible = attachments.isNotEmpty()
+        binding.containerDraftAttachments.removeAllViews()
         if (attachments.isEmpty()) {
-            binding.chipGroupDraftAttachments.removeAllViews()
             return
         }
 
-        binding.chipGroupDraftAttachments.removeAllViews()
+        val inflater = layoutInflater
+        val container = binding.containerDraftAttachments
         attachments.forEach { attachment ->
-            val chip = com.google.android.material.chip.Chip(
-                requireContext(),
-                null,
-                com.google.android.material.R.attr.chipStyle
-            ).apply {
-                setChipDrawable(
-                    com.google.android.material.chip.ChipDrawable.createFromAttributes(
-                        context, null, 0, R.style.Widget_Mote_Chip_Attachment
-                    )
-                )
-                text = attachment.displayName.ifBlank { attachment.path.substringAfterLast('/') }
-                isClickable = false
-                isCheckable = false
-                chipIcon = ContextCompat.getDrawable(
-                    context,
-                    when (attachment.type) {
-                        ChatAttachmentType.Image -> R.drawable.ic_image
-                        ChatAttachmentType.File -> R.drawable.ic_description
+            val itemView = when (attachment.type) {
+                ChatAttachmentType.Image -> {
+                    val itemBinding = ItemAttachmentImageBinding.inflate(inflater, container, false)
+                    AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt)
+                    itemBinding.imageAttachmentRemove.setOnClickListener {
+                        viewModel.removeDraftAttachment(attachment.id)
                     }
-                )
-                isChipIconVisible = true
-                isCloseIconVisible = true
-                closeIcon = ContextCompat.getDrawable(context, R.drawable.ic_close)
-                closeIconContentDescription = getString(R.string.action_remove_attachment)
-                setOnCloseIconClickListener {
-                    viewModel.removeDraftAttachment(attachment.id)
+                    itemBinding.root
+                }
+
+                ChatAttachmentType.File -> {
+                    val itemBinding = ItemAttachmentFileBinding.inflate(inflater, container, false)
+                    itemBinding.textAttachmentName.text = attachment.shortName()
+                    itemBinding.root.backgroundTintList = ColorStateList.valueOf(
+                        ContextCompat.getColor(requireContext(), R.color.mote_card)
+                    )
+                    itemBinding.imageAttachmentRemove.setOnClickListener {
+                        viewModel.removeDraftAttachment(attachment.id)
+                    }
+                    itemBinding.root
                 }
             }
-            binding.chipGroupDraftAttachments.addView(chip)
+            container.addView(itemView)
         }
     }
 

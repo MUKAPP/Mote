@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="wrap_content"
+    android:layout_height="64dp"
+    android:layout_marginEnd="8dp"
+    android:background="@drawable/attachment_file_background">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="14dp">
+
+        <ImageView
+            android:id="@+id/image_attachment_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:contentDescription="@null"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_description"
+            app:tint="@color/mote_primary" />
+
+        <TextView
+            android:id="@+id/text_attachment_name"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:ellipsize="end"
+            android:maxWidth="168dp"
+            android:singleLine="true"
+            android:textColor="@color/mote_on_background"
+            android:textSize="15sp"
+            tools:text="cpa-selected-accounts-2024.pdf" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/image_attachment_remove"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="4dp"
+        android:background="@drawable/attachment_remove_badge"
+        android:clickable="true"
+        android:contentDescription="@string/action_remove_attachment"
+        android:focusable="true"
+        android:padding="5dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_close"
+        app:tint="#5F6368" />
+</FrameLayout>
