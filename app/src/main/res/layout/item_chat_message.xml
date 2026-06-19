@@ -6,7 +6,7 @@
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:paddingHorizontal="16dp"
-    android:paddingVertical="10dp">
+    android:paddingVertical="8dp">
 
     <com.mukapp.mote.ui.MessageCardView
         android:id="@+id/card_message"
