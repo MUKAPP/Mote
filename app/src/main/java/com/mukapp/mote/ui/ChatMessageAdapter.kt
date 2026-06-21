@@ -1,25 +1,11 @@
 package com.mukapp.mote.ui
 
-import android.content.Context
 import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
-import android.text.TextUtils
-import android.util.TypedValue
-import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.PopupWindow
-import android.widget.TextView
-import androidx.annotation.DrawableRes
-import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
-import androidx.core.view.updateLayoutParams
 import androidx.core.view.isVisible
+import androidx.core.view.updateLayoutParams
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
@@ -259,27 +245,27 @@ class ChatMessageAdapter(
         init {
             // 长按卡片任意位置（含 Markdown 文本）在手指处弹出菜单（复制/编辑/删除/重试）
             binding.cardMessage.setOnContentLongPressListener { x, y ->
-                showAssistantPopupMenu(x, y)
+                showAssistantPopupWindowMenu(x, y)
             }
         }
 
-        private fun showAssistantPopupMenu(touchX: Int, touchY: Int) {
+        private fun showAssistantPopupWindowMenu(touchX: Int, touchY: Int) {
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
 
             val popupItems = buildList {
                 if (hasCopyableContent(message)) {
-                    add(MessagePopupItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
-                    add(MessagePopupItem(MENU_FREE_COPY, R.string.action_free_copy, R.drawable.ic_text_select_start))
+                    add(MotePopupWindowItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
+                    add(MotePopupWindowItem(MENU_FREE_COPY, R.string.action_free_copy, R.drawable.ic_text_select_start))
                 }
-                add(MessagePopupItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
-                add(MessagePopupItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
+                add(MotePopupWindowItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
+                add(MotePopupWindowItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
                 if (isLastAiMessage && !isSending) {
-                    add(MessagePopupItem(MENU_RETRY, R.string.action_retry, R.drawable.ic_refresh))
+                    add(MotePopupWindowItem(MENU_RETRY, R.string.action_retry, R.drawable.ic_refresh))
                 }
             }
-            showMessagePopupAt(binding.cardMessage, touchX, touchY, popupItems) { itemId ->
+            MotePopupWindowMenu.showAtTouch(binding.cardMessage, touchX, touchY, popupItems) { itemId ->
                 when (itemId) {
                     MENU_COPY -> onCopyMessage(message)
                     MENU_FREE_COPY -> onFreeCopyMessage(message)
@@ -404,11 +390,11 @@ class ChatMessageAdapter(
         init {
             // 长按卡片任意位置在手指处弹出菜单（复制/展开/编辑/删除）
             binding.cardMessage.setOnContentLongPressListener { x, y ->
-                showUserPopupMenu(x, y)
+                showUserPopupWindowMenu(x, y)
             }
         }
 
-        private fun showUserPopupMenu(touchX: Int, touchY: Int) {
+        private fun showUserPopupWindowMenu(touchX: Int, touchY: Int) {
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
             // 该用户消息对应最后一条 AI 回复时，提供重试（重试入口仍作用于最后一条 AI 消息）
@@ -418,22 +404,22 @@ class ChatMessageAdapter(
                 messages.getOrNull(lastIndex)?.role == ChatRole.Assistant
 
             val popupItems = buildList {
-                add(MessagePopupItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
+                add(MotePopupWindowItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
                 if (isCollapsible(message)) {
                     val expanded = expandedUserMessageIds.contains(message.id)
-                    add(MessagePopupItem(
+                    add(MotePopupWindowItem(
                         MENU_TOGGLE_EXPAND,
                         if (expanded) R.string.action_collapse else R.string.action_expand,
                         if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
                     ))
                 }
-                add(MessagePopupItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
-                add(MessagePopupItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
+                add(MotePopupWindowItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
+                add(MotePopupWindowItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
                 if (canRetryLastTurn) {
-                    add(MessagePopupItem(MENU_RETRY, R.string.action_retry, R.drawable.ic_refresh))
+                    add(MotePopupWindowItem(MENU_RETRY, R.string.action_retry, R.drawable.ic_refresh))
                 }
             }
-            showMessagePopupAt(binding.cardMessage, touchX, touchY, popupItems) { itemId ->
+            MotePopupWindowMenu.showAtTouch(binding.cardMessage, touchX, touchY, popupItems) { itemId ->
                 when (itemId) {
                     MENU_COPY -> onCopyMessage(message)
                     MENU_TOGGLE_EXPAND -> toggleUserExpansion(message)
@@ -529,144 +515,6 @@ class ChatMessageAdapter(
         return message.content.isNotBlank() || hasCopyableMarkdownParts(message)
     }
 
-    /** 在手指按下位置弹出消息菜单，图标间距由图标槽控制，不改变图标绘制尺寸。 */
-    private fun showMessagePopupAt(
-        card: View,
-        touchX: Int,
-        touchY: Int,
-        items: List<MessagePopupItem>,
-        onItemClick: (Int) -> Unit
-    ) {
-        if (items.isEmpty()) return
-
-        lateinit var popup: PopupWindow
-        val content = createMessagePopupContent(card.context, items) { itemId ->
-            popup.dismiss()
-            onItemClick(itemId)
-        }
-        popup = PopupWindow(
-            content,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            true
-        ).apply {
-            isOutsideTouchable = true
-            elevation = PopupMenuElevationDp.dpInt.toFloat()
-            animationStyle = R.style.Animation_Mote_MessagePopupMenu
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        }
-
-        content.measure(
-            View.MeasureSpec.makeMeasureSpec(card.rootView.width, View.MeasureSpec.AT_MOST),
-            View.MeasureSpec.makeMeasureSpec(card.rootView.height, View.MeasureSpec.AT_MOST)
-        )
-        val cardLocation = IntArray(2)
-        card.getLocationOnScreen(cardLocation)
-        val safeTouchX = touchX.coerceIn(0, (card.width - 1).coerceAtLeast(0))
-        val safeTouchY = touchY.coerceIn(0, (card.height - 1).coerceAtLeast(0))
-        val anchorX = cardLocation[0] + safeTouchX
-        val anchorY = cardLocation[1] + safeTouchY
-        val x = if (safeTouchX >= card.width / 2) {
-            anchorX - content.measuredWidth
-        } else {
-            anchorX
-        }
-        popup.showAtLocation(card, Gravity.NO_GRAVITY, x, anchorY)
-    }
-
-    private fun createMessagePopupContent(
-        context: Context,
-        items: List<MessagePopupItem>,
-        onItemClick: (Int) -> Unit
-    ): View {
-        val iconColor = resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant)
-        val textColor = resolveThemeColor(context, com.google.android.material.R.attr.colorOnSurface)
-        val ripple = resolveThemeDrawable(context, android.R.attr.selectableItemBackground)
-        return LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = ContextCompat.getDrawable(context, R.drawable.popup_message_menu_background)
-            elevation = PopupMenuElevationDp.dpInt.toFloat()
-            setPadding(0, PopupMenuVerticalPaddingDp.dpInt, 0, PopupMenuVerticalPaddingDp.dpInt)
-            minimumWidth = PopupMenuMinWidthDp.dpInt
-            items.forEach { item ->
-                addView(createMessagePopupRow(context, item, iconColor, textColor, ripple, onItemClick))
-            }
-        }
-    }
-
-    private fun createMessagePopupRow(
-        context: Context,
-        item: MessagePopupItem,
-        iconColor: Int,
-        textColor: Int,
-        ripple: android.graphics.drawable.Drawable?,
-        onItemClick: (Int) -> Unit
-    ): View {
-        return LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = ripple?.constantState?.newDrawable()?.mutate()
-            isClickable = true
-            isFocusable = true
-            minimumHeight = PopupMenuItemHeightDp.dpInt
-            setOnClickListener { onItemClick(item.id) }
-
-            addView(FrameLayout(context).apply {
-                layoutParams = LinearLayout.LayoutParams(PopupIconSlotWidthDp.dpInt, PopupMenuItemHeightDp.dpInt)
-                addView(ImageView(context).apply {
-                    layoutParams = FrameLayout.LayoutParams(
-                        PopupIconSizeDp.dpInt,
-                        PopupIconSizeDp.dpInt,
-                        Gravity.START or Gravity.CENTER_VERTICAL
-                    ).apply {
-                        marginStart = PopupIconStartPaddingDp.dpInt
-                    }
-                    imageTintList = ColorStateList.valueOf(iconColor)
-                    setImageResource(item.iconRes)
-                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                })
-            })
-
-            addView(TextView(context).apply {
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = PopupTextEndPaddingDp.dpInt
-                }
-                setText(item.titleRes)
-                setTextColor(textColor)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, PopupTextSizeSp)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER_VERTICAL
-            })
-        }
-    }
-
-    private fun resolveThemeColor(context: Context, attr: Int): Int {
-        val typedValue = TypedValue()
-        context.theme.resolveAttribute(attr, typedValue, true)
-        return if (typedValue.resourceId != 0) {
-            ContextCompat.getColor(context, typedValue.resourceId)
-        } else {
-            typedValue.data
-        }
-    }
-
-    private fun resolveThemeDrawable(context: Context, attr: Int): android.graphics.drawable.Drawable? {
-        val typedValue = TypedValue()
-        context.theme.resolveAttribute(attr, typedValue, true)
-        return if (typedValue.resourceId != 0) {
-            ContextCompat.getDrawable(context, typedValue.resourceId)
-        } else {
-            null
-        }
-    }
-
-    private data class MessagePopupItem(
-        val id: Int,
-        @param:StringRes val titleRes: Int,
-        @param:DrawableRes val iconRes: Int
-    )
-
     private companion object {
         const val ViewTypeAssistant = 0
         const val ViewTypeUser = 1
@@ -674,23 +522,13 @@ class ChatMessageAdapter(
         const val COLLAPSED_MAX_LINES = 10
         const val BulkInsertNotifyThreshold = 40
 
-        // PopupMenu 菜单项 ID
+        // PopupWindow 菜单项 ID
         const val MENU_EDIT = 1
         const val MENU_DELETE = 2
         const val MENU_RETRY = 3
         const val MENU_COPY = 4
         const val MENU_TOGGLE_EXPAND = 5
         const val MENU_FREE_COPY = 6
-        const val PopupMenuMinWidthDp = 156
-        const val PopupMenuElevationDp = 3
-        const val PopupMenuVerticalPaddingDp = 12
-        const val PopupMenuItemHeightDp = 48
-        const val PopupIconStartPaddingDp = 16
-        const val PopupIconEndPaddingDp = 12
-        const val PopupIconSizeDp = 24
-        const val PopupIconSlotWidthDp = PopupIconStartPaddingDp + PopupIconSizeDp + PopupIconEndPaddingDp
-        const val PopupTextEndPaddingDp = 20
-        const val PopupTextSizeSp = 16f
 
         /** 优先把 UUID 形式的消息 ID 映射为稳定 long，非 UUID 时回退 FNV 风格折叠，避免 hashCode 截断碰撞。 */
         fun stableItemId(id: String): Long {

@@ -19,12 +19,10 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.view.LayoutInflater
-import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.webkit.MimeTypeMap
-import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -455,25 +453,16 @@ class ChatFragment : Fragment() {
     }
 
     private fun showAttachmentMenu() {
-        val popup = PopupMenu(requireContext(), binding.btnAddAttachment)
-        popup.menu.add(Menu.NONE, MenuAddImage, Menu.NONE, R.string.action_add_image)
-        popup.menu.add(Menu.NONE, MenuAddFile, Menu.NONE, R.string.action_add_file)
-        popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                MenuAddImage -> {
-                    imagePickerLauncher.launch(arrayOf("image/*"))
-                    true
-                }
-
-                MenuAddFile -> {
-                    filePickerLauncher.launch(arrayOf("*/*"))
-                    true
-                }
-
-                else -> false
+        val items = listOf(
+            MotePopupWindowItem(MenuAddImage, R.string.action_add_image),
+            MotePopupWindowItem(MenuAddFile, R.string.action_add_file)
+        )
+        MotePopupWindowMenu.showAnchored(binding.btnAddAttachment, items) { itemId ->
+            when (itemId) {
+                MenuAddImage -> imagePickerLauncher.launch(arrayOf("image/*"))
+                MenuAddFile -> filePickerLauncher.launch(arrayOf("*/*"))
             }
         }
-        popup.show()
     }
 
     private fun handlePickedAttachment(uri: Uri, requestedKind: AttachmentPickerKind) {
