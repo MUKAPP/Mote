@@ -64,37 +64,7 @@ object ChatApiClient {
                 )
             )
 
-            val requestBody = JSONObject().apply {
-                put("model", model.model)
-                put("stream", false)
-                put("temperature", 0.2)
-                put("max_tokens", 48)
-                put(
-                    "messages",
-                    JSONArray().apply {
-                        put(
-                            JSONObject().apply {
-                                put("role", ChatRole.System.apiValue)
-                                put(
-                                    "content",
-                                    """
-                                    请根据用户的首条消息提炼一个简短标题。严格遵守以下规则：
-                                    1. 语言：必须与用户消息的语言完全一致。
-                                    2. 长度：中文最多12个字，其他语言最多6个单词。
-                                    3. 格式：直接输出标题文本，严禁包含任何解释、引导语、标点符号包裹（如引号）或Markdown格式。
-                                    """.trimIndent()
-                                )
-                            }
-                        )
-                        put(
-                            JSONObject().apply {
-                                put("role", ChatRole.User.apiValue)
-                                put("content", userMessage)
-                            }
-                        )
-                    }
-                )
-            }.toString()
+            val requestBody = buildConversationTitleRequestBody(model.model, userMessage).toString()
 
             val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = false)
             val response = executeRequest(request)
@@ -138,6 +108,38 @@ object ChatApiClient {
 
     internal fun parseConversationTitleResponse(responseText: String): String {
         return parseAssistantReply(responseText, appendFinishReasonNotice = false).content
+    }
+
+    internal fun buildConversationTitleRequestBody(modelName: String, userMessage: String): JSONObject {
+        return JSONObject().apply {
+            put("model", modelName)
+            put("stream", false)
+            put("temperature", 0.2)
+            put(
+                "messages",
+                JSONArray().apply {
+                    put(
+                        JSONObject().apply {
+                            put("role", ChatRole.System.apiValue)
+                            put(
+                                "content",
+                                """
+                                请根据用户的首条消息提炼一个简短标题。严格遵守以下规则：
+                                1. 语言：必须与用户消息的语言完全一致。
+                                2. 格式：直接输出标题文本，严禁包含任何解释、引导语、标点符号包裹（如引号）或Markdown格式。
+                                """.trimIndent()
+                            )
+                        }
+                    )
+                    put(
+                        JSONObject().apply {
+                            put("role", ChatRole.User.apiValue)
+                            put("content", userMessage)
+                        }
+                    )
+                }
+            )
+        }
     }
 
     suspend fun compressConversation(

@@ -2206,7 +2206,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        const val DefaultConversationTitle = "新对话"
+        const val DefaultConversationTitle = ConversationTitleFormatter.DefaultTitle
         const val MaxToolRounds = 200
         const val MaxStreamRetryAttempts = 3
         const val DefaultRecentContextBudget = 16_000
@@ -2218,7 +2218,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         const val SummaryBudgetRatio = 0.12f
 
         fun buildFallbackTitle(message: String): String {
-            return normalizeTitle(message).ifBlank { DefaultConversationTitle }
+            return ConversationTitleFormatter.buildFallbackTitle(message)
         }
 
         fun buildAttachmentTitleSeed(attachments: List<ChatAttachment>): String {
@@ -2232,16 +2232,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         fun normalizeTitle(value: String): String {
-            val compact = value
-                .replace(Regex("[\\r\\n\\t]+"), " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-                .trim('"', '\'', '“', '”', '‘', '’', '。', '，', ',', '.', '、', ':', '：')
-            return if (compact.length > 24) {
-                compact.take(24).trimEnd() + "..."
-            } else {
-                compact
-            }
+            return ConversationTitleFormatter.normalize(value)
         }
 
         fun buildSystemPrompt(): String {

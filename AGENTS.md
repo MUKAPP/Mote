@@ -133,7 +133,7 @@ app/src/main/java/com/mukapp/mote/
 - `usage` 兼容 `input_tokens/prompt_tokens`、`output_tokens/completion_tokens`、cached tokens、reasoning tokens。
 - 模型列表：`listModels(baseUrl, apiKey)`，`GET {baseUrl}/models`，解析 `data[].id`，上下文长度尽力从 `context_length`/`context_window` 等字段解析。
 - 上下文压缩：`compressConversation(model, ...)`，`stream=false`、`temperature=0.1`、`max_tokens 256..8192`，不携带 tools；`finish_reason=length` 视为失败。
-- 标题生成：`generateConversationTitle(model, ...)`，`stream=false`、`temperature=0.2`、`max_tokens=48`；未选择标题模型时用本地备用标题。
+- 标题生成：`generateConversationTitle(model, ...)`，`stream=false`、`temperature=0.2`，不发送 `max_tokens`；模型返回后由本地 `normalizeTitle()` 截断，未选择标题模型时用本地备用标题。
 
 ## Markdown 渲染
 

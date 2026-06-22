@@ -149,6 +149,23 @@ class ChatApiClientUsageTest {
         assertFalse(title.contains("提示：模型输出因达到长度限制被截断"))
     }
 
+      @Test
+      fun buildConversationTitleRequestBodyDoesNotLimitOutputTokens() {
+        val requestBody = ChatApiClient.buildConversationTitleRequestBody(
+          modelName = "title-model",
+          userMessage = "帮我写一个计划"
+        )
+
+        assertFalse(requestBody.has("max_tokens"))
+
+        val systemPrompt = requestBody
+          .getJSONArray("messages")
+          .getJSONObject(0)
+          .getString("content")
+        assertFalse(systemPrompt.contains("最多12个字"))
+        assertFalse(systemPrompt.contains("6个单词"))
+      }
+
     @Test
     fun parseConversationTitleResponseReturnsBlankWhenContentIsMissing() {
         val title = ChatApiClient.parseConversationTitleResponse(
