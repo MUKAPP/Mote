@@ -70,13 +70,15 @@ object LocalAiTools {
     private const val MaxSearchRawContentChars = 4_000
     private const val MaxSearchResponseChars = 1_000_000
     private const val DefaultTavilySearchEndpoint = "https://api.tavily.com/search"
+    private const val DefaultAnysearchSearchEndpoint = "https://api.anysearch.com/v1/search"
     private const val ShellShortTimeoutMs = 30_000L
     private const val MaxShellOutputChars = 8000
     private const val ShellConfirmationTtlMs = 10 * 60 * 1000L
 
     private enum class SearchProvider {
         Searxng,
-        Tavily
+        Tavily,
+        Anysearch
     }
 
     private data class PendingShellConfirmation(
@@ -110,6 +112,7 @@ object LocalAiTools {
     )
 
     internal var tavilySearchEndpoint: String = DefaultTavilySearchEndpoint
+    internal var anysearchSearchEndpoint: String = DefaultAnysearchSearchEndpoint
 
     private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
 
@@ -131,6 +134,7 @@ object LocalAiTools {
 
     private val cachedSearxngWebSearchToolDefinition: JSONObject by lazy { buildSearxngWebSearchDefinition() }
     private val cachedTavilyWebSearchToolDefinition: JSONObject by lazy { buildTavilyWebSearchDefinition() }
+    private val cachedAnysearchWebSearchToolDefinition: JSONObject by lazy { buildAnysearchWebSearchDefinition() }
 
     fun toolDefinitions(settings: ApiSettings = ApiSettings()): JSONArray {
         val definitions = JSONArray(cachedBaseToolDefinitions.toString())
@@ -138,6 +142,7 @@ object LocalAiTools {
         when (searchProvider) {
             SearchProvider.Searxng -> definitions.put(JSONObject(cachedSearxngWebSearchToolDefinition.toString()))
             SearchProvider.Tavily -> definitions.put(JSONObject(cachedTavilyWebSearchToolDefinition.toString()))
+            SearchProvider.Anysearch -> definitions.put(JSONObject(cachedAnysearchWebSearchToolDefinition.toString()))
             null -> Unit
         }
         MoteLog.d(
@@ -1128,6 +1133,7 @@ object LocalAiTools {
         return when (resolveSearchProvider(settings)) {
             SearchProvider.Searxng -> searchWithSearxng(settings, arguments)
             SearchProvider.Tavily -> searchWithTavily(settings, arguments)
+            SearchProvider.Anysearch -> searchWithAnysearch(settings, arguments)
             null -> throw IllegalArgumentException("搜索服务未配置，无法执行搜索。")
         }
     }
@@ -1135,10 +1141,15 @@ object LocalAiTools {
     private fun resolveSearchProvider(settings: ApiSettings): SearchProvider? {
         val hasSearxng = settings.searxngUrl.isNotBlank()
         val hasTavily = settings.tavilyApiKey.isNotBlank()
-        require(!(hasSearxng && hasTavily)) { "Tavily API Key 和 SearXNG 地址只能配置一个。" }
+        val hasAnysearch = settings.anysearchApiKey.isNotBlank()
+        val configuredProviderCount = listOf(hasSearxng, hasTavily, hasAnysearch).count { it }
+        require(configuredProviderCount <= 1) {
+            "SearXNG 地址、Tavily API Key 和 AnySearch API Key 只能填写一个。"
+        }
         return when {
             hasSearxng -> SearchProvider.Searxng
             hasTavily -> SearchProvider.Tavily
+            hasAnysearch -> SearchProvider.Anysearch
             else -> null
         }
     }
@@ -1334,6 +1345,110 @@ object LocalAiTools {
                     MoteLog.event(
                         "web_search 完成",
                         "provider" to "Tavily",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                        "returned" to returned,
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
+            }
+        } finally {
+            runCatching { connection.disconnect() }
+        }
+    }
+
+    private fun searchWithAnysearch(settings: ApiSettings, arguments: String): String {
+        val apiKey = settings.anysearchApiKey.trim()
+        require(apiKey.isNotEmpty()) { "AnySearch API Key 未配置，无法执行搜索。" }
+        val startMs = System.currentTimeMillis()
+
+        val payload = JSONObject(arguments)
+        val query = payload.optString("query").trim()
+        require(query.isNotEmpty()) { "query 不能为空。" }
+        require(query.length <= MaxSearchQueryChars) { "query 不能超过 $MaxSearchQueryChars 个字符。" }
+
+        val limit = payload.optIntOrNull("limit") ?: DefaultSearchResultLimit
+        require(limit > 0) { "limit 必须大于 0。" }
+        require(limit <= MaxSearchResultLimit) { "limit 不能超过 $MaxSearchResultLimit。" }
+
+        val requestBody = JSONObject()
+            .put("query", query)
+            .put("max_results", limit)
+        val searchUrl = normalizeFetchUrl(anysearchSearchEndpoint)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "开始 web_search",
+                "provider" to "AnySearch",
+                "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                "queryLength" to query.length,
+                "queryHash" to MoteLog.fingerprint(query),
+                "limit" to limit
+            )
+        )
+
+        val connection = searchUrl.openConnection() as HttpURLConnection
+        return try {
+            val requestBytes = requestBody.toString().toByteArray(StandardCharsets.UTF_8)
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer $apiKey")
+            connection.setRequestProperty("User-Agent", "Mote/1.0")
+            connection.setFixedLengthStreamingMode(requestBytes.size)
+            connection.outputStream.use { output -> output.write(requestBytes) }
+
+            val statusCode = connection.responseCode
+            val responseText = readHttpResponseText(connection, statusCode, MaxSearchResponseChars)
+            if (statusCode !in 200..299) {
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "web_search 请求失败",
+                        "provider" to "AnySearch",
+                        "status" to statusCode,
+                        "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                        "durationMs" to MoteLog.durationMs(startMs)
+                    )
+                )
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("provider", "anysearch")
+                    put("status", statusCode)
+                    put("error", "AnySearch 请求失败，HTTP $statusCode。")
+                    put("body", truncateOutput(responseText, maxChars = 1200))
+                }.toString(2)
+            }
+
+            val root = runCatching { JSONObject(responseText) }.getOrElse { error ->
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "web_search 响应 JSON 解析失败",
+                        "provider" to "AnySearch",
+                        "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
+                        "responseLength" to responseText.length,
+                        "durationMs" to MoteLog.durationMs(startMs),
+                        "error" to error
+                    )
+                )
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("provider", "anysearch")
+                    put("error", "AnySearch 返回的内容不是有效 JSON：${error.message ?: "解析失败"}")
+                    put("body", truncateOutput(responseText, maxChars = 1200))
+                }.toString(2)
+            }
+            formatAnysearchResults(query = query, limit = limit, root = root).also { output ->
+                val returned = runCatching { JSONObject(output).optInt("returned", 0) }.getOrDefault(0)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event(
+                        "web_search 完成",
+                        "provider" to "AnySearch",
                         "status" to statusCode,
                         "origin" to MoteLog.safeUrlOrigin(searchUrl.toString()),
                         "returned" to returned,
@@ -1614,6 +1729,60 @@ object LocalAiTools {
             root.optString("response_time").trim().takeIf { it.isNotEmpty() }?.let { put("response_time", it) }
             root.optJSONObject("auto_parameters")?.let { put("auto_parameters", it) }
             root.optJSONObject("usage")?.let { put("usage", it) }
+        }.toString(2)
+    }
+
+    private fun formatAnysearchResults(query: String, limit: Int, root: JSONObject): String {
+        val responseCode = root.optInt("code", 0)
+        if (responseCode != 0) {
+            return JSONObject().apply {
+                put("ok", false)
+                put("provider", "anysearch")
+                put("error", root.optString("message").ifBlank { "AnySearch 搜索失败，错误码 $responseCode。" })
+                root.optString("request_id").takeIf { it.isNotBlank() }?.let { put("request_id", it) }
+            }.toString(2)
+        }
+
+        val data = root.optJSONObject("data") ?: JSONObject()
+        val rawResults = data.optJSONArray("results") ?: JSONArray()
+        val results = JSONArray()
+        var skipped = 0
+        for (index in 0 until rawResults.length()) {
+            val item = rawResults.optJSONObject(index) ?: continue
+            val title = item.optString("title").trim()
+            val url = item.optString("url").trim()
+            if (title.isBlank() && url.isBlank()) {
+                skipped++
+                continue
+            }
+            if (results.length() >= limit) {
+                skipped++
+                continue
+            }
+            results.put(
+                JSONObject().apply {
+                    put("title", title)
+                    put("url", url)
+                    item.optString("snippet").trim().takeIf { it.isNotEmpty() }?.let { snippet ->
+                        put("content", truncateSearchSnippet(snippet))
+                    }
+                    item.optString("content").trim().takeIf { it.isNotEmpty() }?.let { content ->
+                        put("content", truncateSearchSnippet(content))
+                    }
+                }
+            )
+        }
+
+        return JSONObject().apply {
+            put("ok", true)
+            put("provider", "anysearch")
+            put("query", query)
+            put("returned", results.length())
+            put("available", data.optJSONObject("metadata")?.optInt("total_results", rawResults.length()) ?: rawResults.length())
+            put("has_more", rawResults.length() > results.length() || skipped > 0)
+            put("results", results)
+            root.optString("request_id").takeIf { it.isNotBlank() }?.let { put("request_id", it) }
+            data.optJSONObject("metadata")?.let { metadata -> put("metadata", metadata) }
         }.toString(2)
     }
 
@@ -2269,6 +2438,47 @@ object LocalAiTools {
                                         JSONObject().apply {
                                             put("type", "string")
                                             put("description", "可选的域名黑名单，多个域名用英文逗号分隔。")
+                                        }
+                                    )
+                                }
+                            )
+                            put("required", JSONArray().put("description").put("query"))
+                            put("additionalProperties", false)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    private fun buildAnysearchWebSearchDefinition(): JSONObject {
+        return JSONObject().apply {
+            put("type", "function")
+            put(
+                "function",
+                JSONObject().apply {
+                    put("name", WebSearchToolName)
+                    put("description", "使用 AnySearch 搜索互联网。适合查询最新信息、网页资料、新闻或需要来源链接的问题。")
+                    put(
+                        "parameters",
+                        JSONObject().apply {
+                            put("type", "object")
+                            put(
+                                "properties",
+                                JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
+                                    put(
+                                        "query",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "搜索关键词，使用与用户问题最匹配的自然语言或关键词，最大 300 个字符。")
+                                        }
+                                    )
+                                    put(
+                                        "limit",
+                                        JSONObject().apply {
+                                            put("type", "integer")
+                                            put("description", "最多返回多少条结果，默认 5，最大 10。")
                                         }
                                     )
                                 }

@@ -165,21 +165,34 @@ class SettingsActivity : AppCompatActivity() {
         val onSearchChanged = {
             val searxng = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim()
             val tavily = binding.settingsContent.editTavilyApiKey.text?.toString().orEmpty().trim()
-            if (searxng.isNotBlank() && tavily.isNotBlank()) {
+            val anysearch = binding.settingsContent.editAnysearchApiKey.text?.toString().orEmpty().trim()
+            val configuredProviderCount = listOf(searxng, tavily, anysearch).count { it.isNotBlank() }
+            if (configuredProviderCount > 1) {
                 val error = getString(R.string.settings_search_provider_conflict)
                 binding.settingsContent.inputSearxngUrl.error = error
                 binding.settingsContent.inputTavilyApiKey.error = error
+                binding.settingsContent.inputAnysearchApiKey.error = error
             } else {
                 binding.settingsContent.inputSearxngUrl.error = null
                 binding.settingsContent.inputTavilyApiKey.error = null
-                if (searxng != workingSettings.searxngUrl || tavily != workingSettings.tavilyApiKey) {
-                    workingSettings = workingSettings.copy(searxngUrl = searxng, tavilyApiKey = tavily)
+                binding.settingsContent.inputAnysearchApiKey.error = null
+                if (
+                    searxng != workingSettings.searxngUrl ||
+                    tavily != workingSettings.tavilyApiKey ||
+                    anysearch != workingSettings.anysearchApiKey
+                ) {
+                    workingSettings = workingSettings.copy(
+                        searxngUrl = searxng,
+                        tavilyApiKey = tavily,
+                        anysearchApiKey = anysearch
+                    )
                     ApiSettingsStore.save(this, workingSettings)
                 }
             }
         }
         binding.settingsContent.editSearxngUrl.doAfterTextChanged { onSearchChanged() }
         binding.settingsContent.editTavilyApiKey.doAfterTextChanged { onSearchChanged() }
+        binding.settingsContent.editAnysearchApiKey.doAfterTextChanged { onSearchChanged() }
     }
 
     private fun showModelPicker(selected: ModelRef?, onSelected: (ModelRef) -> Unit) {
@@ -250,6 +263,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         if (binding.settingsContent.editTavilyApiKey.text?.toString() != settings.tavilyApiKey) {
             binding.settingsContent.editTavilyApiKey.setText(settings.tavilyApiKey)
+        }
+        if (binding.settingsContent.editAnysearchApiKey.text?.toString() != settings.anysearchApiKey) {
+            binding.settingsContent.editAnysearchApiKey.setText(settings.anysearchApiKey)
         }
     }
 

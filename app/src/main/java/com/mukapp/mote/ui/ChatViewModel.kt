@@ -197,7 +197,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "chatModelConfigured" to (settings.resolvedChatModel() != null),
                 "titleModelConfigured" to (settings.titleModel != null),
                 "compressionTriggerPercent" to settings.compressionTriggerPercent,
-                "searchEnabled" to settings.searxngUrl.isNotBlank()
+                "searchEnabled" to (
+                    settings.searxngUrl.isNotBlank() ||
+                        settings.tavilyApiKey.isNotBlank() ||
+                        settings.anysearchApiKey.isNotBlank()
+                    )
             )
         )
         if (uiMessagesInternal.isNotEmpty() || conversationMessagesInternal.isNotEmpty()) {

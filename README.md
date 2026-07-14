@@ -13,7 +13,7 @@ Mote 是一款运行在 Android 设备上的 AI Agent 聊天客户端，面向 O
 - 上下文压缩：在上下文过长时自动总结旧消息，降低长对话请求压力。
 - Markdown 渲染：使用原生 View 渲染 Markdown，支持代码高亮、表格、LaTeX 公式和流式增量更新。
 - 附件输入：支持添加图片和文件，文件内容过长时会截断后发送。
-- 搜索扩展：可配置 SearXNG 或 Tavily，配置后向模型暴露 `web_search` 工具。
+- 搜索扩展：可配置 SearXNG、Tavily 或 AnySearch，配置后向模型暴露 `web_search` 工具；三个服务只能启用一个。
 
 ## 技术栈
 
@@ -100,8 +100,9 @@ Release 构建：
 | 压缩模型 | 用于长上下文摘要，留空时使用主模型。 |
 | 模型上下文长度 | 用于估算和限制请求上下文，填 `0` 表示不限制。 |
 | 压缩长度 | 达到该估算 token 数后触发上下文压缩，填 `0` 表示关闭。 |
-| SearXNG 地址 | 配置后启用搜索工具，需与 Tavily API Key 二选一。 |
-| Tavily API Key | 配置后启用搜索工具，需与 SearXNG 地址二选一。 |
+| SearXNG 地址 | 配置后启用搜索工具，不可与 Tavily 或 AnySearch 同时配置。 |
+| Tavily API Key | 配置后启用搜索工具，不可与 SearXNG 或 AnySearch 同时配置。 |
+| AnySearch API Key | 配置后通过 AnySearch `POST /v1/search` 启用搜索工具，不可与 SearXNG 或 Tavily 同时配置。 |
 
 如果需要让工具读取外部存储文件，需要在设置页授予文件管理权限。该权限由系统设置页手动授予，应用不会自动绕过 Android 的存储限制。
 
@@ -115,7 +116,7 @@ Mote 会根据设置和模型能力向 AI 暴露工具：
 | `list_path` | 列出目录或文件信息。 |
 | `fetch_url` | 获取 HTTP(S) 网页内容。 |
 | `fetch_webview` | 使用隐藏 WebView 渲染动态网页并提取内容。 |
-| `web_search` | 通过 SearXNG 或 Tavily 搜索网络内容。 |
+| `web_search` | 通过 SearXNG、Tavily 或 AnySearch 搜索网络内容。 |
 | `shell` | 执行本地 Shell 命令，长任务可转为后台进程。 |
 | `shell_status` | 查询后台 Shell 进程状态。 |
 | `shell_stop` | 停止后台 Shell 进程。 |

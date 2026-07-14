@@ -100,6 +100,7 @@ object ApiSettingsStore {
             put("compressionTriggerPercent", settings.compressionTriggerPercent)
             put("searxngUrl", settings.searxngUrl)
             put("tavilyApiKey", settings.tavilyApiKey)
+            put("anysearchApiKey", settings.anysearchApiKey)
         }
     }
 
@@ -150,7 +151,8 @@ object ApiSettingsStore {
                 .optInt("compressionTriggerPercent", ApiSettings.DefaultCompressionTriggerPercent)
                 .coerceIn(0, 100),
             searxngUrl = root.optString("searxngUrl"),
-            tavilyApiKey = root.optString("tavilyApiKey")
+            tavilyApiKey = root.optString("tavilyApiKey"),
+            anysearchApiKey = root.optString("anysearchApiKey")
         )
     }
 
@@ -268,7 +270,8 @@ object ApiSettingsStore {
             "compressionModelConfigured" to (compressionModel != null),
             "compressionTriggerPercent" to compressionTriggerPercent,
             "searxngConfigured" to searxngUrl.isNotBlank(),
-            "tavilyConfigured" to tavilyApiKey.isNotBlank()
+            "tavilyConfigured" to tavilyApiKey.isNotBlank(),
+            "anysearchConfigured" to anysearchApiKey.isNotBlank()
         )
     }
 

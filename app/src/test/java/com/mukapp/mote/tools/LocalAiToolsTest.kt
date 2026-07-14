@@ -58,6 +58,15 @@ class LocalAiToolsTest {
     }
 
     @Test
+    fun toolDefinitionsExposeWebSearchWhenAnysearchApiKeyIsConfigured() {
+        val definitions = LocalAiTools.toolDefinitions(
+            ApiSettings(anysearchApiKey = "as-test")
+        )
+
+        assertTrue(definitions.hasTool("web_search"))
+    }
+
+    @Test
     fun toolDefinitionsRejectConflictingSearchProviders() {
         val error = assertThrows(IllegalArgumentException::class.java) {
             LocalAiTools.toolDefinitions(
@@ -68,7 +77,7 @@ class LocalAiToolsTest {
             )
         }
 
-        assertEquals("Tavily API Key 和 SearXNG 地址只能配置一个。", error.message)
+        assertEquals("SearXNG 地址、Tavily API Key 和 AnySearch API Key 只能填写一个。", error.message)
     }
 
     @Test
@@ -478,6 +487,93 @@ class LocalAiToolsTest {
             assertEquals(1, result.getJSONObject("usage").getInt("credits"))
         } finally {
             LocalAiTools.tavilySearchEndpoint = originalEndpoint
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun webSearchRequestsAnysearchEndpointAndFormatsResults() {
+        val originalEndpoint = LocalAiTools.anysearchSearchEndpoint
+        val requestMethod = AtomicReference("")
+        val authorizationHeader = AtomicReference("")
+        val contentTypeHeader = AtomicReference("")
+        val requestBody = AtomicReference("")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/search") { exchange ->
+            requestMethod.set(exchange.requestMethod)
+            authorizationHeader.set(exchange.requestHeaders.getFirst("Authorization").orEmpty())
+            contentTypeHeader.set(exchange.requestHeaders.getFirst("Content-Type").orEmpty())
+            requestBody.set(exchange.requestBody.bufferedReader(Charsets.UTF_8).use { input -> input.readText() })
+            val response = JSONObject()
+                .put("code", 0)
+                .put("message", "success")
+                .put("request_id", "request-123")
+                .put(
+                    "data",
+                    JSONObject()
+                        .put(
+                            "results",
+                            JSONArray()
+                                .put(
+                                    JSONObject()
+                                        .put("title", "Kotlin 协程")
+                                        .put("url", "https://kotlinlang.org/docs/coroutines-overview.html")
+                                        .put("snippet", "协程是在 Kotlin 中编写异步代码的推荐方式。")
+                                        .put("content", "用于测试的完整内容。")
+                                )
+                                .put(
+                                    JSONObject()
+                                        .put("title", "第二条结果")
+                                        .put("url", "https://example.org/second")
+                                )
+                        )
+                        .put(
+                            "metadata",
+                            JSONObject()
+                                .put("total_results", 2)
+                                .put("search_time_ms", 120)
+                        )
+                )
+                .toString()
+                .toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { output -> output.write(response) }
+        }
+        server.start()
+
+        try {
+            LocalAiTools.anysearchSearchEndpoint = "http://127.0.0.1:${server.address.port}/v1/search"
+            val result = JSONObject(
+                LocalAiTools.webSearch(
+                    settings = ApiSettings(anysearchApiKey = "as-test"),
+                    arguments = JSONObject()
+                        .put("description", "搜索 Kotlin 协程")
+                        .put("query", "Kotlin coroutines")
+                        .put("limit", 1)
+                        .toString()
+                )
+            )
+            val body = JSONObject(requestBody.get())
+
+            assertEquals("POST", requestMethod.get())
+            assertEquals("Bearer as-test", authorizationHeader.get())
+            assertTrue(contentTypeHeader.get().startsWith("application/json"))
+            assertEquals("Kotlin coroutines", body.getString("query"))
+            assertEquals(1, body.getInt("max_results"))
+            assertEquals(true, result.getBoolean("ok"))
+            assertEquals("anysearch", result.getString("provider"))
+            assertEquals("request-123", result.getString("request_id"))
+            assertEquals(1, result.getInt("returned"))
+            assertEquals(2, result.getInt("available"))
+            assertEquals(true, result.getBoolean("has_more"))
+            assertEquals(
+                "https://kotlinlang.org/docs/coroutines-overview.html",
+                result.getJSONArray("results").getJSONObject(0).getString("url")
+            )
+            assertTrue(result.getJSONArray("results").getJSONObject(0).getString("content").contains("完整内容"))
+        } finally {
+            LocalAiTools.anysearchSearchEndpoint = originalEndpoint
             server.stop(0)
         }
     }

@@ -457,6 +457,33 @@
                     android:textAppearance="?attr/textAppearanceBodySmall"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/input_anysearch_api_key"
+                    style="@style/Widget.Mote.TextInputLayout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:hint="@string/settings_label_anysearch_api_key"
+                    app:endIconMode="password_toggle"
+                    app:placeholderText="@string/hint_anysearch_api_key">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/edit_anysearch_api_key"
+                        style="@style/Widget.Mote.TextInputEditText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textPassword|textNoSuggestions"
+                        android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/settings_anysearch_hint"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
                 <TextView
                     android:id="@+id/text_save_message"
                     android:layout_width="wrap_content"

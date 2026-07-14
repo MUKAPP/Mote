@@ -34,8 +34,9 @@ class ApiSettingsStoreTest {
             titleModel = ModelRef("provider-1", "title-model"),
             compressionModel = ModelRef("provider-1", "chat-model"),
             compressionTriggerPercent = 70,
-            searxngUrl = "https://search.example.com",
-            tavilyApiKey = ""
+            searxngUrl = "",
+            tavilyApiKey = "",
+            anysearchApiKey = "as-test"
         )
 
         ApiSettingsStore.save(preferences, settings)

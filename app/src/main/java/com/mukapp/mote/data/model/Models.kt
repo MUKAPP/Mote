@@ -122,7 +122,8 @@ data class ApiSettings(
     val compressionModel: ModelRef? = null,
     val compressionTriggerPercent: Int = DefaultCompressionTriggerPercent,
     val searxngUrl: String = "",
-    val tavilyApiKey: String = ""
+    val tavilyApiKey: String = "",
+    val anysearchApiKey: String = ""
 ) {
     companion object {
         const val DefaultCompressionTriggerPercent: Int = 80
