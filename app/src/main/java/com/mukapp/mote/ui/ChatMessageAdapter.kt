@@ -253,14 +253,20 @@ class ChatMessageAdapter(
             val message = currentMessageOrNull() ?: return
             val position = currentPositionOrNull() ?: return
             val isLastAiMessage = message.role == ChatRole.Assistant && position == messages.lastIndex
+            // 编辑/删除的业务语义只作用于用户消息；从 AI 回复入口操作时定位其紧邻的提问。
+            val sourceUserPosition = (position - 1).takeIf { candidate ->
+                messages.getOrNull(candidate)?.role == ChatRole.User
+            }
 
             val popupItems = buildList {
                 if (hasCopyableContent(message)) {
                     add(MotePopupWindowItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
                     add(MotePopupWindowItem(MENU_FREE_COPY, R.string.action_free_copy, R.drawable.ic_text_select_start))
                 }
-                add(MotePopupWindowItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
-                add(MotePopupWindowItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
+                sourceUserPosition?.let {
+                    add(MotePopupWindowItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
+                    add(MotePopupWindowItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
+                }
                 if (isLastAiMessage && !isSending) {
                     add(MotePopupWindowItem(MENU_RETRY, R.string.action_retry, R.drawable.ic_refresh))
                 }
@@ -269,8 +275,8 @@ class ChatMessageAdapter(
                 when (itemId) {
                     MENU_COPY -> onCopyMessage(message)
                     MENU_FREE_COPY -> onFreeCopyMessage(message)
-                    MENU_EDIT -> onEditMessage(position)
-                    MENU_DELETE -> onDeleteMessage(position)
+                    MENU_EDIT -> sourceUserPosition?.let(onEditMessage)
+                    MENU_DELETE -> sourceUserPosition?.let(onDeleteMessage)
                     MENU_RETRY -> onRetryMessage(position)
                 }
             }
