@@ -43,8 +43,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.time.OffsetDateTime
-import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -2237,11 +2235,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         fun buildSystemPrompt(): String {
-            val currentTime = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
             return """
                 # 角色定义
                 你是一个 Android 系统的本地 AI Agent，负责协助用户完成设备级任务。你可以调用工具来读取本地文件和执行 Shell 命令。
-                当前系统时间：$currentTime
                 
                 # 环境规范
                 - 基础环境：Android busybox（执行器已自动注入相关环境变量）。

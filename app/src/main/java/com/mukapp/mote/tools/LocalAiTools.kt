@@ -32,6 +32,9 @@ import java.net.URLEncoder
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -45,6 +48,7 @@ object LocalAiTools {
     private const val Component = "Tools"
     private const val ReadFileToolName = "read_file"
     private const val ListPathToolName = "list_path"
+    private const val GetCurrentTimeToolName = "get_current_time"
     private const val FetchUrlToolName = "fetch_url"
     private const val FetchWebViewToolName = "fetch_webview"
     private const val WebSearchToolName = "web_search"
@@ -120,6 +124,7 @@ object LocalAiTools {
         JSONArray()
             .put(buildReadFileDefinition())
             .put(buildListPathDefinition())
+            .put(buildGetCurrentTimeDefinition())
             .put(buildFetchUrlDefinition())
             .put(buildFetchWebViewDefinition())
             .put(buildShellDefinition())
@@ -172,6 +177,7 @@ object LocalAiTools {
             when (toolCall.name) {
                 ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
                 ListPathToolName -> listPath(toolCall.arguments)
+                GetCurrentTimeToolName -> getCurrentTime()
                 FetchUrlToolName -> fetchUrl(toolCall.arguments)
                 FetchWebViewToolName -> fetchWebView(context, toolCall.arguments)
                 WebSearchToolName -> webSearch(settings, toolCall.arguments)
@@ -437,6 +443,17 @@ object LocalAiTools {
                 put("parent", target.parentFile?.path?.replace('\\', '/'))
             }.toString(2)
         }
+    }
+
+    internal fun getCurrentTime(): String {
+        val currentTime = OffsetDateTime.now()
+        return JSONObject().apply {
+            put("ok", true)
+            put("current_time", currentTime.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME))
+            put("timezone", ZoneId.systemDefault().id)
+            put("utc_offset", currentTime.offset.id)
+            put("unix_timestamp_ms", currentTime.toInstant().toEpochMilli())
+        }.toString(2)
     }
 
     internal fun fetchUrl(arguments: String): String {
@@ -2112,6 +2129,33 @@ object LocalAiTools {
                                 }
                             )
                             put("required", JSONArray().put("description").put("path"))
+                            put("additionalProperties", false)
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+    private fun buildGetCurrentTimeDefinition(): JSONObject {
+        return JSONObject().apply {
+            put("type", "function")
+            put(
+                "function",
+                JSONObject().apply {
+                    put("name", GetCurrentTimeToolName)
+                    put("description", "获取设备当前本地时间、时区和 UTC 偏移量。用于回答日期、时间、时区或需要准确当前时间的任务。")
+                    put(
+                        "parameters",
+                        JSONObject().apply {
+                            put("type", "object")
+                            put(
+                                "properties",
+                                JSONObject().apply {
+                                    put("description", buildToolCallDescriptionProperty())
+                                }
+                            )
+                            put("required", JSONArray().put("description"))
                             put("additionalProperties", false)
                         }
                     )

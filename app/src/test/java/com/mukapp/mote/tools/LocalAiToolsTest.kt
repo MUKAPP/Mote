@@ -27,6 +27,24 @@ class LocalAiToolsTest {
     }
 
     @Test
+    fun toolDefinitionsExposeCurrentTimeByDefault() {
+        val definitions = LocalAiTools.toolDefinitions()
+
+        assertTrue(definitions.hasTool("get_current_time"))
+    }
+
+    @Test
+    fun getCurrentTimeReturnsConsistentTimestampAndOffset() {
+        val result = JSONObject(LocalAiTools.getCurrentTime())
+        val currentTime = java.time.OffsetDateTime.parse(result.getString("current_time"))
+
+        assertTrue(result.getBoolean("ok"))
+        assertEquals(currentTime.toInstant().toEpochMilli(), result.getLong("unix_timestamp_ms"))
+        assertEquals(currentTime.offset.id, result.getString("utc_offset"))
+        assertTrue(result.getString("timezone").isNotBlank())
+    }
+
+    @Test
     fun toolDefinitionsExposeFetchWebViewByDefault() {
         val definitions = LocalAiTools.toolDefinitions()
 

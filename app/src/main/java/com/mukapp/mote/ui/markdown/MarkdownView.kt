@@ -757,6 +757,7 @@ class MarkdownView @JvmOverloads constructor(
         return when (toolName) {
             "read_file", "read_local_file" -> R.drawable.ic_description
             "list_path" -> R.drawable.ic_folder_open
+            "get_current_time" -> R.drawable.ic_schedule
             "fetch_url" -> R.drawable.ic_link
             "fetch_webview" -> R.drawable.ic_web_asset
             "web_search" -> R.drawable.ic_travel_explore

@@ -114,6 +114,7 @@ Mote 会根据设置和模型能力向 AI 暴露工具：
 | --- | --- |
 | `read_file` | 读取文本文件内容。 |
 | `list_path` | 列出目录或文件信息。 |
+| `get_current_time` | 获取设备当前本地时间、时区和 UTC 偏移量。 |
 | `fetch_url` | 获取 HTTP(S) 网页内容。 |
 | `fetch_webview` | 使用隐藏 WebView 渲染动态网页并提取内容。 |
 | `web_search` | 通过 SearXNG、Tavily 或 AnySearch 搜索网络内容。 |

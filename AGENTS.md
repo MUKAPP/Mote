@@ -99,6 +99,7 @@ app/src/main/java/com/mukapp/mote/
 | --- | --- | --- |
 | `read_file` | 读取文本文件（别名 `read_local_file`，默认前 200 行，最多 400 行） | `path`, `first_lines` / `start_line`+`end_line` |
 | `list_path` | 列出目录或文件信息（默认 100 项，最多 200 项） | `path`, `limit` |
+| `get_current_time` | 获取设备当前本地时间、时区和 UTC 偏移量 | 无（仅需 `description`） |
 | `fetch_url` | HTTP(S) 获取网页内容（`max_chars` 默认 20000，最大 100000） | `url`, `output_format`, `max_chars` |
 | `fetch_webview` | 隐藏 WebView 渲染后提取内容（仅 `fetch_url` 无法获得动态内容时用） | `url`, `output_format`, `max_chars`, `timeout_seconds`, `settle_ms` |
 | `web_search` | SearXNG、Tavily 或 AnySearch 搜索（仅 `searxngUrl`、`tavilyApiKey`、`anysearchApiKey` 三选一非空时暴露） | 通用：`query`, `limit`；SearXNG：`page`, `language`, `categories`；Tavily：`search_depth`, `topic`, `time_range` |

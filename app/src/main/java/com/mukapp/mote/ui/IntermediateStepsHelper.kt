@@ -26,6 +26,7 @@ object IntermediateStepsHelper {
             }
 
             "list_path" -> "list_path: ${json.optString("path", "")}"
+            "get_current_time" -> "get_current_time"
             "shell" -> "shell: ${json.optString("command", "").trim()}"
             "shell_status" -> "shell_status: 进程 ${json.optString("id", "")}"
             "shell_stop" -> "shell_stop: 进程 ${json.optString("id", "")}"
