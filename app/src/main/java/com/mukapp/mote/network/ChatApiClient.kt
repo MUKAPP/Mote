@@ -377,6 +377,11 @@ object ChatApiClient {
                 )
                 val responseText = response.body?.string() ?: ""
                 currentCoroutineContext().ensureActive()
+                // 部分网关/反代会以 200 + HTML/错误 JSON 返回失败，先当错误响应解析。
+                if (looksLikeHtml(responseText) || looksLikeErrorPayload(responseText)) {
+                    val errorMessage = parseErrorMessage(responseText)
+                    throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
+                }
                 val result = parseAssistantReply(responseText)
                 withContext(mainDispatcher) {
                     if (result.content.isNotBlank()) {
@@ -469,7 +474,7 @@ object ChatApiClient {
         val trimmed = responseText.trim()
         val root = runCatching { JSONObject(trimmed) }.getOrElse { error ->
             val message = if (looksLikeHtml(trimmed)) {
-                "模型列表接口返回了 HTML 页面，不是 OpenAI 兼容的 JSON 响应。"
+                "模型列表接口返回了 HTML 页面，不是 OpenAI 兼容的 JSON 响应：${truncateForError(trimmed)}"
             } else {
                 "模型列表接口返回了非 JSON 响应：${truncateForError(trimmed)}"
             }
@@ -926,6 +931,14 @@ object ChatApiClient {
         }
 
         val responseJson = parseStreamPayload(normalizedPayload)
+        responseJson.opt("error")?.let { errorNode ->
+            val errorText = when (errorNode) {
+                is JSONObject -> errorNode.toString()
+                is String -> errorNode
+                else -> errorNode.toString()
+            }
+            throw IllegalStateException(parseErrorMessage(errorText.ifBlank { normalizedPayload }))
+        }
         parseTokenUsage(responseJson.optJSONObject("usage"))?.let(onUsage)
         val choices = responseJson.optJSONArray("choices") ?: return false
         val firstChoice = choices.optJSONObject(0) ?: return false
@@ -962,6 +975,9 @@ object ChatApiClient {
 
     private fun parseStreamPayload(payload: String): JSONObject {
         return runCatching { JSONObject(payload) }.getOrElse { error ->
+            if (looksLikeHtml(payload) || looksLikeErrorPayload(payload)) {
+                throw IllegalStateException(parseErrorMessage(payload), error)
+            }
             throw IllegalStateException(
                 "流式响应解析失败，payload 片段：${truncateForError(payload)}",
                 error
@@ -1002,12 +1018,18 @@ object ChatApiClient {
     ): ChatCompletionResult {
         val trimmedResponse = responseText.trim()
         val responseJson = runCatching { JSONObject(trimmedResponse) }.getOrElse { error ->
-            val message = if (looksLikeHtml(trimmedResponse)) {
-                "接口返回了 HTML 页面，不是 OpenAI 兼容的 JSON 响应。请检查 API 地址是否填到了网页入口，或服务商/反代是否返回了验证页。"
-            } else {
-                "接口返回了非 JSON 响应：${truncateForError(trimmedResponse)}"
+            throw IllegalStateException(parseErrorMessage(trimmedResponse), error)
+        }
+        responseJson.opt("error")?.let { errorNode ->
+            val errorText = when (errorNode) {
+                is JSONObject -> errorNode.toString()
+                is String -> errorNode
+                else -> errorNode.toString()
             }
-            throw IllegalStateException(message, error)
+            // 有些网关会在 200 响应里塞 error，同时不给 choices。
+            if (responseJson.optJSONArray("choices").isNullOrEmpty()) {
+                throw IllegalStateException(parseErrorMessage(errorText.ifBlank { trimmedResponse }))
+            }
         }
         val choices = responseJson.optJSONArray("choices")
             ?: throw IllegalStateException("接口返回缺少 choices 字段。")
@@ -1142,29 +1164,230 @@ object ChatApiClient {
         }
     }
 
-    private fun parseErrorMessage(responseText: String): String {
+    internal fun parseErrorMessage(responseText: String): String {
         val trimmedResponse = responseText.trim()
         if (trimmedResponse.isBlank()) {
             return "接口请求失败，服务器返回了空错误响应。"
         }
 
-        return runCatching {
-            val root = JSONObject(trimmedResponse)
-            root.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
-                ?: root.optString("message").takeIf { it.isNotBlank() }
-                ?: "接口请求失败，错误响应缺少可读消息。"
-        }.getOrElse {
-            if (looksLikeHtml(trimmedResponse)) {
-                "接口请求失败，服务器返回了 HTML 页面。请检查 API 地址是否填到了网页入口，或服务商/反代是否返回了验证页。"
-            } else {
-                "接口请求失败，服务器返回了非 JSON 错误响应：${truncateForError(trimmedResponse)}"
+        extractReadableErrorMessage(trimmedResponse)
+            ?.let { return truncateForError(it) }
+
+        // HTML 包装的 JSON 错误（常见于网关/反代把上游 JSON 塞进页面）。
+        extractJsonCandidate(trimmedResponse)?.let { jsonCandidate ->
+            extractReadableErrorMessage(jsonCandidate)?.let { return truncateForError(it) }
+        }
+
+        val plainText = if (looksLikeHtml(trimmedResponse)) {
+            htmlToPlainText(trimmedResponse)
+        } else {
+            trimmedResponse
+        }.ifBlank { trimmedResponse }
+
+        extractReadableErrorMessage(plainText)
+            ?.let { return truncateForError(it) }
+        extractJsonCandidate(plainText)?.let { jsonCandidate ->
+            extractReadableErrorMessage(jsonCandidate)?.let { return truncateForError(it) }
+        }
+
+        val prefix = when {
+            looksLikeHtml(trimmedResponse) ->
+                "接口请求失败，服务器返回了 HTML 页面"
+            looksLikeJson(trimmedResponse) ->
+                "接口请求失败"
+            else ->
+                "接口请求失败，服务器返回了非 JSON 错误响应"
+        }
+        return truncateForError("$prefix：${plainText}")
+    }
+
+    private fun extractReadableErrorMessage(responseText: String): String? {
+        val root = runCatching { JSONObject(responseText.trim()) }.getOrNull() ?: return null
+        val preferred = mutableListOf<String>()
+        val fallbacks = mutableListOf<String>()
+
+        val nestedError = root.opt("error")
+        when (nestedError) {
+            is JSONObject -> {
+                extractReadableErrorFields(nestedError)?.let { message ->
+                    val type = nestedError.optString("type").takeIf { it.isNotBlank() }
+                    preferred += if (type != null && !message.contains(type, ignoreCase = true)) {
+                        "$message（$type）"
+                    } else {
+                        message
+                    }
+                }
+                val compact = nestedError.toString()
+                if (compact.isNotBlank() && compact != "{}") {
+                    fallbacks += compact
+                }
             }
-        }.let { truncateForError(it.trim()) }
+            is String -> if (nestedError.isNotBlank()) {
+                preferred += nestedError
+            }
+            is Number, is Boolean -> preferred += nestedError.toString()
+        }
+
+        extractReadableErrorFields(root)?.let { preferred += it }
+
+        // 优先返回信息量更大的可读错误字段，避免只拿到 "Service Unavailable"。
+        preferred
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .maxByOrNull { it.length }
+            ?.let { return it }
+
+        return fallbacks
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .maxByOrNull { it.length }
+    }
+
+    private fun extractReadableErrorFields(root: JSONObject): String? {
+        val preferredKeys = listOf(
+            "message",
+            "msg",
+            "detail",
+            "error_description",
+            "error_msg",
+            "errorMessage",
+            "reason",
+            "description",
+            "error"
+        )
+        for (key in preferredKeys) {
+            when (val value = root.opt(key)) {
+                is String -> if (value.isNotBlank()) return value
+                is Number, is Boolean -> return value.toString()
+                is JSONObject -> extractReadableErrorFields(value)?.let { return it }
+                is JSONArray -> {
+                    val joined = buildString {
+                        for (index in 0 until value.length()) {
+                            val item = value.opt(index) ?: continue
+                            val text = when (item) {
+                                is String -> item
+                                is JSONObject -> extractReadableErrorFields(item) ?: item.toString()
+                                else -> item.toString()
+                            }.trim()
+                            if (text.isBlank()) continue
+                            if (isNotEmpty()) append("; ")
+                            append(text)
+                        }
+                    }
+                    if (joined.isNotBlank()) return joined
+                }
+            }
+        }
+        return null
+    }
+
+    private fun extractJsonCandidate(text: String): String? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) {
+            return null
+        }
+        if (looksLikeJson(trimmed)) {
+            return trimmed
+        }
+
+        // 优先抓 <pre>/<code> 里的 JSON。
+        val preMatch = Regex(
+            pattern = """(?is)<(?:pre|code)[^>]*>\s*(\{.*?\}|\[.*?])\s*</(?:pre|code)>"""
+        ).find(trimmed)?.groupValues?.getOrNull(1)
+        if (!preMatch.isNullOrBlank()) {
+            return preMatch.trim()
+        }
+
+        val objectStart = trimmed.indexOf('{')
+        val arrayStart = trimmed.indexOf('[')
+        val start = when {
+            objectStart < 0 -> arrayStart
+            arrayStart < 0 -> objectStart
+            else -> minOf(objectStart, arrayStart)
+        }
+        if (start < 0) {
+            return null
+        }
+
+        val candidate = trimmed.substring(start).trim()
+        // 逐步回退到最后一个 } 或 ]，尽量恢复被 HTML 包裹的 JSON。
+        for (end in candidate.length downTo 2) {
+            val ch = candidate[end - 1]
+            if (ch != '}' && ch != ']') {
+                continue
+            }
+            val slice = candidate.substring(0, end).trim()
+            if (runCatching { JSONObject(slice) }.isSuccess ||
+                runCatching { JSONArray(slice) }.isSuccess
+            ) {
+                return slice
+            }
+        }
+        return null
+    }
+
+    private fun htmlToPlainText(html: String): String {
+        return html
+            .replace(Regex("(?is)<(script|style|noscript)[^>]*>.*?</\\1>"), " ")
+            .replace(Regex("(?i)<br\\s*/?>"), "\n")
+            .replace(Regex("(?i)</(p|div|section|article|header|footer|main|li|tr|h[1-6]|pre)>"), "\n")
+            .replace(Regex("<[^>]+>"), " ")
+            .replace(Regex("&nbsp;"), " ")
+            .replace(Regex("&lt;"), "<")
+            .replace(Regex("&gt;"), ">")
+            .replace(Regex("&quot;"), "\"")
+            .replace(Regex("&#39;"), "'")
+            .replace(Regex("&amp;"), "&")
+            .replace(Regex("[ \\t\\x0B\\f\\r]+"), " ")
+            .replace(Regex(" *\\n *"), "\n")
+            .replace(Regex("\\n{2,}"), "\n")
+            .trim()
+    }
+
+    private fun looksLikeErrorPayload(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) {
+            return false
+        }
+        val root = runCatching { JSONObject(trimmed) }.getOrNull()
+            ?: extractJsonCandidate(trimmed)?.let { candidate ->
+                runCatching { JSONObject(candidate) }.getOrNull()
+            }
+            ?: return false
+        if (root.has("error")) {
+            return true
+        }
+        val message = root.optString("message")
+        val type = root.optString("type")
+        return message.isNotBlank() && (
+            type.equals("api_error", ignoreCase = true) ||
+                type.equals("error", ignoreCase = true) ||
+                root.has("code") ||
+                root.has("status")
+            )
+    }
+
+    private fun JSONArray?.isNullOrEmpty(): Boolean {
+        return this == null || length() == 0
+    }
+
+    private fun looksLikeJson(text: String): Boolean {
+        val normalized = text.trimStart()
+        return normalized.startsWith("{") || normalized.startsWith("[")
     }
 
     private fun looksLikeHtml(text: String): Boolean {
         val normalized = text.trimStart().lowercase()
-        return normalized.startsWith("<!doctype") || normalized.startsWith("<html")
+        return normalized.startsWith("<!doctype") ||
+            normalized.startsWith("<html") ||
+            normalized.startsWith("<head") ||
+            normalized.startsWith("<body") ||
+            normalized.startsWith("<title") ||
+            normalized.startsWith("<pre") ||
+            (
+                normalized.contains("<html") &&
+                    (normalized.contains("<body") || normalized.contains("<head"))
+                )
     }
 
     private fun shouldRetryWithoutStreamUsage(error: Throwable): Boolean {

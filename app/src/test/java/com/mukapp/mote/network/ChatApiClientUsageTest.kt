@@ -186,4 +186,85 @@ class ChatApiClientUsageTest {
 
         assertEquals("", title)
     }
+
+    @Test
+    fun parseErrorMessageUsesOpenAiStyleErrorMessage() {
+        val message = ChatApiClient.parseErrorMessage(
+            """{"error":{"message":"Invalid API key","type":"invalid_request_error"}}"""
+        )
+
+        assertEquals("Invalid API key（invalid_request_error）", message)
+    }
+
+    @Test
+    fun parseErrorMessageFallsBackToTruncatedJsonBodyWhenNoReadableField() {
+        val body = """{"code":401,"data":{"hint":"token expired"},"status":"denied"}"""
+        val message = ChatApiClient.parseErrorMessage(body)
+
+        assertTrue(message.startsWith("接口请求失败："))
+        assertTrue(message.contains("token expired"))
+        assertTrue(message.contains("denied"))
+    }
+
+    @Test
+    fun parseErrorMessageShowsTruncatedHtmlBodyInsteadOfFixedTextOnly() {
+        val html = """
+            <!DOCTYPE html>
+            <html>
+              <head><title>Gateway Error</title></head>
+              <body>
+                <h1>502 Bad Gateway</h1>
+                <p>${"验证页内容".repeat(40)}</p>
+              </body>
+            </html>
+        """.trimIndent()
+
+        val message = ChatApiClient.parseErrorMessage(html)
+
+        assertTrue(message.startsWith("接口请求失败，服务器返回了 HTML 页面："))
+        assertTrue(message.contains("502 Bad Gateway"))
+        assertTrue(message.contains("验证页内容"))
+        assertTrue(message.endsWith("..."))
+        assertTrue(message.length <= 243)
+        assertFalse(message.contains("<h1>"))
+    }
+
+    @Test
+    fun parseErrorMessageJoinsArrayDetailMessages() {
+        val message = ChatApiClient.parseErrorMessage(
+            """{"detail":[{"msg":"field required"},{"msg":"value is not a valid integer"}]}"""
+        )
+
+        assertEquals("field required; value is not a valid integer", message)
+    }
+
+    @Test
+    fun parseErrorMessageExtractsJsonErrorEmbeddedInHtml() {
+        val html = """
+            <!DOCTYPE html>
+            <html><body><pre>{
+              "error": {
+                "message": "channel anyrouter claude failed: failed to stream request: Request failed: Service Unavailable",
+                "type": "api_error"
+              }
+            }</pre></body></html>
+        """.trimIndent()
+
+        val message = ChatApiClient.parseErrorMessage(html)
+
+        assertTrue(message.contains("channel anyrouter claude failed"))
+        assertTrue(message.contains("Service Unavailable"))
+        assertTrue(message.contains("api_error"))
+        assertFalse(message.contains("<pre>"))
+    }
+
+    @Test
+    fun parseErrorMessageUsesTopLevelServiceUnavailableFields() {
+        val message = ChatApiClient.parseErrorMessage(
+            """{"error":"Service Unavailable","type":"api_error","message":"channel anyrouter claude failed: failed to stream request: Request failed: Service Unavailable"}"""
+        )
+
+        assertTrue(message.contains("channel anyrouter claude failed"))
+        assertTrue(message.contains("Service Unavailable"))
+    }
 }
