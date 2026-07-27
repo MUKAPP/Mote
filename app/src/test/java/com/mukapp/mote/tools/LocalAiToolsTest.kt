@@ -2,6 +2,7 @@ package com.mukapp.mote.tools
 
 import com.sun.net.httpserver.HttpServer
 import com.mukapp.mote.data.model.ApiSettings
+import com.mukapp.mote.data.model.SearchProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -67,17 +68,32 @@ class LocalAiToolsTest {
     }
 
     @Test
-    fun toolDefinitionsRejectConflictingSearchProviders() {
-        val error = assertThrows(IllegalArgumentException::class.java) {
-            LocalAiTools.toolDefinitions(
-                ApiSettings(
-                    searxngUrl = "https://searx.example.org",
-                    tavilyApiKey = "tvly-test"
-                )
+    fun toolDefinitionsUseSelectedProviderWhenMultipleProvidersAreConfigured() {
+        val definitions = LocalAiTools.toolDefinitions(
+            ApiSettings(
+                searchProvider = SearchProvider.Tavily,
+                searxngUrl = "https://searx.example.org",
+                tavilyApiKey = "tvly-test",
+                anysearchApiKey = "as-test"
             )
-        }
+        )
 
-        assertEquals("SearXNG 地址、Tavily API Key 和 AnySearch API Key 只能填写一个。", error.message)
+        val description = definitions.findTool("web_search")
+            .getJSONObject("function")
+            .getString("description")
+        assertTrue(description.contains("Tavily"))
+    }
+
+    @Test
+    fun toolDefinitionsDoNotExposeSearchWhenSelectedProviderIsNotConfigured() {
+        val definitions = LocalAiTools.toolDefinitions(
+            ApiSettings(
+                searchProvider = SearchProvider.Anysearch,
+                searxngUrl = "https://searx.example.org"
+            )
+        )
+
+        assertFalse(definitions.hasTool("web_search"))
     }
 
     @Test

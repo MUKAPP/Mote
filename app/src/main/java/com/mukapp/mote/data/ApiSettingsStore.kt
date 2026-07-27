@@ -8,6 +8,7 @@ import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ProviderType
 import com.mukapp.mote.data.model.ReasoningEffortOptions
+import com.mukapp.mote.data.model.SearchProvider
 import com.mukapp.mote.data.model.findProvider
 import com.mukapp.mote.util.MoteLog
 import androidx.core.content.edit
@@ -98,6 +99,7 @@ object ApiSettingsStore {
             settings.titleModel?.let { put("titleModel", serializeRef(it)) }
             settings.compressionModel?.let { put("compressionModel", serializeRef(it)) }
             put("compressionTriggerPercent", settings.compressionTriggerPercent)
+            settings.searchProvider?.let { put("searchProvider", it.storageKey) }
             put("searxngUrl", settings.searxngUrl)
             put("tavilyApiKey", settings.tavilyApiKey)
             put("anysearchApiKey", settings.anysearchApiKey)
@@ -150,6 +152,12 @@ object ApiSettingsStore {
             compressionTriggerPercent = root
                 .optInt("compressionTriggerPercent", ApiSettings.DefaultCompressionTriggerPercent)
                 .coerceIn(0, 100),
+            searchProvider = SearchProvider.fromStorage(root.optString("searchProvider"))
+                ?: inferSearchProvider(
+                    searxngUrl = root.optString("searxngUrl"),
+                    tavilyApiKey = root.optString("tavilyApiKey"),
+                    anysearchApiKey = root.optString("anysearchApiKey")
+                ),
             searxngUrl = root.optString("searxngUrl"),
             tavilyApiKey = root.optString("tavilyApiKey"),
             anysearchApiKey = root.optString("anysearchApiKey")
@@ -211,7 +219,11 @@ object ApiSettingsStore {
         val tavilyApiKey = preferences.getString(LegacyKeyTavilyApiKey, "").orEmpty()
 
         if (baseUrl.isBlank() && chatModelId.isBlank()) {
-            return ApiSettings(searxngUrl = searxngUrl, tavilyApiKey = tavilyApiKey)
+            return ApiSettings(
+                searchProvider = inferSearchProvider(searxngUrl, tavilyApiKey, ""),
+                searxngUrl = searxngUrl,
+                tavilyApiKey = tavilyApiKey
+            )
         }
 
         val providerId = UUID.randomUUID().toString()
@@ -251,9 +263,23 @@ object ApiSettingsStore {
             compressionModel = compressionModelId.takeIf { it.isNotBlank() }
                 ?.let { ModelRef(providerId, it) },
             compressionTriggerPercent = triggerPercent,
+            searchProvider = inferSearchProvider(searxngUrl, tavilyApiKey, ""),
             searxngUrl = searxngUrl,
             tavilyApiKey = tavilyApiKey
         )
+    }
+
+    private fun inferSearchProvider(
+        searxngUrl: String,
+        tavilyApiKey: String,
+        anysearchApiKey: String
+    ): SearchProvider? {
+        return when {
+            searxngUrl.isNotBlank() -> SearchProvider.Searxng
+            tavilyApiKey.isNotBlank() -> SearchProvider.Tavily
+            anysearchApiKey.isNotBlank() -> SearchProvider.Anysearch
+            else -> null
+        }
     }
 
     private fun legacyProviderName(baseUrl: String): String {
@@ -269,6 +295,7 @@ object ApiSettingsStore {
             "titleModelConfigured" to (titleModel != null),
             "compressionModelConfigured" to (compressionModel != null),
             "compressionTriggerPercent" to compressionTriggerPercent,
+            "searchProvider" to (searchProvider?.storageKey ?: "未选择"),
             "searxngConfigured" to searxngUrl.isNotBlank(),
             "tavilyConfigured" to tavilyApiKey.isNotBlank(),
             "anysearchConfigured" to anysearchApiKey.isNotBlank()

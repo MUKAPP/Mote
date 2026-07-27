@@ -115,18 +115,47 @@ data class ResolvedModel(
     val providerType: ProviderType = ProviderType.Generic
 )
 
+enum class SearchProvider(val storageKey: String) {
+    Searxng("searxng"),
+    Tavily("tavily"),
+    Anysearch("anysearch");
+
+    companion object {
+        fun fromStorage(value: String?): SearchProvider? = entries.firstOrNull {
+            it.storageKey.equals(value, ignoreCase = true)
+        }
+    }
+}
+
 data class ApiSettings(
     val providers: List<ModelProvider> = emptyList(),
     val chatModel: ModelRef? = null,
     val titleModel: ModelRef? = null,
     val compressionModel: ModelRef? = null,
     val compressionTriggerPercent: Int = DefaultCompressionTriggerPercent,
+    val searchProvider: SearchProvider? = null,
     val searxngUrl: String = "",
     val tavilyApiKey: String = "",
     val anysearchApiKey: String = ""
 ) {
     companion object {
         const val DefaultCompressionTriggerPercent: Int = 80
+    }
+}
+
+fun ApiSettings.resolvedSearchProvider(): SearchProvider? {
+    val provider = searchProvider ?: when {
+        searxngUrl.isNotBlank() -> SearchProvider.Searxng
+        tavilyApiKey.isNotBlank() -> SearchProvider.Tavily
+        anysearchApiKey.isNotBlank() -> SearchProvider.Anysearch
+        else -> null
+    }
+    return provider?.takeIf {
+        when (it) {
+            SearchProvider.Searxng -> searxngUrl.isNotBlank()
+            SearchProvider.Tavily -> tavilyApiKey.isNotBlank()
+            SearchProvider.Anysearch -> anysearchApiKey.isNotBlank()
+        }
     }
 }
 

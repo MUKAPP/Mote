@@ -27,6 +27,7 @@ import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.data.model.resolvedCompressionModel
+import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.data.model.resolvedTitleModel
 import com.mukapp.mote.network.ChatApiClient
 import com.mukapp.mote.tools.LocalAiTools
@@ -197,11 +198,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "chatModelConfigured" to (settings.resolvedChatModel() != null),
                 "titleModelConfigured" to (settings.titleModel != null),
                 "compressionTriggerPercent" to settings.compressionTriggerPercent,
-                "searchEnabled" to (
-                    settings.searxngUrl.isNotBlank() ||
-                        settings.tavilyApiKey.isNotBlank() ||
-                        settings.anysearchApiKey.isNotBlank()
-                    )
+                "searchEnabled" to (settings.resolvedSearchProvider() != null)
             )
         )
         if (uiMessagesInternal.isNotEmpty() || conversationMessagesInternal.isNotEmpty()) {

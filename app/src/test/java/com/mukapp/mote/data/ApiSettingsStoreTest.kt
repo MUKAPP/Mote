@@ -6,6 +6,7 @@ import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ProviderType
+import com.mukapp.mote.data.model.SearchProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -34,8 +35,9 @@ class ApiSettingsStoreTest {
             titleModel = ModelRef("provider-1", "title-model"),
             compressionModel = ModelRef("provider-1", "chat-model"),
             compressionTriggerPercent = 70,
-            searxngUrl = "",
-            tavilyApiKey = "",
+            searchProvider = SearchProvider.Anysearch,
+            searxngUrl = "https://search.example.com",
+            tavilyApiKey = "tvly-test",
             anysearchApiKey = "as-test"
         )
 
@@ -78,9 +80,27 @@ class ApiSettingsStoreTest {
         // 80000 / 100000 = 80%
         assertEquals(80, migrated.compressionTriggerPercent)
         assertEquals("https://search.example.com", migrated.searxngUrl)
+        assertEquals(SearchProvider.Searxng, migrated.searchProvider)
 
         // 迁移后应已写回新版 JSON，再次加载结果一致。
         assertEquals(migrated, ApiSettingsStore.load(preferences))
+    }
+
+    @Test
+    fun loadInfersSearchProviderFromSettingsSavedBeforeProviderSelectionWasAdded() {
+        val preferences = InMemorySharedPreferences()
+        preferences.edit()
+            .putString(
+                "settings_json",
+                """{"tavilyApiKey":"tvly-legacy","anysearchApiKey":"as-legacy"}"""
+            )
+            .commit()
+
+        val loaded = ApiSettingsStore.load(preferences)
+
+        assertEquals(SearchProvider.Tavily, loaded.searchProvider)
+        assertEquals("tvly-legacy", loaded.tavilyApiKey)
+        assertEquals("as-legacy", loaded.anysearchApiKey)
     }
 
     @Test

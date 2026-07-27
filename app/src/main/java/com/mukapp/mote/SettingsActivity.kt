@@ -18,7 +18,9 @@ import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
+import com.mukapp.mote.data.model.SearchProvider
 import com.mukapp.mote.data.model.findProvider
+import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.databinding.ActivitySettingsBinding
 import com.mukapp.mote.ui.ModelPickerBottomSheet
 import com.mukapp.mote.ui.ProviderAdapter
@@ -31,6 +33,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var providerAdapter: ProviderAdapter
 
     private var workingSettings: ApiSettings = ApiSettings()
+    private var isApplyingSettings: Boolean = false
 
     private val providerEditorLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -145,6 +148,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun setupScalarFields() {
         binding.settingsContent.editCompressionTriggerPercent.doAfterTextChanged { text ->
+            if (isApplyingSettings) return@doAfterTextChanged
             val raw = text?.toString().orEmpty().trim()
             val percent = if (raw.isBlank()) {
                 ApiSettings.DefaultCompressionTriggerPercent
@@ -163,36 +167,59 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
         val onSearchChanged = {
-            val searxng = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim()
-            val tavily = binding.settingsContent.editTavilyApiKey.text?.toString().orEmpty().trim()
-            val anysearch = binding.settingsContent.editAnysearchApiKey.text?.toString().orEmpty().trim()
-            val configuredProviderCount = listOf(searxng, tavily, anysearch).count { it.isNotBlank() }
-            if (configuredProviderCount > 1) {
-                val error = getString(R.string.settings_search_provider_conflict)
-                binding.settingsContent.inputSearxngUrl.error = error
-                binding.settingsContent.inputTavilyApiKey.error = error
-                binding.settingsContent.inputAnysearchApiKey.error = error
-            } else {
-                binding.settingsContent.inputSearxngUrl.error = null
-                binding.settingsContent.inputTavilyApiKey.error = null
-                binding.settingsContent.inputAnysearchApiKey.error = null
-                if (
-                    searxng != workingSettings.searxngUrl ||
-                    tavily != workingSettings.tavilyApiKey ||
-                    anysearch != workingSettings.anysearchApiKey
-                ) {
-                    workingSettings = workingSettings.copy(
-                        searxngUrl = searxng,
-                        tavilyApiKey = tavily,
-                        anysearchApiKey = anysearch
-                    )
+            if (!isApplyingSettings) {
+                val searxng = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim()
+                val tavily = binding.settingsContent.editTavilyApiKey.text?.toString().orEmpty().trim()
+                val anysearch = binding.settingsContent.editAnysearchApiKey.text?.toString().orEmpty().trim()
+                val configuredProviders = buildList {
+                    if (searxng.isNotBlank()) add(SearchProvider.Searxng)
+                    if (tavily.isNotBlank()) add(SearchProvider.Tavily)
+                    if (anysearch.isNotBlank()) add(SearchProvider.Anysearch)
+                }
+                val selectedProvider = workingSettings.searchProvider
+                    ?: configuredProviders.singleOrNull()
+                val updated = workingSettings.copy(
+                    searchProvider = selectedProvider,
+                    searxngUrl = searxng,
+                    tavilyApiKey = tavily,
+                    anysearchApiKey = anysearch
+                )
+                if (updated != workingSettings) {
+                    workingSettings = updated
                     ApiSettingsStore.save(this, workingSettings)
+                }
+                selectedProvider?.let { provider ->
+                    val buttonId = searchProviderButtonId(provider)
+                    if (binding.settingsContent.radioSearchProvider.checkedRadioButtonId != buttonId) {
+                        binding.settingsContent.radioSearchProvider.check(buttonId)
+                    }
                 }
             }
         }
         binding.settingsContent.editSearxngUrl.doAfterTextChanged { onSearchChanged() }
         binding.settingsContent.editTavilyApiKey.doAfterTextChanged { onSearchChanged() }
         binding.settingsContent.editAnysearchApiKey.doAfterTextChanged { onSearchChanged() }
+        binding.settingsContent.radioSearchProvider.setOnCheckedChangeListener { _, checkedId ->
+            if (isApplyingSettings) return@setOnCheckedChangeListener
+            val provider = when (checkedId) {
+                R.id.radio_search_searxng -> SearchProvider.Searxng
+                R.id.radio_search_tavily -> SearchProvider.Tavily
+                R.id.radio_search_anysearch -> SearchProvider.Anysearch
+                else -> null
+            }
+            if (provider != workingSettings.searchProvider) {
+                workingSettings = workingSettings.copy(searchProvider = provider)
+                ApiSettingsStore.save(this, workingSettings)
+            }
+        }
+    }
+
+    private fun searchProviderButtonId(provider: SearchProvider): Int {
+        return when (provider) {
+            SearchProvider.Searxng -> R.id.radio_search_searxng
+            SearchProvider.Tavily -> R.id.radio_search_tavily
+            SearchProvider.Anysearch -> R.id.radio_search_anysearch
+        }
     }
 
     private fun showModelPicker(selected: ModelRef?, onSelected: (ModelRef) -> Unit) {
@@ -254,18 +281,29 @@ class SettingsActivity : AppCompatActivity() {
         binding.settingsContent.textProvidersEmpty.isVisible = settings.providers.isEmpty()
         refreshRoleLabels()
 
-        val percent = settings.compressionTriggerPercent.coerceIn(0, 100).toString()
-        if (binding.settingsContent.editCompressionTriggerPercent.text?.toString() != percent) {
-            binding.settingsContent.editCompressionTriggerPercent.setText(percent)
-        }
-        if (binding.settingsContent.editSearxngUrl.text?.toString() != settings.searxngUrl) {
-            binding.settingsContent.editSearxngUrl.setText(settings.searxngUrl)
-        }
-        if (binding.settingsContent.editTavilyApiKey.text?.toString() != settings.tavilyApiKey) {
-            binding.settingsContent.editTavilyApiKey.setText(settings.tavilyApiKey)
-        }
-        if (binding.settingsContent.editAnysearchApiKey.text?.toString() != settings.anysearchApiKey) {
-            binding.settingsContent.editAnysearchApiKey.setText(settings.anysearchApiKey)
+        isApplyingSettings = true
+        try {
+            val percent = settings.compressionTriggerPercent.coerceIn(0, 100).toString()
+            if (binding.settingsContent.editCompressionTriggerPercent.text?.toString() != percent) {
+                binding.settingsContent.editCompressionTriggerPercent.setText(percent)
+            }
+            if (binding.settingsContent.editSearxngUrl.text?.toString() != settings.searxngUrl) {
+                binding.settingsContent.editSearxngUrl.setText(settings.searxngUrl)
+            }
+            if (binding.settingsContent.editTavilyApiKey.text?.toString() != settings.tavilyApiKey) {
+                binding.settingsContent.editTavilyApiKey.setText(settings.tavilyApiKey)
+            }
+            if (binding.settingsContent.editAnysearchApiKey.text?.toString() != settings.anysearchApiKey) {
+                binding.settingsContent.editAnysearchApiKey.setText(settings.anysearchApiKey)
+            }
+            val selectedProvider = settings.searchProvider ?: settings.resolvedSearchProvider()
+            if (selectedProvider == null) {
+                binding.settingsContent.radioSearchProvider.clearCheck()
+            } else {
+                binding.settingsContent.radioSearchProvider.check(searchProviderButtonId(selectedProvider))
+            }
+        } finally {
+            isApplyingSettings = false
         }
     }
 

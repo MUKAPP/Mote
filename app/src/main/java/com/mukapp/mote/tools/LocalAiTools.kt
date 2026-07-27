@@ -15,6 +15,8 @@ import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.SearchProvider
+import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.optIntOrNull
 import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter
@@ -74,12 +76,6 @@ object LocalAiTools {
     private const val ShellShortTimeoutMs = 30_000L
     private const val MaxShellOutputChars = 8000
     private const val ShellConfirmationTtlMs = 10 * 60 * 1000L
-
-    private enum class SearchProvider {
-        Searxng,
-        Tavily,
-        Anysearch
-    }
 
     private data class PendingShellConfirmation(
         val id: String,
@@ -1139,19 +1135,7 @@ object LocalAiTools {
     }
 
     private fun resolveSearchProvider(settings: ApiSettings): SearchProvider? {
-        val hasSearxng = settings.searxngUrl.isNotBlank()
-        val hasTavily = settings.tavilyApiKey.isNotBlank()
-        val hasAnysearch = settings.anysearchApiKey.isNotBlank()
-        val configuredProviderCount = listOf(hasSearxng, hasTavily, hasAnysearch).count { it }
-        require(configuredProviderCount <= 1) {
-            "SearXNG 地址、Tavily API Key 和 AnySearch API Key 只能填写一个。"
-        }
-        return when {
-            hasSearxng -> SearchProvider.Searxng
-            hasTavily -> SearchProvider.Tavily
-            hasAnysearch -> SearchProvider.Anysearch
-            else -> null
-        }
+        return settings.resolvedSearchProvider()
     }
 
     private fun searchWithSearxng(settings: ApiSettings, arguments: String): String {
