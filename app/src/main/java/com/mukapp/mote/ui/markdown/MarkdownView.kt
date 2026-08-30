@@ -1,5 +1,8 @@
 package com.mukapp.mote.ui.markdown
 
+import android.animation.Animator
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -25,7 +28,10 @@ import android.widget.TextView
 import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
 import androidx.transition.ChangeBounds
+import androidx.transition.Transition
 import androidx.transition.TransitionManager
+import androidx.transition.TransitionSet
+import androidx.transition.TransitionValues
 import com.google.android.material.card.MaterialCardView
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
@@ -38,6 +44,7 @@ import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
 import io.ratex.RaTeXView
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 class MarkdownView @JvmOverloads constructor(
     context: Context,
@@ -117,6 +124,21 @@ class MarkdownView @JvmOverloads constructor(
     private val thinkingCardBgColor: Int by lazy {
         blendWithAlpha(secondaryTextColor, 0x10)
     }
+    private val toolCardBgColor: Int by lazy {
+        resolveThemeColor(
+            context,
+            com.google.android.material.R.attr.colorSurfaceContainerHigh,
+            resolveThemeColor(context, com.google.android.material.R.attr.colorSurface, Color.TRANSPARENT)
+        )
+    }
+
+    private val compactIntermediateHorizontalPadding = 0.dpInt
+    private val compactIntermediateVerticalPadding = 8.dpInt
+    private val expandedIntermediateHorizontalPadding = 12.dpInt
+    private val expandedIntermediateVerticalPadding = 12.dpInt
+    private val compactIntermediateBottomMargin = 0.dpInt
+    private val expandedIntermediateBottomMargin = 8.dpInt
+
     private val thinkingCardStrokeColor: Int by lazy {
         blendWithAlpha(secondaryTextColor, 0x24)
     }
@@ -267,10 +289,11 @@ class MarkdownView @JvmOverloads constructor(
         } else {
             resetRenderedPartState()
             removeAllViews()
-            visibleParts.forEach { part ->
+            visibleParts.forEachIndexed { index, part ->
                 addView(
                     createPartView(
                         part = part,
+                        nextPart = visibleParts.getOrNull(index + 1),
                         isStreaming = isStreaming,
                         expandedThinkingPartIds = expandedThinkingPartIds,
                         expandedToolPartIds = expandedToolPartIds
@@ -278,10 +301,39 @@ class MarkdownView @JvmOverloads constructor(
                 )
             }
         }
+        syncIntermediatePartSpacing(visibleParts, expandedThinkingPartIds, expandedToolPartIds)
 
         renderMode = RenderMode.Parts
         lastRenderedPartStates = partStates
         lastRenderedLinkDefs = emptyMap()
+    }
+
+    private fun syncIntermediatePartSpacing(
+        parts: List<AssistantPart>,
+        expandedThinkingPartIds: Set<String>,
+        expandedToolPartIds: Set<String>
+    ) {
+        parts.forEachIndexed { index, part ->
+            if (part !is AssistantThinkingPart && part !is AssistantToolPart) {
+                return@forEachIndexed
+            }
+            val expanded = when (part) {
+                is AssistantThinkingPart -> expandedThinkingPartIds.contains(part.id)
+                is AssistantToolPart -> expandedToolPartIds.contains(part.id)
+                else -> false
+            }
+            val targetBottomMargin = if (expanded) {
+                expandedIntermediateBottomMargin
+            } else {
+                intermediatePartBottomMargin(parts.getOrNull(index + 1))
+            }
+            val params = getChildAt(index).layoutParams as? ViewGroup.MarginLayoutParams
+                ?: return@forEachIndexed
+            if (params.bottomMargin != targetBottomMargin) {
+                params.bottomMargin = targetBottomMargin
+                getChildAt(index).layoutParams = params
+            }
+        }
     }
 
     fun clearMarkdown() {
@@ -431,6 +483,7 @@ class MarkdownView @JvmOverloads constructor(
 
     private fun createPartView(
         part: AssistantPart,
+        nextPart: AssistantPart?,
         isStreaming: Boolean,
         expandedThinkingPartIds: MutableSet<String>,
         expandedToolPartIds: MutableSet<String>
@@ -442,8 +495,16 @@ class MarkdownView @JvmOverloads constructor(
                 renderMarkdownPartInto(this, part, isStreaming)
             }
 
-            is AssistantThinkingPart -> createThinkingPartView(part, expandedThinkingPartIds)
-            is AssistantToolPart -> createToolPartView(part, expandedToolPartIds)
+            is AssistantThinkingPart -> createThinkingPartView(
+                part,
+                expandedThinkingPartIds,
+                nextPart
+            )
+            is AssistantToolPart -> createToolPartView(
+                part,
+                expandedToolPartIds,
+                nextPart
+            )
         }
     }
 
@@ -517,6 +578,7 @@ class MarkdownView @JvmOverloads constructor(
                 index = index,
                 view = createPartView(
                     part = parts[index],
+                    nextPart = parts.getOrNull(index + 1),
                     isStreaming = isStreaming,
                     expandedThinkingPartIds = expandedThinkingPartIds,
                     expandedToolPartIds = expandedToolPartIds
@@ -532,6 +594,7 @@ class MarkdownView @JvmOverloads constructor(
             addView(
                 createPartView(
                     part = parts[index],
+                    nextPart = parts.getOrNull(index + 1),
                     isStreaming = isStreaming,
                     expandedThinkingPartIds = expandedThinkingPartIds,
                     expandedToolPartIds = expandedToolPartIds
@@ -588,9 +651,144 @@ class MarkdownView @JvmOverloads constructor(
         partBlocksCache.clear()
     }
 
+    private fun animateCardBackground(
+        card: MaterialCardView,
+        targetColor: Int,
+        runningAnimator: ValueAnimator?
+    ): ValueAnimator? {
+        runningAnimator?.cancel()
+        val startColor = card.cardBackgroundColor?.defaultColor ?: Color.TRANSPARENT
+        if (startColor == targetColor) {
+            card.setCardBackgroundColor(targetColor)
+            return null
+        }
+        return ValueAnimator.ofObject(ArgbEvaluator(), startColor, targetColor).apply {
+            duration = 200L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                card.setCardBackgroundColor(animator.animatedValue as Int)
+            }
+            start()
+        }
+    }
+
+    private class ChangePadding : Transition() {
+        private companion object {
+            const val PaddingLeft = "mote:changePadding:left"
+            const val PaddingTop = "mote:changePadding:top"
+            const val PaddingRight = "mote:changePadding:right"
+            const val PaddingBottom = "mote:changePadding:bottom"
+        }
+
+        override fun captureStartValues(transitionValues: TransitionValues) {
+            capturePadding(transitionValues)
+        }
+
+        override fun captureEndValues(transitionValues: TransitionValues) {
+            capturePadding(transitionValues)
+        }
+
+        private fun capturePadding(transitionValues: TransitionValues) {
+            val view = transitionValues.view
+            transitionValues.values[PaddingLeft] = view.paddingLeft
+            transitionValues.values[PaddingTop] = view.paddingTop
+            transitionValues.values[PaddingRight] = view.paddingRight
+            transitionValues.values[PaddingBottom] = view.paddingBottom
+        }
+        private fun lerpInt(start: Int, end: Int, fraction: Float): Int {
+            return (start + (end - start) * fraction).roundToInt()
+        }
+
+        override fun createAnimator(
+            sceneRoot: ViewGroup,
+            startValues: TransitionValues?,
+            endValues: TransitionValues?
+        ): Animator? {
+            if (startValues == null || endValues == null) {
+                return null
+            }
+            val start = intArrayOf(
+                startValues.values[PaddingLeft] as Int,
+                startValues.values[PaddingTop] as Int,
+                startValues.values[PaddingRight] as Int,
+                startValues.values[PaddingBottom] as Int
+            )
+            val end = intArrayOf(
+                endValues.values[PaddingLeft] as Int,
+                endValues.values[PaddingTop] as Int,
+                endValues.values[PaddingRight] as Int,
+                endValues.values[PaddingBottom] as Int
+            )
+            if (start.contentEquals(end)) {
+                return null
+            }
+            return ValueAnimator.ofFloat(0f, 1f).apply {
+                addUpdateListener { animator ->
+                    val fraction = animator.animatedFraction
+                    endValues.view.setPadding(
+                        lerpInt(start[0], end[0], fraction),
+                        lerpInt(start[1], end[1], fraction),
+                        lerpInt(start[2], end[2], fraction),
+                        lerpInt(start[3], end[3], fraction)
+                    )
+                }
+            }
+        }
+    }
+
+    private fun createIntermediatePartTransition(): Transition {
+        return TransitionSet().apply {
+            addTransition(ChangeBounds())
+            addTransition(ChangePadding())
+            duration = 200L
+            interpolator = DecelerateInterpolator()
+        }
+    }
+
+
+    private fun intermediatePartBottomMargin(nextPart: AssistantPart?): Int {
+        return if (nextPart is AssistantThinkingPart || nextPart is AssistantToolPart) {
+            compactIntermediateBottomMargin
+        } else {
+            expandedIntermediateBottomMargin
+        }
+    }
+
+    private fun applyIntermediatePartLayout(
+        partView: View,
+        headerView: View,
+        expanded: Boolean,
+        collapsedBottomMargin: Int
+    ) {
+        val horizontalPadding = if (expanded) {
+            expandedIntermediateHorizontalPadding
+        } else {
+            compactIntermediateHorizontalPadding
+        }
+        val verticalPadding = if (expanded) {
+            expandedIntermediateVerticalPadding
+        } else {
+            compactIntermediateVerticalPadding
+        }
+        headerView.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
+
+        val params = partView.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        val bottomMargin = if (expanded) {
+            expandedIntermediateBottomMargin
+        } else {
+            collapsedBottomMargin
+        }
+        if (params.bottomMargin != bottomMargin) {
+            params.bottomMargin = bottomMargin
+            partView.layoutParams = params
+        }
+    }
+
+
     private fun createThinkingPartView(
         part: AssistantThinkingPart,
-        expandedThinkingPartIds: MutableSet<String>
+        expandedThinkingPartIds: MutableSet<String>,
+        nextPart: AssistantPart?
     ): View {
         if (part.text.isBlank()) {
             return View(context).apply {
@@ -598,12 +796,16 @@ class MarkdownView @JvmOverloads constructor(
             }
         }
         val expanded = expandedThinkingPartIds.contains(part.id)
+        val collapsedBottomMargin = intermediatePartBottomMargin(nextPart)
         return MaterialCardView(context).apply thinkingCard@ {
-            layoutParams = createBlockLayoutParams()
+            var backgroundAnimator: ValueAnimator? = null
+            layoutParams = createBlockLayoutParams(
+                bottomMargin = if (expanded) expandedIntermediateBottomMargin else collapsedBottomMargin
+            )
             radius = 12.dp
             strokeWidth = 0
             cardElevation = 0f
-            setCardBackgroundColor(thinkingCardBgColor)
+            setCardBackgroundColor(if (expanded) thinkingCardBgColor else Color.TRANSPARENT)
             addView(
                 LinearLayout(context).apply {
                     orientation = VERTICAL
@@ -616,7 +818,12 @@ class MarkdownView @JvmOverloads constructor(
                         selectableAttrs.recycle()
                         isClickable = true
                         isFocusable = true
-                        setPadding(12.dpInt, 12.dpInt, 12.dpInt, 12.dpInt)
+                        setPadding(
+                            if (expanded) expandedIntermediateHorizontalPadding else compactIntermediateHorizontalPadding,
+                            if (expanded) expandedIntermediateVerticalPadding else compactIntermediateVerticalPadding,
+                            if (expanded) expandedIntermediateHorizontalPadding else compactIntermediateHorizontalPadding,
+                            if (expanded) expandedIntermediateVerticalPadding else compactIntermediateVerticalPadding
+                        )
 
                         addView(TextView(context).apply {
                             layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
@@ -631,7 +838,7 @@ class MarkdownView @JvmOverloads constructor(
                                 if (expanded) R.string.action_collapse else R.string.action_expand
                             )
                             setImageResource(
-                                if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
+                                if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
                             )
                         })
                     })
@@ -661,23 +868,30 @@ class MarkdownView @JvmOverloads constructor(
                         } else {
                             expandedThinkingPartIds.remove(part.id)
                         }
-                        // 启动高度变化过渡动画
                         val animParent = this@thinkingCard.parent as? ViewGroup
                         if (animParent != null) {
                             TransitionManager.beginDelayedTransition(
                                 animParent,
-                                ChangeBounds().apply {
-                                    duration = 200
-                                    interpolator = DecelerateInterpolator()
-                                }
+                                createIntermediatePartTransition()
                             )
                         }
+                        applyIntermediatePartLayout(
+                            this@thinkingCard,
+                            headerView,
+                            nextExpanded,
+                            collapsedBottomMargin
+                        )
                         contentView.isVisible = nextExpanded
                         toggleView.contentDescription = context.getString(
                             if (nextExpanded) R.string.action_collapse else R.string.action_expand
                         )
                         toggleView.setImageResource(
-                            if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
+                            if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
+                        )
+                        backgroundAnimator = animateCardBackground(
+                            card = this@thinkingCard,
+                            targetColor = if (nextExpanded) thinkingCardBgColor else Color.TRANSPARENT,
+                            runningAnimator = backgroundAnimator
                         )
                     }
                     headerView.setOnClickListener(toggle)
@@ -688,11 +902,18 @@ class MarkdownView @JvmOverloads constructor(
 
     private fun createToolPartView(
         toolPart: AssistantToolPart,
-        expandedToolPartIds: MutableSet<String>
+        expandedToolPartIds: MutableSet<String>,
+        nextPart: AssistantPart?
     ): View {
         val binding = ItemToolResultBinding.inflate(LayoutInflater.from(context), this, false)
-        binding.root.layoutParams = createBlockLayoutParams()
         val expanded = expandedToolPartIds.contains(toolPart.id)
+        val collapsedBottomMargin = intermediatePartBottomMargin(nextPart)
+        binding.root.layoutParams = createBlockLayoutParams(
+            bottomMargin = if (expanded) expandedIntermediateBottomMargin else collapsedBottomMargin
+        )
+        var backgroundAnimator: ValueAnimator? = null
+        binding.root.setCardBackgroundColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
+        applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
 
         binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
 
@@ -722,8 +943,11 @@ class MarkdownView @JvmOverloads constructor(
             populateDetail()
         }
         binding.containerDetail.isVisible = expanded
+        binding.btnToggleDetail.contentDescription = context.getString(
+            if (expanded) R.string.action_collapse else R.string.action_expand
+        )
         binding.btnToggleDetail.setImageResource(
-            if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
+            if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
         )
 
         val toggle = View.OnClickListener {
@@ -734,18 +958,22 @@ class MarkdownView @JvmOverloads constructor(
             } else {
                 expandedToolPartIds.remove(toolPart.id)
             }
-            // 在父容器上启动过渡动画，实现平滑展开/折叠
             val parent = binding.root.parent as? ViewGroup
             if (parent != null) {
-                val transition = ChangeBounds().apply {
-                    duration = 200
-                    interpolator = DecelerateInterpolator()
-                }
-                TransitionManager.beginDelayedTransition(parent, transition)
+                TransitionManager.beginDelayedTransition(parent, createIntermediatePartTransition())
             }
+            applyIntermediatePartLayout(binding.root, binding.layoutHeader, nextExpanded, collapsedBottomMargin)
             binding.containerDetail.isVisible = nextExpanded
+            binding.btnToggleDetail.contentDescription = context.getString(
+                if (nextExpanded) R.string.action_collapse else R.string.action_expand
+            )
             binding.btnToggleDetail.setImageResource(
-                if (nextExpanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
+                if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
+            )
+            backgroundAnimator = animateCardBackground(
+                card = binding.root,
+                targetColor = if (nextExpanded) toolCardBgColor else Color.TRANSPARENT,
+                runningAnimator = backgroundAnimator
             )
         }
         binding.layoutHeader.setOnClickListener(toggle)
