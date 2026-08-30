@@ -27,6 +27,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
+import androidx.recyclerview.widget.RecyclerView
 import androidx.transition.ChangeBounds
 import androidx.transition.Transition
 import androidx.transition.TransitionManager
@@ -736,6 +737,15 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
+    private fun beginIntermediatePartTransition(partView: View) {
+        var ancestor = partView.parent
+        while (ancestor is ViewGroup && ancestor !is RecyclerView) {
+            ancestor = ancestor.parent
+        }
+        val sceneRoot = (ancestor as? RecyclerView) ?: (partView.parent as? ViewGroup) ?: return
+        TransitionManager.beginDelayedTransition(sceneRoot, createIntermediatePartTransition())
+    }
+
     private fun createIntermediatePartTransition(): Transition {
         return TransitionSet().apply {
             addTransition(ChangeBounds())
@@ -868,13 +878,7 @@ class MarkdownView @JvmOverloads constructor(
                         } else {
                             expandedThinkingPartIds.remove(part.id)
                         }
-                        val animParent = this@thinkingCard.parent as? ViewGroup
-                        if (animParent != null) {
-                            TransitionManager.beginDelayedTransition(
-                                animParent,
-                                createIntermediatePartTransition()
-                            )
-                        }
+                        beginIntermediatePartTransition(this@thinkingCard)
                         applyIntermediatePartLayout(
                             this@thinkingCard,
                             headerView,
@@ -958,10 +962,7 @@ class MarkdownView @JvmOverloads constructor(
             } else {
                 expandedToolPartIds.remove(toolPart.id)
             }
-            val parent = binding.root.parent as? ViewGroup
-            if (parent != null) {
-                TransitionManager.beginDelayedTransition(parent, createIntermediatePartTransition())
-            }
+            beginIntermediatePartTransition(binding.root)
             applyIntermediatePartLayout(binding.root, binding.layoutHeader, nextExpanded, collapsedBottomMargin)
             binding.containerDetail.isVisible = nextExpanded
             binding.btnToggleDetail.contentDescription = context.getString(

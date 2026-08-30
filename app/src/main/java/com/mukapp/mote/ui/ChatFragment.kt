@@ -106,7 +106,7 @@ class ChatFragment : Fragment() {
     private var imeBottomInset = 0
     private var systemTopInset = 0
     private var toolbarOverlayHeight = 0
-    private val topContentGap = 16.dpInt
+    private val topContentGap = 8.dpInt
     private val fallbackToolbarHeight = 56.dpInt
     private val cardMarginBottom = 16.dpInt
     private val bottomOffset = cardMarginBottom + 8.dpInt
