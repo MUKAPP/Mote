@@ -218,6 +218,36 @@
                             android:scrollbars="vertical"
                             app:maxHeight="360dp" />
 
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="20dp"
+                            android:text="@string/provider_editor_fetched_models_title"
+                            android:textAppearance="?attr/textAppearanceTitleSmall"
+                            android:textColor="?attr/colorPrimary" />
+
+                        <TextView
+                            android:id="@+id/text_fetched_models_empty"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:text="@string/provider_editor_fetched_models_empty"
+                            android:textAppearance="?attr/textAppearanceBodySmall"
+                            android:textColor="?attr/colorOnSurfaceVariant" />
+
+                        <com.mukapp.mote.ui.MaxHeightRecyclerView
+                            android:id="@+id/recycler_fetched_models"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:fadeScrollbars="false"
+                            android:nestedScrollingEnabled="true"
+                            android:overScrollMode="ifContentScrolls"
+                            android:scrollbarStyle="insideInset"
+                            android:scrollbars="vertical"
+                            android:visibility="gone"
+                            app:maxHeight="360dp" />
+
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/button_fetch_models"
                             style="@style/Widget.Mote.Button.Tonal"

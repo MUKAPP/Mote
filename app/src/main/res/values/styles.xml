@@ -37,7 +37,7 @@
         <item name="android:popupBackground">@drawable/popup_message_menu_background</item>
     </style>
 
-    <!-- 思考强度选择 Chip -->
+    <!-- 推理强度选择 Chip -->
     <style name="Widget.Mote.Chip.Choice" parent="Widget.Material3.Chip.Filter">
         <item name="chipBackgroundColor">@color/mote_chip_background</item>
         <item name="android:textColor">@color/mote_chip_text</item>

@@ -197,7 +197,7 @@
                             android:layout_height="wrap_content"
                             android:textAppearance="?attr/textAppearanceBodyLarge"
                             android:textColor="?attr/colorOnSurface"
-                            tools:text="gpt-4o"
+                            tools:text="OpenAI · gpt-4o · high"
                             xmlns:tools="http://schemas.android.com/tools" />
                     </LinearLayout>
 
@@ -251,7 +251,7 @@
                             android:layout_height="wrap_content"
                             android:textAppearance="?attr/textAppearanceBodyLarge"
                             android:textColor="?attr/colorOnSurface"
-                            tools:text="未选择"
+                            tools:text="OpenAI · gpt-4o-mini · medium"
                             xmlns:tools="http://schemas.android.com/tools" />
                     </LinearLayout>
 
@@ -314,7 +314,7 @@
                             android:layout_height="wrap_content"
                             android:textAppearance="?attr/textAppearanceBodyLarge"
                             android:textColor="?attr/colorOnSurface"
-                            tools:text="未选择"
+                            tools:text="OpenAI · gpt-4o · low"
                             xmlns:tools="http://schemas.android.com/tools" />
                     </LinearLayout>
 

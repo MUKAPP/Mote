@@ -6,6 +6,8 @@ import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ProviderType
+import com.mukapp.mote.data.model.resolve
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.SearchProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -16,7 +18,7 @@ import org.junit.Test
 class ApiSettingsStoreTest {
 
     @Test
-    fun saveAndLoadRoundTripsProviders() {
+    fun saveAndLoadRoundTripsProvidersAndRoleEfforts() {
         val preferences = InMemorySharedPreferences()
         val provider = ModelProvider(
             id = "provider-1",
@@ -25,15 +27,23 @@ class ApiSettingsStoreTest {
             apiKey = "sk-test",
             type = ProviderType.DeepSeek,
             models = listOf(
-                ModelInfo(id = "chat-model", contextLength = 128_000, reasoningEffort = "max"),
-                ModelInfo(id = "title-model", displayName = "标题", reasoningEffort = "high")
+                ModelInfo(
+                    id = "chat-model",
+                    contextLength = 128_000,
+                    reasoningEfforts = linkedMapOf("high" to "deep-high", "max" to "ultra")
+                ),
+                ModelInfo(
+                    id = "title-model",
+                    displayName = "标题",
+                    reasoningEfforts = mapOf("minimal" to "off", "high" to "title-high")
+                )
             )
         )
         val settings = ApiSettings(
             providers = listOf(provider),
-            chatModel = ModelRef("provider-1", "chat-model"),
-            titleModel = ModelRef("provider-1", "title-model"),
-            compressionModel = ModelRef("provider-1", "chat-model"),
+            chatModel = ModelRef("provider-1", "chat-model", "max"),
+            titleModel = ModelRef("provider-1", "title-model", "minimal"),
+            compressionModel = ModelRef("provider-1", "chat-model", "high"),
             compressionTriggerPercent = 70,
             searchProvider = SearchProvider.Anysearch,
             searxngUrl = "https://search.example.com",
@@ -67,23 +77,95 @@ class ApiSettingsStoreTest {
         val provider = migrated.providers.first()
         assertEquals("https://api.example.com/v1", provider.baseUrl)
         assertEquals("sk-legacy", provider.apiKey)
-        // 旧版迁移没有类型信息，应回退到 Generic。
         assertEquals(ProviderType.Generic, provider.type)
-        // gpt-4o 与 gpt-4o-mini 两个模型（compression 复用 gpt-4o）
         assertEquals(2, provider.models.size)
         val chat = provider.models.first { it.id == "gpt-4o" }
         assertEquals(100_000, chat.contextLength)
-        assertEquals("medium", chat.reasoningEffort)
+        assertEquals(mapOf("medium" to "medium"), chat.reasoningEfforts)
+        val title = provider.models.first { it.id == "gpt-4o-mini" }
+        assertEquals(mapOf("high" to "high"), title.reasoningEfforts)
         assertNotNull(migrated.chatModel)
         assertEquals("gpt-4o", migrated.chatModel?.modelId)
         assertEquals("gpt-4o-mini", migrated.titleModel?.modelId)
-        // 80000 / 100000 = 80%
+        assertNull(migrated.chatModel?.reasoningEffort)
         assertEquals(80, migrated.compressionTriggerPercent)
         assertEquals("https://search.example.com", migrated.searxngUrl)
         assertEquals(SearchProvider.Searxng, migrated.searchProvider)
-
-        // 迁移后应已写回新版 JSON，再次加载结果一致。
         assertEquals(migrated, ApiSettingsStore.load(preferences))
+    }
+
+    @Test
+    fun loadsLegacyModelFieldIntoMappedTier() {
+        val preferences = InMemorySharedPreferences()
+        preferences.edit()
+            .putString(
+                "settings_json",
+                """{"providers":[{"id":"p","type":"generic","models":[{"id":"m","reasoningEffort":"max"}]}],"chatModel":{"providerId":"p","modelId":"m","reasoningEffort":"max"}}"""
+            )
+            .commit()
+
+        val loaded = ApiSettingsStore.load(preferences)
+
+        assertEquals(mapOf("max" to "max"), loaded.providers.first().models.first().reasoningEfforts)
+        assertEquals(ModelRef("p", "m", "max"), loaded.chatModel)
+    }
+
+    @Test
+    fun normalizesEmptyMappingsAndInvalidRoleEfforts() {
+        val preferences = InMemorySharedPreferences()
+        preferences.edit()
+            .putString(
+                "settings_json",
+                """{"providers":[{"id":"p","baseUrl":"https://api.example.com/v1","type":"generic","models":[{"id":"m","reasoningEfforts":{}}]}],"chatModel":{"providerId":"p","modelId":"m","reasoningEffort":"unknown"}}"""
+            )
+            .commit()
+
+        val loaded = ApiSettingsStore.load(preferences)
+
+        assertEquals(
+            ReasoningEffortOptions.defaultMappingFor(ProviderType.Generic).keys,
+            loaded.providers.first().models.first().reasoningEfforts.keys
+        )
+        assertNull(loaded.chatModel?.reasoningEffort)
+        assertNotNull(loaded.resolve(ModelRef("p", "m", "unknown")))
+    }
+
+    @Test
+    fun clearsRoleEffortWhenItIsDisabledByModelMapping() {
+        val preferences = InMemorySharedPreferences()
+        preferences.edit()
+            .putString(
+                "settings_json",
+                """{"providers":[{"id":"p","baseUrl":"https://api.example.com/v1","type":"generic","models":[{"id":"m","reasoningEfforts":{"high":"server-high"}}]}],"chatModel":{"providerId":"p","modelId":"m","reasoningEffort":"low"}}"""
+            )
+            .commit()
+
+        val loaded = ApiSettingsStore.load(preferences)
+
+        assertNull(loaded.chatModel?.reasoningEffort)
+        assertEquals("high", loaded.resolve(loaded.chatModel)?.reasoningEffortKey)
+        assertEquals("server-high", loaded.resolve(loaded.chatModel)?.reasoningEffortValue)
+    }
+
+    @Test
+    fun resolveUsesRoleSelectedMappingValue() {
+        val settings = ApiSettings(
+            providers = listOf(
+                ModelProvider(
+                    id = "provider",
+                    baseUrl = "https://api.example.com/v1",
+                    models = listOf(
+                        ModelInfo(id = "model", reasoningEfforts = mapOf("max" to "ultra"))
+                    )
+                )
+            ),
+            chatModel = ModelRef("provider", "model", "max")
+        )
+
+        val resolved = settings.resolve(settings.chatModel)
+
+        assertEquals("max", resolved?.reasoningEffortKey)
+        assertEquals("ultra", resolved?.reasoningEffortValue)
     }
 
     @Test
@@ -104,14 +186,16 @@ class ApiSettingsStoreTest {
     }
 
     @Test
-    fun loadNormalizesReasoningEffortForProviderType() {
+    fun loadKeepsConfiguredReasoningMapping() {
         val preferences = InMemorySharedPreferences()
         val settings = ApiSettings(
             providers = listOf(
                 ModelProvider(
                     id = "provider-qwen",
                     type = ProviderType.Qwen,
-                    models = listOf(ModelInfo(id = "qwen", reasoningEffort = "high"))
+                    models = listOf(
+                        ModelInfo(id = "qwen", reasoningEfforts = mapOf("high" to "ignored"))
+                    )
                 )
             )
         )
@@ -119,7 +203,7 @@ class ApiSettingsStoreTest {
         ApiSettingsStore.save(preferences, settings)
 
         val loaded = ApiSettingsStore.load(preferences)
-        assertEquals("on", loaded.providers.first().models.first().reasoningEffort)
+        assertEquals(mapOf("high" to "ignored"), loaded.providers.first().models.first().reasoningEfforts)
     }
 
     @Test

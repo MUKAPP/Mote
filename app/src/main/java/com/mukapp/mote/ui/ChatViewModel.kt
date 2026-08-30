@@ -26,6 +26,7 @@ import com.mukapp.mote.data.model.ResolvedModel
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.resolvedChatModel
+import com.mukapp.mote.data.model.resolve
 import com.mukapp.mote.data.model.resolvedCompressionModel
 import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.data.model.resolvedTitleModel
@@ -124,7 +125,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _userNotice = MutableLiveData<String?>()
     val userNotice: LiveData<String?> = _userNotice
 
-    /** 本次会话临时覆盖的思考强度档位 key；为 null 时用模型的持久化档位。切换模型/对话即重置。 */
+    /** 本次会话临时覆盖的推理强度档位 key；为 null 时用模型引用的持久化档位。切换模型/对话即重置。 */
     private val _temporaryReasoningEffort = MutableLiveData<String?>(null)
     val temporaryReasoningEffort: LiveData<String?> = _temporaryReasoningEffort
 
@@ -234,13 +235,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /** 底部选择框临时修改思考强度（不写入持久化设置）。 */
+    /** 底部选择框临时修改推理强度（不写入持久化设置）。 */
     fun setTemporaryReasoningEffort(effortKey: String?) {
         if (_temporaryReasoningEffort.value == effortKey) {
             return
         }
         _temporaryReasoningEffort.value = effortKey
-        MoteLog.i(logComponent, MoteLog.event("临时调整思考强度", "effort" to (effortKey ?: "默认")))
+        MoteLog.i(logComponent, MoteLog.event("临时调整推理强度", "effort" to (effortKey ?: "默认")))
     }
 
     private fun clearTemporaryReasoningEffort() {
@@ -465,7 +466,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val settings = _savedSettings.value ?: ApiSettingsStore.load(appContext)
         val chatModel = settings.resolvedChatModel()?.let { base ->
-            _temporaryReasoningEffort.value?.let { base.copy(reasoningEffort = it) } ?: base
+            _temporaryReasoningEffort.value?.let { effortKey ->
+                settings.resolve(settings.chatModel?.copy(reasoningEffort = effortKey)) ?: base
+            } ?: base
         }
         if (chatModel == null) {
             MoteLog.w(logComponent, "发送被拒绝：未配置可用的对话模型。")

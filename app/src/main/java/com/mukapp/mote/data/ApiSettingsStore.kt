@@ -114,17 +114,23 @@ object ApiSettingsStore {
             put("apiKey", provider.apiKey)
             put("type", provider.type.storageKey)
             put("models", JSONArray().apply {
-                provider.models.forEach { model -> put(serializeModel(model)) }
+                provider.models.forEach { model -> put(serializeModel(model, provider.type)) }
             })
         }
     }
 
-    private fun serializeModel(model: ModelInfo): JSONObject {
+    private fun serializeModel(model: ModelInfo, providerType: ProviderType): JSONObject {
         return JSONObject().apply {
             put("id", model.id)
             put("displayName", model.displayName)
             put("contextLength", model.contextLength)
-            put("reasoningEffort", model.reasoningEffort)
+            put(
+                "reasoningEfforts",
+                JSONObject().apply {
+                    ReasoningEffortOptions.normalizeMapping(providerType, model.reasoningEfforts)
+                        .forEach { (key, value) -> put(key, value) }
+                }
+            )
         }
     }
 
@@ -132,6 +138,9 @@ object ApiSettingsStore {
         return JSONObject().apply {
             put("providerId", ref.providerId)
             put("modelId", ref.modelId)
+            ref.reasoningEffort?.trim()?.takeIf { it.isNotBlank() }?.let {
+                put("reasoningEffort", it)
+            }
         }
     }
 
@@ -146,9 +155,12 @@ object ApiSettingsStore {
         }.orEmpty()
         return ApiSettings(
             providers = providers,
-            chatModel = deserializeRef(root.optJSONObject("chatModel")),
-            titleModel = deserializeRef(root.optJSONObject("titleModel")),
-            compressionModel = deserializeRef(root.optJSONObject("compressionModel")),
+            chatModel = normalizeRef(providers, deserializeRef(root.optJSONObject("chatModel"))),
+            titleModel = normalizeRef(providers, deserializeRef(root.optJSONObject("titleModel"))),
+            compressionModel = normalizeRef(
+                providers,
+                deserializeRef(root.optJSONObject("compressionModel"))
+            ),
             compressionTriggerPercent = root
                 .optInt("compressionTriggerPercent", ApiSettings.DefaultCompressionTriggerPercent)
                 .coerceIn(0, 100),
@@ -172,15 +184,30 @@ object ApiSettingsStore {
                     val item = array.optJSONObject(index) ?: continue
                     val id = item.optString("id")
                     if (id.isBlank()) continue
+                    val reasoningEfforts = if (item.has("reasoningEfforts")) {
+                        val effortsJson = item.optJSONObject("reasoningEfforts")
+                        val efforts = linkedMapOf<String, String>()
+                        if (effortsJson != null) {
+                            val keys = effortsJson.keys()
+                            while (keys.hasNext()) {
+                                val key = keys.next()
+                                val value = effortsJson.optString(key)
+                                efforts[key] = value
+                            }
+                        }
+                        ReasoningEffortOptions.normalizeMapping(providerType, efforts)
+                    } else {
+                        ReasoningEffortOptions.mappingFromLegacyKey(
+                            providerType,
+                            item.optString("reasoningEffort")
+                        )
+                    }
                     add(
                         ModelInfo(
                             id = id,
                             displayName = item.optString("displayName"),
                             contextLength = item.optInt("contextLength", 0).coerceAtLeast(0),
-                            reasoningEffort = ReasoningEffortOptions.normalizeKey(
-                                providerType,
-                                item.optString("reasoningEffort")
-                            )
+                            reasoningEfforts = reasoningEfforts
                         )
                     )
                 }
@@ -201,7 +228,30 @@ object ApiSettingsStore {
         val providerId = json.optString("providerId")
         val modelId = json.optString("modelId")
         if (providerId.isBlank() || modelId.isBlank()) return null
-        return ModelRef(providerId = providerId, modelId = modelId)
+        return ModelRef(
+            providerId = providerId,
+            modelId = modelId,
+            reasoningEffort = json.optString("reasoningEffort")
+                .trim()
+                .takeIf { it.isNotBlank() }
+        )
+    }
+
+    private fun normalizeRef(providers: List<ModelProvider>, ref: ModelRef?): ModelRef? {
+        ref ?: return null
+        val provider = providers.firstOrNull { it.id == ref.providerId } ?: return null
+        val model = provider.models.firstOrNull { it.id == ref.modelId } ?: return null
+        val reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
+            provider.type,
+            model.reasoningEfforts
+        )
+        val rawKey = ref.reasoningEffort?.trim()?.lowercase()
+        val normalizedKey = rawKey?.let {
+            ReasoningEffortOptions.normalizeKey(provider.type, it, reasoningEfforts)
+        }
+        return ref.copy(reasoningEffort = rawKey?.takeIf {
+            normalizedKey == it && it in reasoningEfforts
+        })
     }
 
     // ==================== 旧版迁移 ====================
@@ -227,19 +277,33 @@ object ApiSettingsStore {
         }
 
         val providerId = UUID.randomUUID().toString()
+        val chatReasoningEfforts = ReasoningEffortOptions.mappingFromLegacyKey(
+            ProviderType.Generic,
+            reasoningEffort
+        )
+        val defaultReasoningEfforts = ReasoningEffortOptions.mappingFromLegacyKey(
+            ProviderType.Generic,
+            ReasoningEffortOptions.defaultKeyFor(ProviderType.Generic)
+        )
         val models = linkedMapOf<String, ModelInfo>()
         if (chatModelId.isNotBlank()) {
             models[chatModelId] = ModelInfo(
                 id = chatModelId,
                 contextLength = contextLength,
-                reasoningEffort = reasoningEffort
+                reasoningEfforts = chatReasoningEfforts
             )
         }
         if (titleModelId.isNotBlank() && !models.containsKey(titleModelId)) {
-            models[titleModelId] = ModelInfo(id = titleModelId)
+            models[titleModelId] = ModelInfo(
+                id = titleModelId,
+                reasoningEfforts = defaultReasoningEfforts
+            )
         }
         if (compressionModelId.isNotBlank() && !models.containsKey(compressionModelId)) {
-            models[compressionModelId] = ModelInfo(id = compressionModelId)
+            models[compressionModelId] = ModelInfo(
+                id = compressionModelId,
+                reasoningEfforts = defaultReasoningEfforts
+            )
         }
 
         val provider = ModelProvider(

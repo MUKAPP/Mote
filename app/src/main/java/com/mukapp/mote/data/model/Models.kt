@@ -82,7 +82,7 @@ data class ModelInfo(
     val id: String,
     val displayName: String = "",
     val contextLength: Int = 0,
-    val reasoningEffort: String = "high"
+    val reasoningEfforts: Map<String, String> = emptyMap()
 ) {
     val label: String get() = displayName.ifBlank { id }
 }
@@ -99,10 +99,11 @@ data class ModelProvider(
     val label: String get() = name.ifBlank { baseUrl }
 }
 
-/** 指向某提供商下某模型的引用。 */
+/** 指向某提供商下某模型的引用；档位为空时使用模型第一个启用档位。 */
 data class ModelRef(
     val providerId: String,
-    val modelId: String
+    val modelId: String,
+    val reasoningEffort: String? = null
 )
 
 /** 网络层发起一次请求所需的完整解析结果。 */
@@ -110,7 +111,8 @@ data class ResolvedModel(
     val baseUrl: String,
     val apiKey: String,
     val model: String,
-    val reasoningEffort: String,
+    val reasoningEffortKey: String,
+    val reasoningEffortValue: String,
     val contextLength: Int,
     val providerType: ProviderType = ProviderType.Generic
 )
@@ -171,11 +173,23 @@ fun ApiSettings.resolve(ref: ModelRef?): ResolvedModel? {
     val provider = findProvider(ref.providerId) ?: return null
     if (provider.baseUrl.isBlank()) return null
     val model = provider.models.firstOrNull { it.id == ref.modelId } ?: return null
+    val reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
+        provider.type,
+        model.reasoningEfforts
+    )
+    val reasoningEffortKey = ReasoningEffortOptions.normalizeKey(
+        provider.type,
+        ref.reasoningEffort,
+        reasoningEfforts
+    )
+    val reasoningEffortValue = reasoningEfforts[reasoningEffortKey]
+        ?: ReasoningEffortOptions.defaultMappingFor(provider.type).getValue(reasoningEffortKey)
     return ResolvedModel(
         baseUrl = provider.baseUrl,
         apiKey = provider.apiKey,
         model = model.id,
-        reasoningEffort = model.reasoningEffort,
+        reasoningEffortKey = reasoningEffortKey,
+        reasoningEffortValue = reasoningEffortValue,
         contextLength = model.contextLength,
         providerType = provider.type
     )

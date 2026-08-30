@@ -69,12 +69,27 @@
             android:textAppearance="?attr/textAppearanceLabelMedium"
             android:textColor="?attr/colorOnSurfaceVariant" />
 
-        <com.google.android.material.chip.ChipGroup
-            android:id="@+id/toggle_model_reasoning"
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/model_dialog_reasoning_hint"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <LinearLayout
+            android:id="@+id/layout_model_reasoning_fields"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            app:selectionRequired="true"
-            app:singleSelection="true" />
-    </LinearLayout>
+            android:orientation="vertical" />
+
+        <TextView
+            android:id="@+id/text_model_reasoning_error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="?attr/colorError"
+            android:visibility="gone" />
+</LinearLayout>
 </ScrollView>

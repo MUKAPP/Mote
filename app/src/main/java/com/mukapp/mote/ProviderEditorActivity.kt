@@ -4,7 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.View
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -16,10 +17,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.chip.Chip
-import com.google.android.material.chip.ChipDrawable
+import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
+import com.google.android.material.textfield.TextInputEditText
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
@@ -36,13 +37,20 @@ import kotlinx.coroutines.launch
 class ProviderEditorActivity : AppCompatActivity() {
     private lateinit var binding: ActivityProviderEditorBinding
     private lateinit var modelAdapter: ProviderModelAdapter
+    private lateinit var fetchedModelAdapter: ProviderModelAdapter
 
     private var providerId: String = ""
     private val models = mutableListOf<ModelInfo>()
+    private val fetchedModels = mutableListOf<ModelInfo>()
     private var isExistingProvider = false
     private var isFetching = false
     private var selectedProviderType: ProviderType = ProviderType.Generic
 
+    private data class ReasoningEditorRow(
+        val key: String,
+        val enabled: MaterialCheckBox,
+        val value: TextInputEditText
+    )
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -103,10 +111,18 @@ class ProviderEditorActivity : AppCompatActivity() {
             onEdit = { index, model -> showModelDialog(index, model) },
             onDelete = { index, model -> confirmDeleteModel(index, model) }
         )
+        fetchedModelAdapter = ProviderModelAdapter(
+            providerType = { selectedProviderType },
+            onSelect = { _, model -> showFetchedModelDialog(model) }
+        )
         binding.recyclerProviderModels.adapter = modelAdapter
         binding.recyclerProviderModels.layoutManager =
             androidx.recyclerview.widget.LinearLayoutManager(this)
         binding.recyclerProviderModels.itemAnimator = null
+        binding.recyclerFetchedModels.adapter = fetchedModelAdapter
+        binding.recyclerFetchedModels.layoutManager =
+            androidx.recyclerview.widget.LinearLayoutManager(this)
+        binding.recyclerFetchedModels.itemAnimator = null
         refreshModels()
     }
 
@@ -153,6 +169,9 @@ class ProviderEditorActivity : AppCompatActivity() {
     private fun refreshModels() {
         modelAdapter.submit(models.toList())
         binding.textModelsEmpty.isVisible = models.isEmpty()
+        fetchedModelAdapter.submit(fetchedModels.toList())
+        binding.textFetchedModelsEmpty.isVisible = fetchedModels.isEmpty()
+        binding.recyclerFetchedModels.isVisible = fetchedModels.isNotEmpty()
     }
 
     private fun fetchModels() {
@@ -164,6 +183,8 @@ class ProviderEditorActivity : AppCompatActivity() {
         }
         binding.inputProviderBaseUrl.error = null
         val apiKey = binding.editProviderApiKey.text?.toString().orEmpty().trim()
+        fetchedModels.clear()
+        refreshModels()
         isFetching = true
         binding.buttonFetchModels.isEnabled = false
         binding.buttonFetchModels.text = getString(R.string.provider_editor_fetching)
@@ -173,22 +194,18 @@ class ProviderEditorActivity : AppCompatActivity() {
             binding.buttonFetchModels.isEnabled = true
             binding.buttonFetchModels.text = getString(R.string.provider_editor_fetch_models)
             result.onSuccess { fetched ->
-                val existingIds = models.map { it.id }.toHashSet()
-                var added = 0
-                fetched.forEach { model ->
-                    if (existingIds.add(model.id)) {
-                        models.add(
-                            model.copy(
-                                reasoningEffort = ReasoningEffortOptions.defaultKeyFor(selectedProviderType)
-                            )
+                fetchedModels.clear()
+                fetchedModels.addAll(
+                    fetched.map { model ->
+                        model.copy(
+                            reasoningEfforts = ReasoningEffortOptions.defaultMappingFor(selectedProviderType)
                         )
-                        added += 1
                     }
-                }
+                )
                 refreshModels()
                 Snackbar.make(
                     binding.root,
-                    getString(R.string.provider_editor_fetch_success, added),
+                    getString(R.string.provider_editor_fetch_success, fetchedModels.size),
                     Snackbar.LENGTH_SHORT
                 ).show()
             }.onFailure { error ->
@@ -202,6 +219,59 @@ class ProviderEditorActivity : AppCompatActivity() {
         }
     }
 
+    private fun showFetchedModelDialog(remoteModel: ModelInfo) {
+        val existing = models.firstOrNull { it.id == remoteModel.id }
+        val initial = if (existing == null) {
+            remoteModel.copy(
+                reasoningEfforts = ReasoningEffortOptions.defaultMappingFor(selectedProviderType)
+            )
+        } else {
+            remoteModel.copy(
+                displayName = existing.displayName,
+                contextLength = remoteModel.contextLength.takeIf { it > 0 } ?: existing.contextLength,
+                reasoningEfforts = existing.reasoningEfforts
+            )
+        }
+        showModelDialog(index = null, existing = initial)
+    }
+
+    private fun buildReasoningEditorRows(
+        dialogBinding: DialogEditModelBinding,
+        existing: ModelInfo?
+    ): List<ReasoningEditorRow> {
+        val initialMapping = ReasoningEffortOptions.normalizeMapping(
+            selectedProviderType,
+            existing?.reasoningEfforts
+        )
+        val container = dialogBinding.layoutModelReasoningFields
+        container.removeAllViews()
+        return ReasoningEffortOptions.optionsFor(selectedProviderType).mapIndexed { index, option ->
+            val row = layoutInflater.inflate(
+                R.layout.item_reasoning_effort_editor,
+                container,
+                false
+            )
+            if (index > 0) {
+                (row.layoutParams as LinearLayout.LayoutParams).topMargin = 4.dpInt
+            }
+            val enabled = row.findViewById<MaterialCheckBox>(R.id.checkbox_reasoning_enabled).apply {
+                contentDescription = option.key
+                isChecked = initialMapping.containsKey(option.key)
+            }
+            row.findViewById<TextView>(R.id.text_reasoning_key).text = option.key
+            val value = row.findViewById<TextInputEditText>(R.id.edit_reasoning_value).apply {
+                setText(
+                    initialMapping[option.key]
+                        ?: ReasoningEffortOptions.defaultValueFor(selectedProviderType, option.key)
+                )
+                isEnabled = enabled.isChecked
+            }
+            enabled.setOnCheckedChangeListener { _, checked -> value.isEnabled = checked }
+            container.addView(row)
+            ReasoningEditorRow(option.key, enabled, value)
+        }
+    }
+
     private fun showModelDialog(index: Int?, existing: ModelInfo?) {
         val dialogBinding = DialogEditModelBinding.inflate(layoutInflater)
         dialogBinding.editModelId.setText(existing?.id.orEmpty())
@@ -209,32 +279,8 @@ class ProviderEditorActivity : AppCompatActivity() {
         dialogBinding.editModelContextLength.setText(
             existing?.contextLength?.takeIf { it > 0 }?.toString().orEmpty()
         )
-
-        // 思考强度档位随提供商类型变化，运行时按当前类型动态构建。
-        val effortChipGroup = dialogBinding.toggleModelReasoning
-        val initialKey = ReasoningEffortOptions.normalizeKey(selectedProviderType, existing?.reasoningEffort)
-        effortChipGroup.removeAllViews()
-        var initialChipId = View.NO_ID
-        ReasoningEffortOptions.optionsFor(selectedProviderType).forEach { option ->
-            val chip = Chip(this, null, com.google.android.material.R.attr.chipStyle).apply {
-                setChipDrawable(
-                    ChipDrawable.createFromAttributes(
-                        this@ProviderEditorActivity, null, 0, R.style.Widget_Mote_Chip_Choice
-                    )
-                )
-                id = View.generateViewId()
-                text = getString(option.labelRes)
-                tag = option.key
-                isCheckable = true
-            }
-            effortChipGroup.addView(chip)
-            if (option.key == initialKey) {
-                initialChipId = chip.id
-            }
-        }
-        if (initialChipId != View.NO_ID) {
-            effortChipGroup.check(initialChipId)
-        }
+        val reasoningRows = buildReasoningEditorRows(dialogBinding, existing)
+        dialogBinding.textModelReasoningError.isVisible = false
 
         val titleRes = if (index == null) R.string.model_dialog_add_title else R.string.model_dialog_edit_title
         val dialog = MaterialAlertDialogBuilder(this)
@@ -250,27 +296,53 @@ class ProviderEditorActivity : AppCompatActivity() {
                     dialogBinding.inputModelId.error = getString(R.string.model_dialog_id_required)
                     return@setOnClickListener
                 }
-                val reasoning = effortChipGroup.checkedChipId
-                    .takeIf { it != View.NO_ID }
-                    ?.let { effortChipGroup.findViewById<Chip>(it)?.tag as? String }
-                    ?: ReasoningEffortOptions.defaultKeyFor(selectedProviderType)
+                dialogBinding.inputModelId.error = null
+
+                val reasoningEfforts = linkedMapOf<String, String>()
+                var hasInvalidValue = false
+                reasoningRows.forEach { row ->
+                    if (row.enabled.isChecked) {
+                        val value = row.value.text?.toString().orEmpty().trim()
+                        if (value.isBlank()) {
+                            hasInvalidValue = true
+                        } else {
+                            reasoningEfforts[row.key] = value
+                        }
+                    }
+                }
+                if (reasoningEfforts.isEmpty() || hasInvalidValue) {
+                    dialogBinding.textModelReasoningError.text = getString(
+                        if (reasoningEfforts.isEmpty()) {
+                            R.string.model_dialog_reasoning_required
+                        } else {
+                            R.string.model_dialog_reasoning_value_required
+                        }
+                    )
+                    dialogBinding.textModelReasoningError.isVisible = true
+                    return@setOnClickListener
+                }
+                dialogBinding.textModelReasoningError.isVisible = false
+
                 val contextLength = dialogBinding.editModelContextLength.text?.toString()
                     ?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
                 val newModel = ModelInfo(
                     id = id,
                     displayName = dialogBinding.editModelDisplayName.text?.toString().orEmpty().trim(),
                     contextLength = contextLength,
-                    reasoningEffort = reasoning
+                    reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
+                        selectedProviderType,
+                        reasoningEfforts
+                    )
                 )
-                if (index == null) {
+                if (index != null && index in models.indices) {
+                    models[index] = newModel
+                } else {
                     val duplicateIndex = models.indexOfFirst { it.id == id }
                     if (duplicateIndex >= 0) {
                         models[duplicateIndex] = newModel
                     } else {
                         models.add(newModel)
                     }
-                } else {
-                    models[index] = newModel
                 }
                 refreshModels()
                 dialog.dismiss()

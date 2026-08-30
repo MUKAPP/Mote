@@ -73,7 +73,7 @@ object ChatApiClient {
                 )
             )
 
-            val requestBody = buildConversationTitleRequestBody(model.model, userMessage).toString()
+            val requestBody = buildConversationTitleRequestBody(model, userMessage).toString()
 
             val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = false)
             val response = executeRequest(request)
@@ -119,11 +119,15 @@ object ChatApiClient {
         return parseAssistantReply(responseText, appendFinishReasonNotice = false).content
     }
 
-    internal fun buildConversationTitleRequestBody(modelName: String, userMessage: String): JSONObject {
+    internal fun buildConversationTitleRequestBody(
+        model: ResolvedModel,
+        userMessage: String
+    ): JSONObject {
         return JSONObject().apply {
-            put("model", modelName)
+            put("model", model.model)
             put("stream", false)
             put("temperature", 0.2)
+            putReasoningFields(model)
             put(
                 "messages",
                 JSONArray().apply {
@@ -151,6 +155,38 @@ object ChatApiClient {
         }
     }
 
+    internal fun buildCompressionRequestBody(
+        model: ResolvedModel,
+        messages: List<ChatMessage>,
+        maxSummaryTokens: Int
+    ): JSONObject {
+        return JSONObject().apply {
+            put("model", model.model)
+            put("stream", false)
+            put("temperature", 0.1)
+            putReasoningFields(model, skipKeys = setOf("max_tokens"))
+            put("max_tokens", maxSummaryTokens.coerceIn(256, 8192))
+            put(
+                "messages",
+                JSONArray().apply {
+                    put(
+                        JSONObject().apply {
+                            put("role", ChatRole.System.apiValue)
+                            put("content", buildCompressionSystemPrompt())
+                        }
+                    )
+                    put(
+                        JSONObject().apply {
+                            put("role", ChatRole.User.apiValue)
+                            put("content", buildCompressionTranscript(messages))
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+
     suspend fun compressConversation(
         model: ResolvedModel,
         messages: List<ChatMessage>,
@@ -174,29 +210,11 @@ object ChatApiClient {
                 )
             )
 
-            val requestBody = JSONObject().apply {
-                put("model", compressionModel)
-                put("stream", false)
-                put("temperature", 0.1)
-                put("max_tokens", maxSummaryTokens.coerceIn(256, 8192))
-                put(
-                    "messages",
-                    JSONArray().apply {
-                        put(
-                            JSONObject().apply {
-                                put("role", ChatRole.System.apiValue)
-                                put("content", buildCompressionSystemPrompt())
-                            }
-                        )
-                        put(
-                            JSONObject().apply {
-                                put("role", ChatRole.User.apiValue)
-                                put("content", buildCompressionTranscript(messages))
-                            }
-                        )
-                    }
-                )
-            }.toString()
+            val requestBody = buildCompressionRequestBody(
+                model = model,
+                messages = messages,
+                maxSummaryTokens = maxSummaryTokens
+            ).toString()
 
             val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = false)
             val response = executeRequest(request)
@@ -283,7 +301,11 @@ object ChatApiClient {
         model: ResolvedModel,
         skipKeys: Set<String> = emptySet()
     ) {
-        val reasoningFields = ReasoningEffortOptions.encode(model.providerType, model.reasoningEffort)
+        val reasoningFields = ReasoningEffortOptions.encode(
+            type = model.providerType,
+            key = model.reasoningEffortKey,
+            value = model.reasoningEffortValue
+        )
         if ("reasoning_effort" !in skipKeys) {
             reasoningFields.reasoningEffort?.let { put("reasoning_effort", it) }
         }
@@ -315,7 +337,8 @@ object ChatApiClient {
                     "messages" to messages.size,
                     "tools" to toolDefinitions.length(),
                     "includeUsage" to includeUsage,
-                    "reasoningEffortConfigured" to model.reasoningEffort.isNotBlank(),
+                    "reasoningEffort" to model.reasoningEffortKey,
+                    "reasoningEffortValue" to model.reasoningEffortValue,
                     "providerType" to model.providerType.storageKey,
                     "modelLength" to model.model.length
                 )

@@ -18,6 +18,7 @@ import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.SearchProvider
 import com.mukapp.mote.data.model.findProvider
 import com.mukapp.mote.data.model.resolvedSearchProvider
@@ -236,11 +237,11 @@ class SettingsActivity : AppCompatActivity() {
             providers.add(provider)
         }
         var updated = workingSettings.copy(providers = providers)
-        // 引用的模型若已被删除则清空对应用途。
+        // 引用的模型或其档位若已失效则清空档位；模型删除时清空整条用途引用。
         updated = updated.copy(
-            chatModel = updated.chatModel?.takeIf { refExists(updated, it) },
-            titleModel = updated.titleModel?.takeIf { refExists(updated, it) },
-            compressionModel = updated.compressionModel?.takeIf { refExists(updated, it) }
+            chatModel = normalizeRoleRef(updated, updated.chatModel),
+            titleModel = normalizeRoleRef(updated, updated.titleModel),
+            compressionModel = normalizeRoleRef(updated, updated.compressionModel)
         )
         // 尚未选择对话模型且该提供商有模型时，默认选第一个。
         if (updated.chatModel == null) {
@@ -257,16 +258,24 @@ class SettingsActivity : AppCompatActivity() {
         val providers = workingSettings.providers.filterNot { it.id == providerId }
         var updated = workingSettings.copy(providers = providers)
         updated = updated.copy(
-            chatModel = updated.chatModel?.takeIf { refExists(updated, it) },
-            titleModel = updated.titleModel?.takeIf { refExists(updated, it) },
-            compressionModel = updated.compressionModel?.takeIf { refExists(updated, it) }
+            chatModel = normalizeRoleRef(updated, updated.chatModel),
+            titleModel = normalizeRoleRef(updated, updated.titleModel),
+            compressionModel = normalizeRoleRef(updated, updated.compressionModel)
         )
         workingSettings = updated
         persist()
     }
 
-    private fun refExists(settings: ApiSettings, ref: ModelRef): Boolean {
-        return settings.findProvider(ref.providerId)?.models?.any { it.id == ref.modelId } == true
+    private fun normalizeRoleRef(settings: ApiSettings, ref: ModelRef?): ModelRef? {
+        ref ?: return null
+        val provider = settings.findProvider(ref.providerId) ?: return null
+        val model = provider.models.firstOrNull { it.id == ref.modelId } ?: return null
+        val reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
+            provider.type,
+            model.reasoningEfforts
+        )
+        val key = ref.reasoningEffort?.trim()?.lowercase()
+        return ref.copy(reasoningEffort = key?.takeIf { it in reasoningEfforts })
     }
 
     private fun persist() {
@@ -321,7 +330,16 @@ class SettingsActivity : AppCompatActivity() {
             ?: return getString(R.string.settings_role_unset)
         val model = provider.models.firstOrNull { it.id == ref.modelId }
             ?: return getString(R.string.settings_role_unset)
-        return "${provider.label} · ${model.label}"
+        val mapping = ReasoningEffortOptions.normalizeMapping(provider.type, model.reasoningEfforts)
+        val effortKey = ref.reasoningEffort?.let {
+            ReasoningEffortOptions.normalizeKey(provider.type, it, mapping)
+        } ?: ReasoningEffortOptions.normalizeKey(provider.type, null, mapping)
+        return getString(
+            R.string.settings_role_model_with_effort,
+            provider.label,
+            model.label,
+            effortKey
+        )
     }
 
     private fun refreshPermissionState() {

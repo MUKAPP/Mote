@@ -33,7 +33,7 @@
             android:layout_height="wrap_content"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?attr/colorOnSurfaceVariant"
-            tools:text="上下文 128000 · 思考 高" />
+            tools:text="上下文 128000 · 推理 high" />
     </LinearLayout>
 
     <com.google.android.material.button.MaterialButton

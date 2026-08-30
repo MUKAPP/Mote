@@ -4,6 +4,8 @@ import com.mukapp.mote.data.model.ChatAttachment
 import com.mukapp.mote.data.model.ChatAttachmentType
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.ProviderType
+import com.mukapp.mote.data.model.ResolvedModel
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -149,22 +151,51 @@ class ChatApiClientUsageTest {
         assertFalse(title.contains("提示：模型输出因达到长度限制被截断"))
     }
 
-      @Test
-      fun buildConversationTitleRequestBodyDoesNotLimitOutputTokens() {
+    @Test
+    fun buildConversationTitleRequestBodyUsesMappedReasoningValue() {
         val requestBody = ChatApiClient.buildConversationTitleRequestBody(
-          modelName = "title-model",
-          userMessage = "帮我写一个计划"
+            model = ResolvedModel(
+                baseUrl = "https://api.example.com/v1",
+                apiKey = "key",
+                model = "title-model",
+                reasoningEffortKey = "max",
+                reasoningEffortValue = "ultra",
+                contextLength = 0,
+                providerType = ProviderType.Generic
+            ),
+            userMessage = "帮我写一个计划"
         )
 
+        assertEquals("ultra", requestBody.getString("reasoning_effort"))
         assertFalse(requestBody.has("max_tokens"))
 
         val systemPrompt = requestBody
-          .getJSONArray("messages")
-          .getJSONObject(0)
-          .getString("content")
+            .getJSONArray("messages")
+            .getJSONObject(0)
+            .getString("content")
         assertFalse(systemPrompt.contains("最多12个字"))
         assertFalse(systemPrompt.contains("6个单词"))
-      }
+    }
+
+    @Test
+    fun buildCompressionRequestBodyUsesMappedReasoningValue() {
+        val requestBody = ChatApiClient.buildCompressionRequestBody(
+            model = ResolvedModel(
+                baseUrl = "https://api.example.com/v1",
+                apiKey = "key",
+                model = "compression-model",
+                reasoningEffortKey = "max",
+                reasoningEffortValue = "ultra",
+                contextLength = 0,
+                providerType = ProviderType.Generic
+            ),
+            messages = listOf(ChatMessage(role = ChatRole.User, content = "旧消息")),
+            maxSummaryTokens = 512
+        )
+
+        assertEquals("ultra", requestBody.getString("reasoning_effort"))
+        assertEquals(512, requestBody.getInt("max_tokens"))
+    }
 
     @Test
     fun parseConversationTitleResponseReturnsBlankWhenContentIsMissing() {

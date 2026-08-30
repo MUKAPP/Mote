@@ -21,23 +21,77 @@ import com.mukapp.mote.databinding.BottomSheetModelPickerBinding
 import com.mukapp.mote.databinding.ItemModelPickerHeaderBinding
 import com.mukapp.mote.databinding.ItemModelPickerModelBinding
 
-/** 按提供商分组展示所有模型的底部选择面板，供首页切换与设置页用途选择复用。 */
+/** 按提供商分组展示所有模型的底部选择面板，供首页与设置页用途选择复用。 */
 object ModelPickerBottomSheet {
 
     fun show(
         context: Context,
         settings: ApiSettings,
         selected: ModelRef?,
-        onSelected: (ModelRef) -> Unit,
-        currentEffortKey: String? = null,
-        onReasoningSelected: ((String) -> Unit)? = null
+        onSelected: (ModelRef) -> Unit
     ) {
         val dialog = BottomSheetDialog(context)
         val binding = BottomSheetModelPickerBinding.inflate(LayoutInflater.from(context))
         dialog.setContentView(binding.root)
 
-        bindReasoningSection(binding, settings, selected, currentEffortKey, onReasoningSelected)
+        var currentSelection = selected
 
+        fun renderReasoningSection() {
+            val provider = settings.findProvider(currentSelection?.providerId)
+            val model = provider?.models?.firstOrNull { it.id == currentSelection?.modelId }
+            if (provider == null || model == null) {
+                binding.layoutCurrentReasoning.isVisible = false
+                return
+            }
+
+            val mapping = ReasoningEffortOptions.normalizeMapping(provider.type, model.reasoningEfforts)
+            val enabledKeys = ReasoningEffortOptions.enabledKeys(provider.type, mapping)
+            if (enabledKeys.isEmpty()) {
+                binding.layoutCurrentReasoning.isVisible = false
+                return
+            }
+            binding.layoutCurrentReasoning.isVisible = true
+
+            val chipGroup = binding.chipGroupReasoning
+            chipGroup.setOnCheckedStateChangeListener(null)
+            chipGroup.removeAllViews()
+            val selectedKey = currentSelection?.reasoningEffort?.let {
+                ReasoningEffortOptions.normalizeKey(provider.type, it, mapping)
+            } ?: ReasoningEffortOptions.normalizeKey(provider.type, null, mapping)
+            var selectedChipId = View.NO_ID
+            val viewContext = binding.root.context
+            ReasoningEffortOptions.optionsFor(provider.type)
+                .filter { it.key in enabledKeys }
+                .forEach { option ->
+                    val chip = Chip(viewContext, null, com.google.android.material.R.attr.chipStyle).apply {
+                        setChipDrawable(
+                            ChipDrawable.createFromAttributes(
+                                viewContext, null, 0, R.style.Widget_Mote_Chip_Choice
+                            )
+                        )
+                        id = View.generateViewId()
+                        text = option.key
+                        tag = option.key
+                        isCheckable = true
+                    }
+                    chipGroup.addView(chip)
+                    if (option.key == selectedKey) {
+                        selectedChipId = chip.id
+                    }
+                }
+            if (selectedChipId != View.NO_ID) {
+                chipGroup.check(selectedChipId)
+            }
+            chipGroup.setOnCheckedStateChangeListener { group, checkedIds ->
+                val checkedId = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
+                val key = group.findViewById<View>(checkedId)?.tag as? String
+                    ?: return@setOnCheckedStateChangeListener
+                currentSelection = currentSelection?.copy(reasoningEffort = key)
+                currentSelection?.let(onSelected)
+            }
+        }
+
+        renderReasoningSection()
         val rows = buildRows(settings)
         if (rows.isEmpty()) {
             binding.textModelPickerEmpty.isVisible = true
@@ -46,67 +100,35 @@ object ModelPickerBottomSheet {
             binding.textModelPickerEmpty.isVisible = false
             binding.recyclerModelPicker.isVisible = true
             binding.recyclerModelPicker.layoutManager = LinearLayoutManager(context)
-            binding.recyclerModelPicker.adapter = Adapter(rows, selected) { ref ->
-                onSelected(ref)
-                dialog.dismiss()
-            }
+            binding.recyclerModelPicker.adapter = Adapter(
+                rows = rows,
+                selected = { currentSelection },
+                onSelected = { ref ->
+                    val provider = settings.findProvider(ref.providerId)
+                    val model = provider?.models?.firstOrNull { it.id == ref.modelId }
+                    if (provider != null && model != null) {
+                        val mapping = ReasoningEffortOptions.normalizeMapping(
+                            provider.type,
+                            model.reasoningEfforts
+                        )
+                        val enabledKeys = ReasoningEffortOptions.enabledKeys(provider.type, mapping)
+                        val isSameModel = currentSelection?.providerId == ref.providerId &&
+                            currentSelection?.modelId == ref.modelId
+                        val key = if (isSameModel) {
+                            currentSelection?.reasoningEffort?.let {
+                                ReasoningEffortOptions.normalizeKey(provider.type, it, mapping)
+                            } ?: ReasoningEffortOptions.normalizeKey(provider.type, null, mapping)
+                        } else {
+                            ReasoningEffortOptions.normalizeKey(provider.type, null, mapping)
+                        }
+                        currentSelection = ref.copy(reasoningEffort = key)
+                        onSelected(currentSelection!!)
+                        renderReasoningSection()
+                    }
+                }
+            )
         }
         dialog.show()
-    }
-
-    /** 顶部区块：对当前所选模型按其提供商类型展示思考强度档位，可临时切换（不关闭面板）。
-     *  仅当提供 [onReasoningSelected] 时显示（首页对话模型选择用；设置页选标题/压缩模型时不显示）。 */
-    private fun bindReasoningSection(
-        binding: BottomSheetModelPickerBinding,
-        settings: ApiSettings,
-        selected: ModelRef?,
-        currentEffortKey: String?,
-        onReasoningSelected: ((String) -> Unit)?
-    ) {
-        val provider = settings.findProvider(selected?.providerId)
-        val model = provider?.models?.firstOrNull { it.id == selected?.modelId }
-        if (onReasoningSelected == null || provider == null || model == null) {
-            binding.layoutCurrentReasoning.isVisible = false
-            return
-        }
-        binding.layoutCurrentReasoning.isVisible = true
-
-        val context = binding.root.context
-        val chipGroup = binding.chipGroupReasoning
-        chipGroup.setOnCheckedStateChangeListener(null)
-        chipGroup.removeAllViews()
-
-        val selectedKey = ReasoningEffortOptions.normalizeKey(
-            provider.type,
-            currentEffortKey ?: model.reasoningEffort
-        )
-        var selectedChipId = View.NO_ID
-        ReasoningEffortOptions.optionsFor(provider.type).forEach { option ->
-            val chip = Chip(context, null, com.google.android.material.R.attr.chipStyle).apply {
-                setChipDrawable(
-                    ChipDrawable.createFromAttributes(
-                        context, null, 0, R.style.Widget_Mote_Chip_Choice
-                    )
-                )
-                id = View.generateViewId()
-                text = context.getString(option.labelRes)
-                tag = option.key
-                isCheckable = true
-            }
-            chipGroup.addView(chip)
-            if (option.key == selectedKey) {
-                selectedChipId = chip.id
-            }
-        }
-        if (selectedChipId != View.NO_ID) {
-            chipGroup.check(selectedChipId)
-        }
-        chipGroup.setOnCheckedStateChangeListener { group, checkedIds ->
-            val checkedId = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
-            val key = group.findViewById<View>(checkedId)?.tag as? String
-                ?: return@setOnCheckedStateChangeListener
-            onReasoningSelected(key)
-        }
     }
 
     private fun buildRows(settings: ApiSettings): List<Row> {
@@ -132,7 +154,7 @@ object ModelPickerBottomSheet {
 
     private class Adapter(
         private val rows: List<Row>,
-        private val selected: ModelRef?,
+        private val selected: () -> ModelRef?,
         private val onSelected: (ModelRef) -> Unit
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
@@ -173,11 +195,12 @@ object ModelPickerBottomSheet {
                 val context = binding.root.context
                 binding.textModelName.text = row.model.label
                 binding.textModelSubtitle.text = modelSubtitle(context, row.model, row.providerType)
-                val isSelected = selected?.providerId == row.providerId &&
-                    selected.modelId == row.model.id
-                binding.iconModelSelected.isVisible = isSelected
+                val current = selected()
+                binding.iconModelSelected.isVisible = current?.providerId == row.providerId &&
+                    current?.modelId == row.model.id
                 binding.root.setOnClickListener {
                     onSelected(ModelRef(row.providerId, row.model.id))
+                    notifyDataSetChanged()
                 }
             }
         }
@@ -194,10 +217,12 @@ object ModelPickerBottomSheet {
         } else {
             context.getString(R.string.model_context_length_unset)
         }
-        val reasoningLabel = context.getString(
-            ReasoningEffortOptions.labelRes(providerType, model.reasoningEffort)
+        val mapping = ReasoningEffortOptions.normalizeMapping(providerType, model.reasoningEfforts)
+        val effortKey = ReasoningEffortOptions.normalizeKey(providerType, null, mapping)
+        val reasoningPart = context.getString(
+            R.string.model_reasoning_summary,
+            effortKey
         )
-        val reasoningPart = context.getString(R.string.model_reasoning_summary, reasoningLabel)
         return "$contextPart · $reasoningPart"
     }
 }
