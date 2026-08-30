@@ -17,6 +17,7 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.SearchProvider
 import com.mukapp.mote.data.model.resolvedSearchProvider
+import com.mukapp.mote.util.CleartextGuard
 import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.optIntOrNull
 import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter
@@ -120,8 +121,8 @@ object LocalAiTools {
         FlexmarkHtmlConverter.builder().build().convert(html).trim()
     }
 
-    private val cachedBaseToolDefinitions: JSONArray by lazy {
-        JSONArray()
+    private fun buildBaseToolDefinitions(): JSONArray {
+        return JSONArray()
             .put(buildReadFileDefinition())
             .put(buildListPathDefinition())
             .put(buildGetCurrentTimeDefinition())
@@ -133,18 +134,28 @@ object LocalAiTools {
             .put(buildWaitDefinition())
     }
 
-    private val cachedSearxngWebSearchToolDefinition: JSONObject by lazy { buildSearxngWebSearchDefinition() }
-    private val cachedTavilyWebSearchToolDefinition: JSONObject by lazy { buildTavilyWebSearchDefinition() }
-    private val cachedAnysearchWebSearchToolDefinition: JSONObject by lazy { buildAnysearchWebSearchDefinition() }
+    // 按搜索提供商各缓存一份完整定义。每份都由 buildBaseToolDefinitions() 单独构造，互不共享节点。
+    // 调用方（ChatApiClient）只读不改，因此直接返回缓存实例：这些 JSONArray 视为不可变，不要就地修改。
+    private val cachedToolDefinitionsWithoutSearch: JSONArray by lazy {
+        buildBaseToolDefinitions()
+    }
+    private val cachedToolDefinitionsWithSearxng: JSONArray by lazy {
+        buildBaseToolDefinitions().put(buildSearxngWebSearchDefinition())
+    }
+    private val cachedToolDefinitionsWithTavily: JSONArray by lazy {
+        buildBaseToolDefinitions().put(buildTavilyWebSearchDefinition())
+    }
+    private val cachedToolDefinitionsWithAnysearch: JSONArray by lazy {
+        buildBaseToolDefinitions().put(buildAnysearchWebSearchDefinition())
+    }
 
     fun toolDefinitions(settings: ApiSettings = ApiSettings()): JSONArray {
-        val definitions = JSONArray(cachedBaseToolDefinitions.toString())
         val searchProvider = resolveSearchProvider(settings)
-        when (searchProvider) {
-            SearchProvider.Searxng -> definitions.put(JSONObject(cachedSearxngWebSearchToolDefinition.toString()))
-            SearchProvider.Tavily -> definitions.put(JSONObject(cachedTavilyWebSearchToolDefinition.toString()))
-            SearchProvider.Anysearch -> definitions.put(JSONObject(cachedAnysearchWebSearchToolDefinition.toString()))
-            null -> Unit
+        val definitions = when (searchProvider) {
+            SearchProvider.Searxng -> cachedToolDefinitionsWithSearxng
+            SearchProvider.Tavily -> cachedToolDefinitionsWithTavily
+            SearchProvider.Anysearch -> cachedToolDefinitionsWithAnysearch
+            null -> cachedToolDefinitionsWithoutSearch
         }
         MoteLog.d(
             Component,
@@ -256,6 +267,39 @@ object LocalAiTools {
             )
         )
         return true
+    }
+
+    /**
+     * 清掉从未被查询过的过期令牌。
+     * 令牌里带着完整命令文本，而 [activatePendingShellConfirmation] 只在命中时才发现过期，
+     * 没有这一步的话它们会随进程常驻。注册频率很低，不需要独立定时器。
+     */
+    private fun purgeExpiredShellConfirmations() {
+        val now = System.currentTimeMillis()
+        val expired = pendingShellConfirmations.entries
+            .filter { (_, confirmation) -> now - confirmation.createdAtMs > ShellConfirmationTtlMs }
+            .map { (id, _) -> id }
+        if (expired.isEmpty()) {
+            return
+        }
+        expired.forEach { pendingShellConfirmations.remove(it) }
+        MoteLog.d(
+            Component,
+            MoteLog.event("已清理过期 Shell 确认令牌", "count" to expired.size)
+        )
+    }
+
+    /** ViewModel 销毁时调用，避免命令文本随进程常驻。 */
+    fun discardAllPendingShellConfirmations() {
+        val count = pendingShellConfirmations.size
+        if (count == 0) {
+            return
+        }
+        pendingShellConfirmations.clear()
+        MoteLog.i(
+            Component,
+            MoteLog.event("已丢弃全部 Shell 确认令牌", "count" to count)
+        )
     }
 
     fun discardPendingShellConfirmation(confirmationId: String) {
@@ -1193,7 +1237,9 @@ object LocalAiTools {
                 "limit" to limit
             )
         )
-        val connection = (URL(searchUrl).openConnection() as HttpURLConnection)
+        val searxngUrl = URL(searchUrl)
+        CleartextGuard.requireCleartextAllowed(searxngUrl.protocol, searxngUrl.host, "SearXNG 搜索请求")
+        val connection = (searxngUrl.openConnection() as HttpURLConnection)
         return try {
             connection.requestMethod = "GET"
             connection.connectTimeout = 15_000
@@ -1284,6 +1330,7 @@ object LocalAiTools {
             )
         )
 
+        CleartextGuard.requireCleartextAllowed(searchUrl.protocol, searchUrl.host, "Tavily 搜索请求")
         val connection = (searchUrl.openConnection() as HttpURLConnection)
         return try {
             val requestBytes = requestBody.toString().toByteArray(StandardCharsets.UTF_8)
@@ -1388,6 +1435,7 @@ object LocalAiTools {
             )
         )
 
+        CleartextGuard.requireCleartextAllowed(searchUrl.protocol, searchUrl.host, "AnySearch 搜索请求")
         val connection = searchUrl.openConnection() as HttpURLConnection
         return try {
             val requestBytes = requestBody.toString().toByteArray(StandardCharsets.UTF_8)
@@ -1827,6 +1875,7 @@ object LocalAiTools {
         val risk = ShellRiskDetector.detect(command)
         if (risk != null && !consumeShellConfirmation(confirmationId, command, workDir, background)) {
             val id = "confirm_${UUID.randomUUID().toString().take(8)}"
+            purgeExpiredShellConfirmations()
             pendingShellConfirmations[id] = PendingShellConfirmation(
                 id = id,
                 command = command,

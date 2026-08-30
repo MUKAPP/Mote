@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
+import com.mukapp.mote.util.CleartextGuard
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -43,6 +44,14 @@ object ChatApiClient {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        // 所有走这里的请求都携带 Authorization，禁止明文发往公网地址。
+        .addInterceptor { chain ->
+            val url = chain.request().url
+            if (!CleartextGuard.isCleartextAllowed(url.scheme, url.host)) {
+                throw IOException(CleartextGuard.blockedMessage(url.host, "模型接口请求"))
+            }
+            chain.proceed(chain.request())
+        }
         .build()
 
     suspend fun generateConversationTitle(

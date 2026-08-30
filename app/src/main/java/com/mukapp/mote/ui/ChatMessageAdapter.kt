@@ -40,6 +40,10 @@ class ChatMessageAdapter(
     private var isSending: Boolean = false
     private var streamingMessageId: String? = null
 
+    // stableItemId 会 UUID.fromString + 捕获异常，RecyclerView 每次布局都要为每个可见项调用多次，
+    // 这里按消息 ID 记忆化；清理时机复用 trimExpansionStateIfNeeded()。
+    private val stableItemIds = mutableMapOf<String, Long>()
+
     /** 全局 Markdown 解析缓存，由 ChatFragment 设置 */
     var parseCache: MarkdownParseCache? = null
 
@@ -48,7 +52,8 @@ class ChatMessageAdapter(
     }
 
     override fun getItemId(position: Int): Long {
-        return stableItemId(messages[position].id)
+        val id = messages[position].id
+        return stableItemIds.getOrPut(id) { stableItemId(id) }
     }
 
     override fun getItemViewType(position: Int): Int {
@@ -197,6 +202,9 @@ class ChatMessageAdapter(
     }
 
     private fun trimExpansionStateIfNeeded(filteredMessages: List<ChatMessage>) {
+        if (stableItemIds.size > StableItemIdCacheLimit) {
+            stableItemIds.keys.retainAll(filteredMessages.mapTo(mutableSetOf()) { it.id })
+        }
         if (activeThinkingPartIdsByMessageId.isEmpty() &&
             expandedThinkingPartIds.isEmpty() &&
             expandedToolPartIds.isEmpty() &&
@@ -247,6 +255,9 @@ class ChatMessageAdapter(
             binding.cardMessage.setOnContentLongPressListener { x, y ->
                 showAssistantPopupWindowMenu(x, y)
             }
+            // 这两处文案是常量，没必要每次 bind 都过一遍 getString + setText。
+            binding.textAiLabel.setText(R.string.label_ai)
+            binding.textStatus.setText(R.string.status_generating)
         }
 
         private fun showAssistantPopupWindowMenu(touchX: Int, touchY: Int) {
@@ -299,13 +310,15 @@ class ChatMessageAdapter(
             val showGeneratingStatus = isStreamingMessage && !hasContent && !hasParts
             syncThinkingPartExpansion(message, isStreamingMessage)
 
-            binding.markdownContent.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                bottomMargin = 0
+            // 无条件写 layoutParams 会强制 requestLayout()，只在值真的变了时才写。
+            val markdownParams = binding.markdownContent.layoutParams
+            if (markdownParams is ViewGroup.MarginLayoutParams && markdownParams.bottomMargin != 0) {
+                binding.markdownContent.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                    bottomMargin = 0
+                }
             }
 
-            binding.textAiLabel.text = itemView.context.getString(R.string.label_ai)
             binding.textStatus.isVisible = showGeneratingStatus
-            binding.textStatus.text = itemView.context.getString(R.string.status_generating)
             binding.typingIndicator.isVisible = isStreamingMessage
             binding.typingIndicator.setAnimating(isStreamingMessage)
             binding.markdownContent.isVisible = hasParts || hasContent
@@ -393,6 +406,9 @@ class ChatMessageAdapter(
     private inner class UserViewHolder(
         private val binding: ItemChatMessageUserBinding
     ) : RecyclerView.ViewHolder(binding.root) {
+        /** 已渲染的附件签名；未变化时跳过整段 removeAllViews + 重新 inflate。 */
+        private var boundAttachmentSignature: String? = null
+
         init {
             // 长按卡片任意位置在手指处弹出菜单（复制/展开/编辑/删除）
             binding.cardMessage.setOnContentLongPressListener { x, y ->
@@ -452,34 +468,17 @@ class ChatMessageAdapter(
             binding.textContent.isVisible = message.content.isNotBlank()
 
             // 附件标签
+            val attachmentSignature = message.attachments.joinToString(separator = "|") { attachment ->
+                "${attachment.type}:${attachment.id}"
+            }
             if (message.attachments.isNotEmpty()) {
                 binding.scrollAttachments.isVisible = true
-                binding.containerAttachments.removeAllViews()
-                val inflater = LayoutInflater.from(itemView.context)
-                val container = binding.containerAttachments
-                message.attachments.forEach { attachment ->
-                    val view = when (attachment.type) {
-                        ChatAttachmentType.Image -> {
-                            val itemBinding = ItemAttachmentImageBinding.inflate(inflater, container, false)
-                            itemBinding.imageAttachmentRemove.isVisible = false
-                            AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt)
-                            itemBinding.root
-                        }
-
-                        ChatAttachmentType.File -> {
-                            val itemBinding = ItemAttachmentFileBinding.inflate(inflater, container, false)
-                            itemBinding.textAttachmentName.text = attachment.shortName()
-                            itemBinding.imageAttachmentRemove.isVisible = false
-                            itemBinding.root.backgroundTintList = ColorStateList.valueOf(
-                                ContextCompat.getColor(itemView.context, R.color.mote_background)
-                            )
-                            itemBinding.root
-                        }
-                    }
-                    container.addView(view)
+                if (attachmentSignature != boundAttachmentSignature) {
+                    boundAttachmentSignature = attachmentSignature
+                    rebindAttachments(message)
                 }
-                binding.scrollAttachments.scrollX = 0
             } else {
+                boundAttachmentSignature = null
                 binding.scrollAttachments.isVisible = false
             }
 
@@ -490,6 +489,34 @@ class ChatMessageAdapter(
             } else {
                 Int.MAX_VALUE
             }
+        }
+
+        private fun rebindAttachments(message: ChatMessage) {
+            binding.containerAttachments.removeAllViews()
+            val inflater = LayoutInflater.from(itemView.context)
+            val container = binding.containerAttachments
+            message.attachments.forEach { attachment ->
+                val view = when (attachment.type) {
+                    ChatAttachmentType.Image -> {
+                        val itemBinding = ItemAttachmentImageBinding.inflate(inflater, container, false)
+                        itemBinding.imageAttachmentRemove.isVisible = false
+                        AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt)
+                        itemBinding.root
+                    }
+
+                    ChatAttachmentType.File -> {
+                        val itemBinding = ItemAttachmentFileBinding.inflate(inflater, container, false)
+                        itemBinding.textAttachmentName.text = attachment.shortName()
+                        itemBinding.imageAttachmentRemove.isVisible = false
+                        itemBinding.root.backgroundTintList = ColorStateList.valueOf(
+                            ContextCompat.getColor(itemView.context, R.color.mote_background)
+                        )
+                        itemBinding.root
+                    }
+                }
+                container.addView(view)
+            }
+            binding.scrollAttachments.scrollX = 0
         }
 
         private fun isCollapsible(message: ChatMessage): Boolean {
@@ -527,6 +554,9 @@ class ChatMessageAdapter(
         const val STREAMING_PAYLOAD = "streaming"
         const val COLLAPSED_MAX_LINES = 10
         const val BulkInsertNotifyThreshold = 40
+
+        /** stableItemIds 超过该条目数才做一次清理，避免每次 submit 都遍历。 */
+        const val StableItemIdCacheLimit = 512
 
         // PopupWindow 菜单项 ID
         const val MENU_EDIT = 1

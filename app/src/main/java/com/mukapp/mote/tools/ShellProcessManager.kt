@@ -184,6 +184,17 @@ object ShellProcessManager {
         }
     }
 
+    /**
+     * 停止并清空所有后台进程。ViewModel 销毁时调用，避免子进程随应用一起变成孤儿。
+     */
+    fun stopAll() {
+        if (processes.isEmpty()) return
+        val ids = processes.keys.toList()
+        ids.forEach { id -> runCatching { stop(id) } }
+        processes.clear()
+        MoteLog.i(Component, MoteLog.event("已停止全部 shell 进程", "count" to ids.size))
+    }
+
     private fun registerProcess(id: String, command: String, process: Process) {
         val entry = ShellProcess(id = id, command = command, process = process)
         processes[id] = entry

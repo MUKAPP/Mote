@@ -7,6 +7,8 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
@@ -55,6 +57,7 @@ import com.mukapp.mote.ui.markdown.MarkdownParseCache
 import com.mukapp.mote.util.AttachmentThumbnailLoader
 import com.mukapp.mote.util.dpInt
 import kotlin.math.max
+import kotlin.math.roundToInt
 import androidx.core.view.isVisible
 import eightbitlab.com.blurview.BlurView
 import kotlinx.coroutines.Dispatchers
@@ -1157,17 +1160,117 @@ class ChatFragment : Fragment() {
         attachmentPath: String,
         readablePath: String?
     ): ChatAttachment? {
-        val bytes = readAttachmentBytes(context, uri, readablePath, MaxImageBytes) ?: return null
-        if (bytes.truncated) {
-            return null
-        }
+        val encoded = encodeImageForModel(context, uri, readablePath, mimeType) ?: return null
         return ChatAttachment(
             type = ChatAttachmentType.Image,
             displayName = displayName,
-            mimeType = mimeType?.takeIf { it.startsWith("image/", ignoreCase = true) } ?: "image/jpeg",
+            mimeType = encoded.mimeType,
             path = attachmentPath,
-            base64Data = Base64.encodeToString(bytes.data, Base64.NO_WRAP)
+            base64Data = Base64.encodeToString(encoded.data, Base64.NO_WRAP)
         )
+    }
+
+    /**
+     * 把图片编码成可以直接放进请求体的字节。
+     *
+     * 尺寸和体积都在限制内时保留原始字节（截图类 PNG 重编码成 JPEG 会损伤文字可读性）；
+     * 否则两趟解码——先只读尺寸算采样率，再按采样率解码——最后统一重编码为 JPEG。
+     * 关键是绝不把原图整份读进内存：旧实现对一张 20MB 的照片瞬时峰值可达 60MB 以上。
+     */
+    private fun encodeImageForModel(
+        context: Context,
+        uri: Uri,
+        directPath: String?,
+        mimeType: String?
+    ): EncodedImage? = runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openAttachmentStream(context, uri, directPath)?.use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
+        } ?: return@runCatching null
+
+        val sourceWidth = bounds.outWidth
+        val sourceHeight = bounds.outHeight
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            return@runCatching null
+        }
+        // 解码炸弹保护：声明尺寸离谱的文件直接拒绝。
+        if (sourceWidth.toLong() * sourceHeight.toLong() > MaxImagePixels) {
+            return@runCatching null
+        }
+
+        if (max(sourceWidth, sourceHeight) <= MaxImageEdgePx) {
+            val original = readAttachmentBytes(context, uri, directPath, MaxEncodedImageBytes)
+            if (original != null && !original.truncated) {
+                return@runCatching EncodedImage(
+                    data = original.data,
+                    mimeType = mimeType?.takeIf { it.startsWith("image/", ignoreCase = true) } ?: "image/jpeg"
+                )
+            }
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(sourceWidth, sourceHeight, MaxImageEdgePx)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = openAttachmentStream(context, uri, directPath)?.use { input ->
+            BitmapFactory.decodeStream(input, null, decodeOptions)
+        } ?: return@runCatching null
+
+        val scaled = scaleToMaxEdge(decoded, MaxImageEdgePx)
+        try {
+            compressToJpeg(scaled)
+        } finally {
+            if (scaled !== decoded) {
+                scaled.recycle()
+            }
+            decoded.recycle()
+        }
+    }.getOrNull()
+
+    private fun openAttachmentStream(context: Context, uri: Uri, directPath: String?): InputStream? {
+        return runCatching {
+            if (directPath != null) {
+                File(directPath).inputStream()
+            } else {
+                context.contentResolver.openInputStream(uri)
+            }
+        }.getOrNull()
+    }
+
+    /** 取满足「采样后长边仍不小于目标」的最大 2 的幂，保证后续精确缩放不会放大。 */
+    private fun calculateInSampleSize(width: Int, height: Int, maxEdge: Int): Int {
+        var sampleSize = 1
+        var longEdge = max(width, height)
+        while (longEdge / 2 >= maxEdge) {
+            longEdge /= 2
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
+
+    private fun scaleToMaxEdge(source: Bitmap, maxEdge: Int): Bitmap {
+        val longEdge = max(source.width, source.height)
+        if (longEdge <= maxEdge) {
+            return source
+        }
+        val ratio = maxEdge.toFloat() / longEdge
+        val targetWidth = max(1, (source.width * ratio).roundToInt())
+        val targetHeight = max(1, (source.height * ratio).roundToInt())
+        return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+    }
+
+    private fun compressToJpeg(bitmap: Bitmap): EncodedImage? {
+        for (quality in ImageCompressQualities) {
+            val output = ByteArrayOutputStream()
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
+                return null
+            }
+            val bytes = output.toByteArray()
+            if (bytes.size <= MaxEncodedImageBytes) {
+                return EncodedImage(data = bytes, mimeType = "image/jpeg")
+            }
+        }
+        return null
     }
 
     private fun buildFileAttachment(
@@ -1498,6 +1601,11 @@ class ChatFragment : Fragment() {
         val truncated: Boolean
     )
 
+    private data class EncodedImage(
+        val data: ByteArray,
+        val mimeType: String
+    )
+
     private companion object {
         const val MarkdownPreparseThrottleMs = 64L
         const val MarkdownPreparseBeforeItems = 8
@@ -1509,8 +1617,16 @@ class ChatFragment : Fragment() {
         const val ScrollSpeedFactor = 0.5f
         const val MenuAddImage = 1
         const val MenuAddFile = 2
-        const val MaxImageBytes = 20 * 1024 * 1024
+        /** Vision 模型的有效长边上限，超过这个尺寸不再提升识别质量，只会撑大请求体。 */
+        const val MaxImageEdgePx = 1568
+        /** 编码后（Base64 之前）的兜底字节上限。 */
+        const val MaxEncodedImageBytes = 4 * 1024 * 1024
+        /** 解码炸弹保护：像素总数上限。 */
+        const val MaxImagePixels = 200_000_000L
         const val MaxTextAttachmentBytes = 100_000
+
+        /** 超出体积上限时逐级降质量重试。 */
+        val ImageCompressQualities = intArrayOf(85, 70, 55)
 
         val ImageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
         val TextExtensions = setOf(

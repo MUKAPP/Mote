@@ -44,6 +44,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 data class ShellConfirmationUiState(
@@ -127,6 +128,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _temporaryReasoningEffort = MutableLiveData<String?>(null)
     val temporaryReasoningEffort: LiveData<String?> = _temporaryReasoningEffort
 
+    @Volatile
     private var pendingStreamingPublishJob: Job? = null
     private var activeSendJob: Job? = null
     private var stopGenerationRequested: Boolean = false
@@ -146,9 +148,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val generatedConversationTitles = mutableMapOf<String, String>()
     private var nextSaveVersion: Long = 0L
 
-    // 流式阶段用 StringBuilder 累积文本，避免每个 delta 都重新分配 String
+    // 流式阶段用 StringBuilder 累积文本：delta 只做 append + 打脏标记，
+    // 由 50ms 的发布节拍统一物化回 parts，避免每个 delta 都做 O(n) 的字符串复制。
+    // onDelta 跑在 IO 线程、发布节拍跑在主线程，两者会真正并发，因此以下状态一律经 streamingLock 访问。
+    private val streamingLock = Any()
     private val streamingBuilders = mutableMapOf<String, StringBuilder>()
+    private val dirtyStreamingPartIds = mutableSetOf<String>()
     private var cachedAssistantContent: String? = null
+    private var streamingTarget: StreamingTarget? = null
+    private val streamingPublishScheduled = AtomicBoolean(false)
+
+    // 停止/结束后 SSE 读循环可能还会吐出几个 delta。改为异步节拍前，这些迟到的 delta 会因为
+    // withContext(Main) 在已取消的协程里抛 CancellationException 而被自然丢弃；现在节拍挂在
+    // viewModelScope 上不受 activeSendJob 取消影响，必须显式关闸，否则会覆盖掉「已停止生成」的收尾文本。
+    @Volatile
+    private var streamingPublishEnabled = false
     private var contextTokenUsageAnchor: ChatConversationContextHelper.ContextTokenUsageAnchor? = null
 
     init {
@@ -503,6 +517,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         val assistantIndex = uiMessagesInternal.lastIndex
         stopGenerationRequested = false
+        streamingPublishEnabled = true
         _isSending.value = true
         publishMessagesImmediately()
 
@@ -555,7 +570,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     if (response.toolCalls.isEmpty()) {
-                        val finalReply = buildAssistantContent(assistantParts)
+                        val finalReply = currentAssistantContent(assistantParts)
                         val finalConversationContent = response.content.takeIf { it.isNotBlank() }
                             ?: finalReply
                         finalConversationContent.takeIf { it.isNotBlank() }
@@ -628,12 +643,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             isLoading = true
                         )
                     }
-                    assistantParts.addAll(loadingToolParts)
-                    cachedAssistantContent = null
-                    updateStreamingAssistantMessage(
+                    synchronized(streamingLock) {
+                        materializeStreamingPartsLocked(assistantParts)
+                        assistantParts.addAll(loadingToolParts)
+                        cachedAssistantContent = null
+                    }
+                    requestStreamingPublish(
                         assistantIndex = assistantIndex,
                         assistantId = assistantId,
-                        content = buildAssistantContent(assistantParts),
                         assistantParts = assistantParts
                     )
 
@@ -657,10 +674,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             "cancelled" to toolBatch.cancelled
                         )
                     )
-                    updateStreamingAssistantMessage(
+                    requestStreamingPublish(
                         assistantIndex = assistantIndex,
                         assistantId = assistantId,
-                        content = buildAssistantContent(assistantParts),
                         assistantParts = assistantParts
                     )
 
@@ -677,7 +693,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                     if (toolBatch.cancelled) {
                         appendAssistantMarkdown(assistantParts, "已取消执行高风险 shell 命令。")
-                        val finalContent = buildAssistantContent(assistantParts)
+                        val finalContent = currentAssistantContent(assistantParts)
                         uiMessagesInternal[assistantIndex] = ChatMessage(
                             id = assistantId,
                             role = ChatRole.Assistant,
@@ -715,6 +731,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }?.takeIf { it > 0 }
 
+                    materializeStreamingParts(assistantParts)
                     uiMessagesInternal[assistantIndex] = ChatMessage(
                         id = assistantId,
                         role = ChatRole.Assistant,
@@ -772,6 +789,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 val message = error.message?.takeIf { it.isNotBlank() }
                     ?: "请检查 API 设置、网络连接，或确认接口是否兼容 OpenAI Chat Completions。"
+                flushStreamingPublish()
                 val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
                 val currentContent = currentMessage?.content.orEmpty()
                 val currentParts = currentMessage?.assistantParts ?: emptyList()
@@ -799,9 +817,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            streamingPublishEnabled = false
             cancelPendingStreamingPublish()
-            streamingBuilders.clear()
-            cachedAssistantContent = null
+            synchronized(streamingLock) {
+                streamingBuilders.clear()
+                dirtyStreamingPartIds.clear()
+                cachedAssistantContent = null
+                streamingTarget = null
+            }
             activeSendJob = null
             stopGenerationRequested = false
             _isSending.value = false
@@ -823,6 +846,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "hasForegroundShell" to (activeForegroundShellProcessId != null)
             )
         )
+        // 先关闸再取消：此后到达的 delta 仍会累积进 builder（handleStoppedGeneration 的
+        // flushStreamingPublish 会一并冲刷），但不再触发新的发布节拍。
+        streamingPublishEnabled = false
         clearPendingShellConfirmation(discardToken = true, cancelDecision = true)
         activeForegroundShellProcessId?.let { id ->
             activeForegroundShellProcessId = null
@@ -831,6 +857,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         activeSendJob?.cancel(CancellationException("用户已手动停止生成。"))
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        streamingPublishEnabled = false
+        cancelPendingStreamingPublish()
+        // 令牌与后台进程都挂在进程级单例上，不会随 ViewModel 一起回收，必须显式清理。
+        LocalAiTools.discardAllPendingShellConfirmations()
+        pendingShellConfirmationId = null
+        pendingShellConfirmationDecision = null
+        activeForegroundShellProcessId = null
+        // viewModelScope 在 onCleared() 之前就已被取消，这里不能再用它派发任务；
+        // 且 stopAll() 每个进程最多阻塞 3 秒等待退出，不能留在主线程。
+        Thread({ ShellProcessManager.stopAll() }, "ShellStopAll").start()
+        MoteLog.i(logComponent, MoteLog.event("ChatViewModel 已销毁", "已清理" to "shell 进程与待确认令牌"))
     }
 
     fun confirmPendingShellCommand() {
@@ -1036,24 +1077,95 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    private suspend fun updateStreamingAssistantMessage(
+    /**
+     * 记录当前流式目标并请求一次发布节拍。可从任意线程调用，不会挂起、不做 O(n) 物化，
+     * 真正的文本回填与 UI 写入都推迟到 [publishStreamingSnapshot] 的主线程节拍里做。
+     */
+    private fun requestStreamingPublish(
         assistantIndex: Int,
         assistantId: String,
-        content: String,
-        assistantParts: List<AssistantPart>
-    ) = withContext(Dispatchers.Main) {
-        if (assistantIndex !in uiMessagesInternal.indices) {
-            return@withContext
+        assistantParts: MutableList<AssistantPart>
+    ) {
+        if (!streamingPublishEnabled) {
+            return
         }
+        synchronized(streamingLock) {
+            streamingTarget = StreamingTarget(assistantIndex, assistantId, assistantParts)
+        }
+        scheduleStreamingPublish()
+    }
 
-        uiMessagesInternal[assistantIndex] = ChatMessage(
-            id = assistantId,
+    /** 发布节拍：物化流式文本 → 写回 uiMessagesInternal → 推送 LiveData。只在主线程调用。 */
+    private fun publishStreamingSnapshot() {
+        val target = synchronized(streamingLock) { streamingTarget } ?: return
+        if (!applyStreamingSnapshot(target)) {
+            return
+        }
+        publishMessages()
+    }
+
+    /** 把 [target] 的最新文本写进 uiMessagesInternal。只在主线程调用。 */
+    private fun applyStreamingSnapshot(target: StreamingTarget): Boolean {
+        if (target.assistantIndex !in uiMessagesInternal.indices) {
+            return false
+        }
+        val content: String
+        val snapshot: List<AssistantPart>
+        synchronized(streamingLock) {
+            materializeStreamingPartsLocked(target.parts)
+            content = buildAssistantContent(target.parts)
+            snapshot = target.parts.toList()
+        }
+        uiMessagesInternal[target.assistantIndex] = ChatMessage(
+            id = target.assistantId,
             role = ChatRole.Assistant,
             content = content,
-            assistantParts = assistantParts.toList(),
+            assistantParts = snapshot,
             excludeFromConversation = true
         )
-        scheduleStreamingPublish()
+        return true
+    }
+
+    /**
+     * 终止路径专用：先把尚未物化的尾部文本落到 uiMessagesInternal 再立即发布，
+     * 否则最后一个节拍窗口内的 delta 会丢失。只在主线程调用。
+     */
+    private fun flushStreamingPublish() {
+        cancelPendingStreamingPublish()
+        synchronized(streamingLock) { streamingTarget }?.let { applyStreamingSnapshot(it) }
+        publishMessages()
+    }
+
+    /** 把 builder 里累积的文本回填到对应 part。调用前必须持有 streamingLock。 */
+    private fun materializeStreamingPartsLocked(parts: MutableList<AssistantPart>) {
+        if (dirtyStreamingPartIds.isEmpty()) {
+            return
+        }
+        for (index in parts.indices) {
+            val part = parts[index]
+            if (part.id !in dirtyStreamingPartIds) {
+                continue
+            }
+            val text = streamingBuilders[part.id]?.toString() ?: continue
+            parts[index] = when (part) {
+                is AssistantMarkdownPart -> part.copy(text = text)
+                is AssistantThinkingPart -> part.copy(text = text)
+                else -> part
+            }
+        }
+        dirtyStreamingPartIds.clear()
+        cachedAssistantContent = null
+    }
+
+    /** 物化后再读取正文。所有直接读取「正在流式写入的 parts」的地方都必须走这里。 */
+    private fun currentAssistantContent(parts: MutableList<AssistantPart>): String =
+        synchronized(streamingLock) {
+            materializeStreamingPartsLocked(parts)
+            buildAssistantContent(parts)
+        }
+
+    private fun materializeStreamingParts(parts: MutableList<AssistantPart>) {
+        synchronized(streamingLock) { materializeStreamingPartsLocked(parts) }
     }
 
     private fun handleStoppedGeneration(
@@ -1061,6 +1173,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         assistantId: String,
         includeAssistantInConversation: Boolean
     ) {
+        // 停止时最后一个节拍窗口内的 delta 还留在 builder 里，不先冲刷会丢掉尾部文字。
+        flushStreamingPublish()
         val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
         val currentContent = currentMessage?.content.orEmpty()
         val currentParts = currentMessage?.assistantParts ?: emptyList()
@@ -1109,16 +1223,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (delta.isEmpty()) {
             return
         }
-        cachedAssistantContent = null
-        val lastPart = parts.lastOrNull()
-        if (lastPart is AssistantThinkingPart) {
-            val builder = streamingBuilders.getOrPut(lastPart.id) { StringBuilder(lastPart.text) }
-            builder.append(delta)
-            parts[parts.lastIndex] = lastPart.copy(text = builder.toString())
-        } else {
-            val newPart = AssistantThinkingPart(text = delta)
-            streamingBuilders[newPart.id] = StringBuilder(delta)
-            parts += newPart
+        synchronized(streamingLock) {
+            cachedAssistantContent = null
+            val lastPart = parts.lastOrNull()
+            if (lastPart is AssistantThinkingPart) {
+                val builder = streamingBuilders.getOrPut(lastPart.id) { StringBuilder(lastPart.text) }
+                builder.append(delta)
+                dirtyStreamingPartIds += lastPart.id
+            } else {
+                val newPart = AssistantThinkingPart(text = delta)
+                streamingBuilders[newPart.id] = StringBuilder(delta)
+                parts += newPart
+            }
         }
     }
 
@@ -1126,16 +1242,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (delta.isEmpty()) {
             return
         }
-        cachedAssistantContent = null
-        val lastPart = parts.lastOrNull()
-        if (lastPart is AssistantMarkdownPart) {
-            val builder = streamingBuilders.getOrPut(lastPart.id) { StringBuilder(lastPart.text) }
-            builder.append(delta)
-            parts[parts.lastIndex] = lastPart.copy(text = builder.toString())
-        } else {
-            val newPart = AssistantMarkdownPart(text = delta)
-            streamingBuilders[newPart.id] = StringBuilder(delta)
-            parts += newPart
+        synchronized(streamingLock) {
+            cachedAssistantContent = null
+            val lastPart = parts.lastOrNull()
+            if (lastPart is AssistantMarkdownPart) {
+                val builder = streamingBuilders.getOrPut(lastPart.id) { StringBuilder(lastPart.text) }
+                builder.append(delta)
+                dirtyStreamingPartIds += lastPart.id
+            } else {
+                val newPart = AssistantMarkdownPart(text = delta)
+                streamingBuilders[newPart.id] = StringBuilder(delta)
+                parts += newPart
+            }
         }
     }
 
@@ -1148,12 +1266,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        if (retryNoticeIndex == parts.lastIndex && parts.lastOrNull() is AssistantMarkdownPart) {
-            cachedAssistantContent = null
-            val newPart = AssistantMarkdownPart(text = delta)
-            streamingBuilders[newPart.id] = StringBuilder(delta)
-            parts += newPart
-            return
+        synchronized(streamingLock) {
+            if (retryNoticeIndex == parts.lastIndex && parts.lastOrNull() is AssistantMarkdownPart) {
+                cachedAssistantContent = null
+                val newPart = AssistantMarkdownPart(text = delta)
+                streamingBuilders[newPart.id] = StringBuilder(delta)
+                parts += newPart
+                return
+            }
         }
 
         appendAssistantMarkdown(parts, delta)
@@ -1187,19 +1307,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         parts: MutableList<AssistantPart>,
         toolResults: List<ChatMessage>
     ) {
-        cachedAssistantContent = null
-        val replacedParts = ChatConversationContextHelper.replaceLoadingToolParts(
-            parts = parts,
-            toolResults = toolResults
-        )
-        for (index in replacedParts.indices) {
-            parts[index] = replacedParts[index]
+        synchronized(streamingLock) {
+            materializeStreamingPartsLocked(parts)
+            cachedAssistantContent = null
+            val replacedParts = ChatConversationContextHelper.replaceLoadingToolParts(
+                parts = parts,
+                toolResults = toolResults
+            )
+            for (index in replacedParts.indices) {
+                parts[index] = replacedParts[index]
+            }
         }
     }
 
-    private fun buildAssistantContent(parts: List<AssistantPart>): String {
-        cachedAssistantContent?.let { return it }
-        val result = parts.asSequence()
+    private fun buildAssistantContent(parts: List<AssistantPart>): String = synchronized(streamingLock) {
+        cachedAssistantContent ?: parts.asSequence()
             .mapNotNull { part ->
                 when (part) {
                     is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
@@ -1207,8 +1329,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             .joinToString(separator = "\n\n")
-        cachedAssistantContent = result
-        return result
+            .also { cachedAssistantContent = it }
     }
 
     private suspend fun streamChatWithRetries(
@@ -1247,29 +1368,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             retryNoticeIndex = retryNoticeIndex,
                             delta = delta
                         )
-                        updateStreamingAssistantMessage(
+                        requestStreamingPublish(
                             assistantIndex = assistantIndex,
                             assistantId = assistantId,
-                            content = buildAssistantContent(assistantParts),
                             assistantParts = assistantParts
                         )
                     },
                     onThinkingDelta = { thinkingDelta ->
                         accumulatedThinking.append(thinkingDelta)
                         appendAssistantThinking(assistantParts, thinkingDelta)
-                        updateStreamingAssistantMessage(
+                        requestStreamingPublish(
                             assistantIndex = assistantIndex,
                             assistantId = assistantId,
-                            content = buildAssistantContent(assistantParts),
                             assistantParts = assistantParts
                         )
                     }
                 )
                 if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
-                    updateStreamingAssistantMessage(
+                    requestStreamingPublish(
                         assistantIndex = assistantIndex,
                         assistantId = assistantId,
-                        content = buildAssistantContent(assistantParts),
                         assistantParts = assistantParts
                     )
                 }
@@ -1303,10 +1421,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         error
                     )
                     if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
-                        updateStreamingAssistantMessage(
+                        requestStreamingPublish(
                             assistantIndex = assistantIndex,
                             assistantId = assistantId,
-                            content = buildAssistantContent(assistantParts),
                             assistantParts = assistantParts
                         )
                     }
@@ -1323,10 +1440,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     attempt = nextAttempt,
                     error = error
                 )
-                updateStreamingAssistantMessage(
+                requestStreamingPublish(
                     assistantIndex = assistantIndex,
                     assistantId = assistantId,
-                    content = buildAssistantContent(assistantParts),
                     assistantParts = assistantParts
                 )
             }
@@ -1339,11 +1455,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (startIndex !in 0..parts.size) {
             return
         }
-        while (parts.size > startIndex) {
-            val removedPart = parts.removeAt(parts.lastIndex)
-            streamingBuilders.remove(removedPart.id)
+        synchronized(streamingLock) {
+            while (parts.size > startIndex) {
+                val removedPart = parts.removeAt(parts.lastIndex)
+                streamingBuilders.remove(removedPart.id)
+                dirtyStreamingPartIds.remove(removedPart.id)
+            }
+            cachedAssistantContent = null
         }
-        cachedAssistantContent = null
     }
 
     private fun removeRetryNoticePart(
@@ -1353,9 +1472,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val index = retryNoticeIndex
             ?.takeIf { it in parts.indices && parts[it] is AssistantMarkdownPart }
             ?: return false
-        val removedPart = parts.removeAt(index)
-        streamingBuilders.remove(removedPart.id)
-        cachedAssistantContent = null
+        synchronized(streamingLock) {
+            val removedPart = parts.removeAt(index)
+            streamingBuilders.remove(removedPart.id)
+            dirtyStreamingPartIds.remove(removedPart.id)
+            cachedAssistantContent = null
+        }
         return true
     }
 
@@ -1370,18 +1492,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val part = AssistantMarkdownPart(
             text = "请求异常，正在重试第 $attempt/$MaxStreamRetryAttempts 次：$message"
         )
-        val existingIndex = retryNoticeIndex
-            ?.takeIf { it in parts.indices && parts[it] is AssistantMarkdownPart }
-        if (existingIndex != null) {
-            streamingBuilders.remove(parts[existingIndex].id)
-            parts[existingIndex] = part
+        return synchronized(streamingLock) {
+            val existingIndex = retryNoticeIndex
+                ?.takeIf { it in parts.indices && parts[it] is AssistantMarkdownPart }
             cachedAssistantContent = null
-            return existingIndex
+            if (existingIndex != null) {
+                val replacedId = parts[existingIndex].id
+                streamingBuilders.remove(replacedId)
+                dirtyStreamingPartIds.remove(replacedId)
+                parts[existingIndex] = part
+                existingIndex
+            } else {
+                parts += part
+                parts.lastIndex
+            }
         }
-
-        parts += part
-        cachedAssistantContent = null
-        return parts.lastIndex
     }
 
     private suspend fun executeToolCallsWithConfirmation(
@@ -1484,7 +1609,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun awaitShellConfirmation(
         confirmation: ShellConfirmationRequest,
-        assistantParts: List<AssistantPart>,
+        assistantParts: MutableList<AssistantPart>,
         assistantIndex: Int,
         assistantId: String
     ): Boolean {
@@ -1501,10 +1626,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 background = confirmation.background,
                 risk = confirmation.risk
             )
-            updateStreamingAssistantMessage(
+            requestStreamingPublish(
                 assistantIndex = assistantIndex,
                 assistantId = assistantId,
-                content = buildAssistantContent(assistantParts),
                 assistantParts = assistantParts
             )
             MoteLog.i(
@@ -2187,26 +2311,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         publishMessages()
     }
 
+    /** 可从任意线程调用：CAS 保证同一时刻只有一个待发布节拍，天然把多个 delta 合并成一次刷新。 */
     private fun scheduleStreamingPublish() {
-        if (pendingStreamingPublishJob?.isActive == true) {
+        if (!streamingPublishScheduled.compareAndSet(false, true)) {
             return
         }
 
         pendingStreamingPublishJob = viewModelScope.launch {
-            delay(50)
-            publishMessages()
+            delay(StreamingPublishIntervalMs)
+            streamingPublishScheduled.set(false)
             pendingStreamingPublishJob = null
+            publishStreamingSnapshot()
         }
     }
 
     private fun cancelPendingStreamingPublish() {
         pendingStreamingPublishJob?.cancel()
         pendingStreamingPublishJob = null
+        streamingPublishScheduled.set(false)
     }
+
+    /** 一次流式回复的发布目标。[parts] 是发送协程持有的可变列表，访问一律经 streamingLock。 */
+    private class StreamingTarget(
+        val assistantIndex: Int,
+        val assistantId: String,
+        val parts: MutableList<AssistantPart>
+    )
 
     private companion object {
         const val DefaultConversationTitle = ConversationTitleFormatter.DefaultTitle
         const val MaxToolRounds = 200
+        const val StreamingPublishIntervalMs = 50L
         const val MaxStreamRetryAttempts = 3
         const val DefaultRecentContextBudget = 16_000
         const val MinRecentContextBudget = 1_024

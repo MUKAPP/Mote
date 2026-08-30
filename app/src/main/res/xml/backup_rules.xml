@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+   自动备份规则（API 30 及以下走 fullBackupContent）。
+   默认会备份 SharedPreferences 与 filesDir 下的全部内容，
+   因此必须显式排除 API 密钥与聊天记录，避免它们进入云备份 / adb backup。
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- ApiSettingsStore.PrefName：包含各提供商 baseUrl 与 apiKey -->
+    <exclude
+        domain="sharedpref"
+        path="mote_api_settings.xml" />
+    <!-- ChatHistoryStore：会话正文、工具输出、图片 Base64 -->
+    <exclude
+        domain="file"
+        path="chat_history" />
 </full-backup-content>

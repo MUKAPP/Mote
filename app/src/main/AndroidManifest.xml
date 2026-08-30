@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
+    <!--
+        android:usesCleartextTraffic 在平台层放行明文，以支持局域网自建服务（Ollama / LM Studio / SearXNG）。
+        network-security-config 只能按主机名后缀匹配，无法表达「仅私有网段」，
+        所以实际策略由 util/CleartextGuard 在应用层执行：携带密钥的模型接口与搜索请求禁止明文发往公网地址。
+    -->
     <application
         android:name=".MyApplication"
         android:allowBackup="true"
