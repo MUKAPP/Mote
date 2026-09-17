@@ -61,6 +61,9 @@ internal object ShellRiskDetector {
         "rmdir",
         "unlink",
         "mv",
+        "cp",
+        "install",
+        "ln",
         "dd",
         "truncate",
         "chmod",
@@ -77,8 +80,14 @@ internal object ShellRiskDetector {
         "sed",
         "perl",
         "rsync",
-        "tee"
+        "tee",
+        "curl",
+        "wget"
     )
+
+    /** curl/wget 常见布尔短选项，用于在短选项串（如 -sSo、-qO）中定位输出选项，避免把 -d 等取值选项的附着值误判为输出。 */
+    private val curlBooleanShortOptions = setOf('s', 'S', 'L', 'f', 'v', 'k', 'g', 'i', '4', '6')
+    private val wgetBooleanShortOptions = setOf('q', 'v', 'c', 'b', 'N', 'S', '4', '6')
 
     fun detect(command: String): String? {
         return detectCommandString(command, nestedDepth = 0)
@@ -173,6 +182,11 @@ internal object ShellRiskDetector {
             return null
         }
 
+        // 命令名经变量或命令替换动态决定时无法静态审计；su -c 字符串内已有同类判定，这里覆盖顶层与包装器路径。
+        if (command.startsWith('$') || command.startsWith('`')) {
+            return "执行动态生成的 Shell 命令"
+        }
+
         val args = words.drop(commandIndex + 1)
         if (isHelpOrVersionOnly(args)) {
             return null
@@ -202,6 +216,11 @@ internal object ShellRiskDetector {
             command == "rmdir" -> detectCommandWithTargets(args, "删除目录")
             command == "unlink" -> detectSingleDelete(args)
             command == "mv" -> detectMove(args)
+            command == "cp" -> detectCopyOverwrite(args, "复制并覆盖文件")
+            command == "install" -> detectCopyOverwrite(args, "安装并覆盖文件")
+            command == "ln" -> detectLink(args)
+            command == "curl" -> detectCurl(args)
+            command == "wget" -> detectWget(args)
             command == "dd" -> detectDd(args)
             command == "truncate" -> detectCommandWithTargets(args, "截断文件")
             command == "chmod" -> detectPermissionChange(args, "递归修改文件权限", "修改敏感路径权限")
@@ -368,11 +387,12 @@ internal object ShellRiskDetector {
 
     private fun detectSu(args: List<String>, nestedDepth: Int, hasExternalStdin: Boolean): String? {
         val commandString = suCommandStringArgument(args)
-        commandString?.let { detectCommandString(it, nestedDepth + 1) }?.let { risk -> return risk }
-
+        // 动态命令先于嵌套解析判定，保持 su 专属提示语，不退化为通用的动态命令提示。
         if (commandString?.let { hasDynamicCommandPosition(it) } == true) {
             return "通过 su 执行动态 Shell 命令"
         }
+        commandString?.let { detectCommandString(it, nestedDepth + 1) }?.let { risk -> return risk }
+
         if (commandString != null) {
             return null
         }
@@ -482,6 +502,90 @@ internal object ShellRiskDetector {
     private fun detectMove(args: List<String>): String? {
         val targets = commandTargets(args)
         return if (targets.size >= 2) "移动或覆盖文件" else null
+    }
+
+    private fun detectCopyOverwrite(args: List<String>, risk: String): String? {
+        return if (commandTargets(args).size >= 2) risk else null
+    }
+
+    private fun detectLink(args: List<String>): String? {
+        val force = args.any { it == "--force" || isShortOptionEnabled(it, 'f') }
+        return if (force && commandTargets(args).isNotEmpty()) "强制创建链接并覆盖已有文件" else null
+    }
+
+    private fun detectCurl(args: List<String>): String? {
+        args.forEachIndexed { index, arg ->
+            when {
+                arg == "--remote-name" || arg == "--remote-name-all" -> return "下载内容写入文件"
+                arg.startsWith("--output=") -> {
+                    if (isFileRedirectTarget(arg.substringAfter('='))) {
+                        return "下载内容写入文件"
+                    }
+                }
+                arg == "--output" -> {
+                    val target = args.getOrNull(index + 1)
+                    if (target != null && isFileRedirectTarget(target)) {
+                        return "下载内容写入文件"
+                    }
+                }
+                else -> {
+                    if (shortOptionAttachedValue(arg, 'O', curlBooleanShortOptions) != null) {
+                        return "下载内容写入文件"
+                    }
+                    val attachedOutput = shortOptionAttachedValue(arg, 'o', curlBooleanShortOptions)
+                    if (attachedOutput != null) {
+                        val target = attachedOutput.ifEmpty { args.getOrNull(index + 1).orEmpty() }
+                        if (isFileRedirectTarget(target)) {
+                            return "下载内容写入文件"
+                        }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun detectWget(args: List<String>): String? {
+        args.forEachIndexed { index, arg ->
+            when {
+                arg.startsWith("--output-document=") -> {
+                    if (isFileRedirectTarget(arg.substringAfter('='))) {
+                        return "下载内容写入文件"
+                    }
+                }
+                arg == "--output-document" -> {
+                    val target = args.getOrNull(index + 1)
+                    if (target != null && isFileRedirectTarget(target)) {
+                        return "下载内容写入文件"
+                    }
+                }
+                else -> {
+                    val attachedOutput = shortOptionAttachedValue(arg, 'O', wgetBooleanShortOptions)
+                    if (attachedOutput != null) {
+                        val target = attachedOutput.ifEmpty { args.getOrNull(index + 1).orEmpty() }
+                        if (isFileRedirectTarget(target)) {
+                            return "下载内容写入文件"
+                        }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /** 在「布尔短选项前缀 + 取值选项」形式的短选项串中定位 [option]，返回其附着值；空串表示值在下一个参数。 */
+    private fun shortOptionAttachedValue(arg: String, option: Char, booleanPrefixOptions: Set<Char>): String? {
+        if (arg.length < 2 || arg[0] != '-' || arg.startsWith("--")) {
+            return null
+        }
+        var cursor = 1
+        while (cursor < arg.length && arg[cursor] in booleanPrefixOptions) {
+            cursor += 1
+        }
+        if (cursor >= arg.length || arg[cursor] != option) {
+            return null
+        }
+        return arg.substring(cursor + 1)
     }
 
     private fun detectDd(args: List<String>): String? {
@@ -792,6 +896,13 @@ internal object ShellRiskDetector {
             }
             "rmdir" -> "删除目录"
             "mv" -> "移动或覆盖文件"
+            "cp" -> "复制并覆盖文件"
+            "install" -> "安装并覆盖文件"
+            "ln" -> if (args.any { it == "--force" || isShortOptionEnabled(it, 'f') }) {
+                "强制创建链接并覆盖已有文件"
+            } else {
+                null
+            }
             "truncate" -> "截断文件"
             "chmod" -> if (args.any { isRecursiveOption(it) || isShortOptionEnabled(it, 'r') || isShortOptionEnabled(it, 'R') }) {
                 "递归修改文件权限"

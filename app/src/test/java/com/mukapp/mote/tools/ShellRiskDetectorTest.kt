@@ -144,6 +144,42 @@ class ShellRiskDetectorTest {
     }
 
     @Test
+    fun detectsCopyLinkAndDownloadOverwrites() {
+        assertEquals("复制并覆盖文件", ShellRiskDetector.detect("cp a.txt b.txt"))
+        assertEquals("复制并覆盖文件", ShellRiskDetector.detect("cp -r src/ /sdcard/dst"))
+        assertNull(ShellRiskDetector.detect("cp --help"))
+        assertEquals("安装并覆盖文件", ShellRiskDetector.detect("install -m 755 tool /system/bin/tool"))
+        assertNull(ShellRiskDetector.detect("install -d newdir"))
+        assertEquals("强制创建链接并覆盖已有文件", ShellRiskDetector.detect("ln -sf /system/bin/sh mysh"))
+        assertNull(ShellRiskDetector.detect("ln -s target link"))
+        assertEquals("复制并覆盖文件", ShellRiskDetector.detect("printf '%s\\n' a.txt | xargs cp -t /sdcard/dst"))
+    }
+
+    @Test
+    fun detectsDownloadOutputOptions() {
+        assertEquals("下载内容写入文件", ShellRiskDetector.detect("curl -o out.bin https://example.com/f"))
+        assertEquals("下载内容写入文件", ShellRiskDetector.detect("curl -sSLo out.bin https://example.com/f"))
+        assertEquals("下载内容写入文件", ShellRiskDetector.detect("curl -O https://example.com/f"))
+        assertEquals("下载内容写入文件", ShellRiskDetector.detect("curl --output out.bin https://example.com/f"))
+        assertNull(ShellRiskDetector.detect("curl -o /dev/null https://example.com/f"))
+        assertNull(ShellRiskDetector.detect("curl -d hello https://example.com/f"))
+        assertNull(ShellRiskDetector.detect("curl https://example.com/f"))
+        assertEquals("下载内容写入文件", ShellRiskDetector.detect("wget -O out.bin https://example.com/f"))
+        assertEquals("下载内容写入文件", ShellRiskDetector.detect("wget --output-document=out.bin https://example.com/f"))
+        assertNull(ShellRiskDetector.detect("wget -qO- https://example.com/f"))
+    }
+
+    @Test
+    fun detectsDynamicCommandNames() {
+        assertEquals("执行动态生成的 Shell 命令", ShellRiskDetector.detect("x=rm; ${'$'}x -rf /sdcard/tmp"))
+        assertEquals("执行动态生成的 Shell 命令", ShellRiskDetector.detect("${'$'}{CMD} -rf /sdcard/tmp"))
+        assertEquals("执行动态生成的 Shell 命令", ShellRiskDetector.detect("sh -c '${'$'}x -rf /sdcard/tmp'"))
+        assertEquals("执行动态生成的 Shell 命令", ShellRiskDetector.detect("sudo ${'$'}x -rf /sdcard/tmp"))
+        assertNull(ShellRiskDetector.detect("echo ${'$'}PATH"))
+        assertNull(ShellRiskDetector.detect("ls ${'$'}HOME"))
+    }
+
+    @Test
     fun returnsNullForReadOnlyOrInspectionCommands() {
         assertNull(ShellRiskDetector.detect("ls -la /sdcard"))
         assertNull(ShellRiskDetector.detect("cat /sdcard/file.txt"))
