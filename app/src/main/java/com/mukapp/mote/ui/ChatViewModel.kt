@@ -1144,6 +1144,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 发布节拍：物化流式文本 → 写回 uiMessagesInternal → 推送 LiveData。只在主线程调用。 */
     private fun publishStreamingSnapshot() {
+        // 与 requestStreamingPublish 同一闸门：流式已终止后窜出的节拍不得再把旧内容写回 UI。
+        if (!streamingPublishEnabled) {
+            return
+        }
         val target = synchronized(streamingLock) { streamingTarget } ?: return
         if (!applyStreamingSnapshot(target)) {
             return
@@ -2449,10 +2453,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        // 节拍 job 完成后不自清 pendingStreamingPublishJob：set(false) 之后新节拍可能已经
+        // launch 并写入该字段，此处置 null 会清掉新 job 的引用，让 cancel 失效产生孤儿节拍。
+        // 残留的已完成 job 引用被 cancel 是无害 no-op。
         pendingStreamingPublishJob = viewModelScope.launch {
             delay(StreamingPublishIntervalMs)
             streamingPublishScheduled.set(false)
-            pendingStreamingPublishJob = null
             publishStreamingSnapshot()
         }
     }
