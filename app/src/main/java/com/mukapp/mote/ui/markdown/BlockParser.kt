@@ -1020,7 +1020,6 @@ class BlockParser {
     private data class ParagraphResult(val block: MdBlock.Paragraph, val nextLineIndex: Int, val nextOffset: Int)
 
     companion object {
-        private val HEADING_REGEX = Regex("^(#{1,6})\\s+(.+)$")
         private val HEADING_PREFIX = Regex("^#{1,6}\\s")
         private val UNORDERED_LIST_REGEX = Regex("^([-*+])\\s+(.+)$")
         private val ORDERED_LIST_REGEX = Regex("^(\\d+)[.)]\\s+(.+)$")

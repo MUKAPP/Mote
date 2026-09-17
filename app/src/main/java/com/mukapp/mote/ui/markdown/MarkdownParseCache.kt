@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * - 线程安全：内部使用 [ConcurrentHashMap]，后台解析在 [Dispatchers.Default] 上运行。
  * - [get] 提供同步查询，MarkdownView 在 onBind 时先查此缓存，命中则跳过主线程解析。
- * - [preparse] 在后台解析指定文本并写入缓存；调用方可选择在解析完成后回调通知 UI 刷新。
+ * - [preparseAll] 在后台批量解析文本并写入缓存。
  * - 流式场景下变化频繁的最后一个 part 通常缓存未命中，会回退到 MarkdownView 内部的同步解析；
  *   但已经完成的前部 part 和历史消息会从缓存命中，避免主线程重复解析。
  */
@@ -38,41 +38,6 @@ class MarkdownParseCache {
     fun get(text: String, isStreaming: Boolean): BlockParser.ParseResult? {
         val key = CacheKey(text, isStreaming)
         return synchronized(cacheLock) { cache.get(key) }
-    }
-
-    /**
-     * 在后台线程解析 [text] 并写入缓存。
-     *
-     * @param scope   协程作用域，通常为 viewLifecycleOwner.lifecycleScope
-     * @param text    待解析的 Markdown 文本
-     * @param isStreaming 当前是否处于流式状态
-     * @param onReady 解析完成后在主线程回调（可选），用于通知 RecyclerView 刷新
-     */
-    fun preparse(
-        scope: CoroutineScope,
-        text: String,
-        isStreaming: Boolean,
-        onReady: (() -> Unit)? = null
-    ) {
-        val key = CacheKey(text, isStreaming)
-        if (contains(key)) {
-            onReady?.invoke()
-            return
-        }
-        if (!inFlight.add(key)) {
-            return
-        }
-        scope.launch(Dispatchers.Default) {
-            try {
-                val result = blockParser.parseWithLinkDefs(text, isStreaming)
-                put(key, result)
-                if (onReady != null) {
-                    launch(Dispatchers.Main.immediate) { onReady() }
-                }
-            } finally {
-                inFlight.remove(key)
-            }
-        }
     }
 
     /**
@@ -128,19 +93,6 @@ class MarkdownParseCache {
         batchJob?.cancel()
         synchronized(cacheLock) { cache.evictAll() }
         inFlight.clear()
-    }
-
-    /**
-     * 淘汰不再使用的缓存条目，保留指定的活跃文本。
-     * 避免内存无限增长。
-     */
-    fun evict(activeTexts: Set<String>) {
-        val keysToRemove = synchronized(cacheLock) {
-            cache.snapshot().keys.filter { it.text !in activeTexts }
-        }
-        synchronized(cacheLock) {
-            keysToRemove.forEach { cache.remove(it) }
-        }
     }
 
     private fun contains(key: CacheKey): Boolean {

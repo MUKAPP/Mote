@@ -293,11 +293,6 @@ class ChatMessageAdapter(
             }
         }
 
-        fun clear() {
-            binding.markdownContent.clearMarkdown()
-            binding.typingIndicator.setAnimating(false)
-        }
-
         /** 仅停止动画，保留 MarkdownView 渲染结果以便复用 */
         fun stopAnimations() {
             binding.typingIndicator.setAnimating(false)

@@ -43,14 +43,6 @@ internal object ChatConversationContextHelper {
         }
     }
 
-    fun rebuildConversationFromUiMessages(uiMessages: List<ChatMessage>): List<ChatMessage> {
-        return uiMessages.filter { message ->
-            message.role != ChatRole.Tool &&
-                    message.role != ChatRole.System &&
-                    !message.excludeFromConversation
-        }
-    }
-
     fun rebuildConversationAfterUiMutation(
         uiMessages: List<ChatMessage>,
         conversationMessages: List<ChatMessage>,

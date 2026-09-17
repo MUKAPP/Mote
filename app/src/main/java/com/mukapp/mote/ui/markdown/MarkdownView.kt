@@ -345,30 +345,6 @@ class MarkdownView @JvmOverloads constructor(
         isVisible = false
     }
 
-    private fun renderMarkdownTextInto(
-        container: ViewGroup,
-        text: String,
-        isStreaming: Boolean
-    ) {
-        if (text.isBlank()) {
-            return
-        }
-        val parseResult = obtainParseResult(text, isStreaming)
-        val blocks = parseResult.blocks
-        val linkDefs = parseResult.linkDefs
-        blocks.forEachIndexed { index, block ->
-            container.addView(
-                createBlockView(
-                    block,
-                    isStreaming,
-                    linkDefs,
-                    nested = false,
-                    isLastInContainer = index == blocks.lastIndex
-                )
-            )
-        }
-    }
-
     /**
      * 将 markdown part 渲染到容器中，同时缓存 block 列表以便后续增量更新。
      */
