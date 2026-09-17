@@ -35,7 +35,6 @@ import kotlin.coroutines.resumeWithException
 
 object ChatApiClient {
     private const val Component = "Api"
-    private val mainDispatcher = Dispatchers.Main
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
     private const val MODEL_API_USER_AGENT = "Mote/1.0 (Android; OpenAI-Compatible Client)"
 
@@ -266,6 +265,10 @@ object ChatApiClient {
         }
     }
 
+    /**
+     * 流式聊天请求。[onDelta] 与 [onThinkingDelta] 统一在 IO 线程调用（含非流式回退与收尾提示），
+     * 回调实现须自行保证线程安全，不假定主线程。
+     */
     suspend fun streamChat(
         model: ResolvedModel,
         settings: ApiSettings,
@@ -438,11 +441,9 @@ object ChatApiClient {
                     val errorMessage = parseErrorMessage(responseText)
                     throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
                 }
-                val result = parseAssistantReply(responseText)
-                withContext(mainDispatcher) {
-                    if (result.content.isNotBlank()) {
-                        onDelta(result.content)
-                    }
+                val result = parseAssistantReply(responseJson)
+                if (result.content.isNotBlank()) {
+                    onDelta(result.content)
                 }
                 result.also {
                     MoteLog.i(
@@ -944,9 +945,7 @@ object ChatApiClient {
 
         val finishReasonNotice = buildFinishReasonNotice(finishReason, hasToolCalls = finalizedToolCalls.isNotEmpty())
         if (finishReasonNotice.isNotEmpty() && finalizedToolCalls.isEmpty()) {
-            withContext(mainDispatcher) {
-                onDelta(finishReasonNotice)
-            }
+            onDelta(finishReasonNotice)
             replyBuilder.append(finishReasonNotice)
         }
 
