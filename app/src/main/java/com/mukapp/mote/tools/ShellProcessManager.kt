@@ -109,11 +109,12 @@ object ShellProcessManager {
         val truncatedStderr = truncateOutput(stderr, maxOutputChars)
 
         if (entry.isComplete) {
-            processes.remove(id)
+            // 完成条目保留在表中，结果可重复查询；由下次 start 前的 evictCompletedProcesses 回收，
+            // 避免模型二次查询同一 id 时只得到“进程不存在”。
             MoteLog.i(
                 Component,
                 MoteLog.event(
-                    "shell 进程已完成并清理",
+                    "shell 进程已完成",
                     "id" to id,
                     "exitCode" to exitCode,
                     "elapsedSeconds" to ((System.currentTimeMillis() - entry.startTimeMs) / 1000)
