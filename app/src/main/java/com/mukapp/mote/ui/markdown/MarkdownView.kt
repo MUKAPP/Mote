@@ -159,6 +159,8 @@ class MarkdownView @JvmOverloads constructor(
     private var lastRenderedMarkdownText: String? = null
     /** 每个 markdown 片段单独缓存的 (text, isStreaming) -> ParseResult，用于 setParts 路径下避免重复解析 */
     private val partParseCache = HashMap<String, CachedParseEntry>()
+    /** 流式增量解析状态（单槽即可：同一消息同一时刻只有末位 markdown 片段在增长） */
+    private var incrementalParseState: BlockParser.IncrementalParseState? = null
 
     /** 外部注入的全局解析缓存，用于跨 ViewHolder 复用后台预解析结果 */
     private var globalParseCache: MarkdownParseCache? = null
@@ -399,7 +401,7 @@ class MarkdownView @JvmOverloads constructor(
             partParseCache[text] = CachedParseEntry(text, isStreaming, globalCached.blocks, globalCached.linkDefs)
             return globalCached
         }
-        val parsed = blockParser.parseWithLinkDefs(text, isStreaming)
+        val parsed = parseWithIncrementalState(text, isStreaming)
         partParseCache[text] = CachedParseEntry(text, isStreaming, parsed.blocks, parsed.linkDefs)
         return parsed
     }
@@ -408,7 +410,14 @@ class MarkdownView @JvmOverloads constructor(
     private fun obtainParseResultGlobal(text: String, isStreaming: Boolean): BlockParser.ParseResult {
         val globalCached = globalParseCache?.get(text, isStreaming)
         if (globalCached != null) return globalCached
-        return blockParser.parseWithLinkDefs(text, isStreaming)
+        return parseWithIncrementalState(text, isStreaming)
+    }
+
+    /** 流式时复用上一拍解析状态做前缀增量解析，非流式时全量解析并清空状态 */
+    private fun parseWithIncrementalState(text: String, isStreaming: Boolean): BlockParser.ParseResult {
+        val state = blockParser.parseWithLinkDefsIncremental(text, isStreaming, incrementalParseState)
+        incrementalParseState = if (isStreaming) state else null
+        return state.result
     }
 
     /**
@@ -437,6 +446,34 @@ class MarkdownView @JvmOverloads constructor(
 
         // 如果完全相同，无需更新
         if (firstDiffIndex == newCount && oldCount == newCount) {
+            return
+        }
+
+        // 流式主场景：变化集中在最后一个旧 block（尾块增长或形态迁移）。
+        // 对可原地更新的类型直接更新既有视图，保留滚动位置，并让子视图的等值短路生效。
+        // 保留旧尾视图无需修正 isLastInContainer：该参数仅在 nested 时影响 margin，顶层无行为差异。
+        if (firstDiffIndex == oldCount - 1 &&
+            newCount >= oldCount &&
+            container.childCount == oldCount &&
+            tryUpdateBlockViewInPlace(
+                container.getChildAt(firstDiffIndex),
+                oldBlocks[firstDiffIndex],
+                newBlocks[firstDiffIndex],
+                isStreaming,
+                linkDefs
+            )
+        ) {
+            for (i in oldCount until newCount) {
+                container.addView(
+                    createBlockView(
+                        newBlocks[i],
+                        isStreaming,
+                        linkDefs,
+                        nested = false,
+                        isLastInContainer = i == newBlocks.lastIndex
+                    )
+                )
+            }
             return
         }
 
@@ -470,6 +507,67 @@ class MarkdownView @JvmOverloads constructor(
         // offset 一致但内容仍可能不同：例如 CodeBlock 的 closed 状态、List/Blockquote 的子结构。
         // 直接走 data class 全字段比较确保正确性；该路径仅在 offset 命中时触发，开销可控。
         return a == b
+    }
+
+    /**
+     * 尝试对单个顶层 block 的既有视图做原地更新，成功返回 true。
+     * 仅支持文本（Heading/Paragraph）、代码块和表格；其余类型返回 false 由调用方重建：
+     * 列表/任务列表/引用块无更新入口且子树递归，MathBlock 的 closed 两态根视图类型不同。
+     */
+    private fun tryUpdateBlockViewInPlace(
+        view: View,
+        oldBlock: MdBlock,
+        newBlock: MdBlock,
+        isStreaming: Boolean,
+        linkDefs: Map<String, Pair<String, String>>
+    ): Boolean {
+        return when {
+            isPlainTextBlock(oldBlock) && isPlainTextBlock(newBlock) && view is TextView -> {
+                updateTextBlockViewInPlace(view, newBlock, isStreaming, linkDefs)
+                true
+            }
+            oldBlock is MdBlock.CodeBlock && newBlock is MdBlock.CodeBlock && view is MarkdownCodeBlockView -> {
+                view.setCodeBlock(newBlock.language, newBlock.code)
+                true
+            }
+            oldBlock is MdBlock.Table && newBlock is MdBlock.Table && view is HorizontalScrollView -> {
+                val tableView = view.getChildAt(0) as? MarkdownTableView ?: return false
+                tableView.setTableData(newBlock.headers, newBlock.rows, newBlock.alignments, linkDefs, isStreaming)
+                true
+            }
+            else -> false
+        }
+    }
+
+    /** Heading 与 Paragraph 都渲染为单个 TextView，允许互变（setext 下划线迟到时段落会升级为标题）。 */
+    private fun isPlainTextBlock(block: MdBlock): Boolean {
+        return block is MdBlock.Heading || block is MdBlock.Paragraph
+    }
+
+    private fun updateTextBlockViewInPlace(
+        textView: TextView,
+        block: MdBlock,
+        isStreaming: Boolean,
+        linkDefs: Map<String, Pair<String, String>>
+    ) {
+        val text = spannedBuilder.buildSingleBlock(block, isStreaming = isStreaming, linkDefs = linkDefs)
+        textView.text = text
+        // 复用视图需要双向复位：includeFontPadding 与 Heading 遗留的颜色/字距/行距，
+        // 先恢复 createBaseTextView 的基线，再由 applyTextBlockStyle 按新 block 类型覆盖。
+        textView.includeFontPadding = text.hasScriptSpan()
+        if (baseTextColor != null) {
+            textView.setTextColor(baseTextColor)
+        } else {
+            textView.setTextColor(bodyTextColor)
+        }
+        textView.letterSpacing = 0f
+        textView.setLineSpacing(0f, 1.15f)
+        applyTextBlockStyle(textView, block, nested = false, isLastInContainer = false)
+        if (isStreaming) {
+            textView.movementMethod = null
+        } else {
+            textView.movementMethod = LinkMovementMethod.getInstance()
+        }
     }
 
     private fun hasVisibleContent(part: AssistantPart): Boolean {
@@ -650,6 +748,7 @@ class MarkdownView @JvmOverloads constructor(
         lastRenderedMarkdownText = null
         partParseCache.clear()
         partBlocksCache.clear()
+        incrementalParseState = null
     }
 
     private fun animateCardBackground(

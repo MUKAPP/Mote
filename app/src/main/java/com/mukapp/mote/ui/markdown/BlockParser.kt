@@ -37,6 +37,105 @@ class BlockParser {
         val linkDefs: Map<String, Pair<String, String>>
     )
 
+    /**
+     * 流式增量解析状态：上一拍的全文与解析结果，仅在流式（isStreaming=true）节拍间传递。
+     * offset 按"每行 +1 个分隔符"累加，CRLF 文本的 offset 与实际字符位置错位，
+     * 因此含 \r 的文本须永久禁用增量切分（hasCarriageReturn）。
+     */
+    data class IncrementalParseState(
+        val text: String,
+        val result: ParseResult,
+        val hasCarriageReturn: Boolean
+    )
+
+    /**
+     * 流式前缀复用解析：新文本以上一拍文本为前缀时，复用尾部之外的顶层 block，
+     * 只对末尾窗口重新解析；任一复用条件不满足则回退全量解析。结果与 [parseWithLinkDefs] 一致。
+     *
+     * 正确性依据（解析为前向单遍状态机）：
+     * - 会"回头"的机制只有 setext 改写块列表末元素、表格分隔行改写前一段落，均只作用于当前列表末尾，
+     *   由"丢弃最后一个顶层 block"覆盖；若剩余最后一块是 Paragraph 再多丢一块——链接定义行不产 block，
+     *   "段落→空行→链接定义行→==="仍会改写隔着空行的段落；无需继续回退：再往前的段落与追加文本之间
+     *   必然隔着已进入窗口的非空内容，窗口解析到 === 时块列表非空，改写目标必是窗口内块。
+     * - closed=false 的 CodeBlock/MathBlock 吸收到文本末尾，必为末块，丢末块已覆盖。
+     * - 上一拍唯一可能被追加改变的行是其不完整的末行；要求窗口首行在上一拍中已完整
+     *   （previous.text 在窗口起点之后仍有换行符），保证保留块的终止行不可变，
+     *   保留块不会因追加与窗口内容合并（如列表被后来才成立的同缀行延长）。
+     * - 嵌套容器的 tailLineComplete 已确定化，前缀 block 的解析只依赖自身内容。
+     */
+    fun parseWithLinkDefsIncremental(
+        text: String,
+        isStreaming: Boolean,
+        previous: IncrementalParseState?
+    ): IncrementalParseState {
+        if (isStreaming && previous != null && text == previous.text) {
+            return previous
+        }
+        if (
+            isStreaming &&
+            previous != null &&
+            !previous.hasCarriageReturn &&
+            text.length > previous.text.length &&
+            text.indexOf('\r', previous.text.length) < 0 &&
+            text.startsWith(previous.text)
+        ) {
+            parseSuffixIncrementallyOrNull(text, previous)?.let { return it }
+        }
+        return IncrementalParseState(
+            text = text,
+            result = parseWithLinkDefs(text, isStreaming),
+            hasCarriageReturn = text.indexOf('\r') >= 0
+        )
+    }
+
+    private fun parseSuffixIncrementallyOrNull(
+        text: String,
+        previous: IncrementalParseState
+    ): IncrementalParseState? {
+        val previousBlocks = previous.result.blocks
+        if (previousBlocks.size < 2) return null
+        // 丢弃最后一个顶层 block；若剩余最后一块是段落再丢一块（setext 穿透链接定义行的保守超集）
+        var keptCount = previousBlocks.size - 1
+        if (previousBlocks[keptCount - 1] is MdBlock.Paragraph) {
+            keptCount--
+        }
+        if (keptCount < 1) return null
+        val kept = previousBlocks.subList(0, keptCount)
+        val windowStart = kept.last().endOffset + 1
+        if (windowStart <= 0 || windowStart >= text.length) return null
+        // 窗口首行必须在上一拍中已完整，否则保留块的终止行可能随追加改变
+        if (previous.text.indexOf('\n', windowStart) < 0) return null
+
+        val windowLines = text.substring(windowStart).lines()
+        val tailLineComplete = isTailLineComplete(text)
+        val windowDefs = collectLinkDefinitions(windowLines, isStreaming = true, tailLineComplete = tailLineComplete)
+        // 右侧覆盖左侧 = 前缀优先，与全量扫描"首次出现优先"的语义一致
+        val mergedDefs = if (windowDefs.isEmpty()) previous.result.linkDefs else windowDefs + previous.result.linkDefs
+        val windowBlocks = parseBlocks(windowLines, 0, windowLines.size, true, mergedDefs, tailLineComplete)
+        val shifted = windowBlocks.map { shiftBlockOffsets(it, windowStart) }
+        return IncrementalParseState(
+            text = text,
+            result = ParseResult(kept + shifted, mergedDefs),
+            hasCarriageReturn = false
+        )
+    }
+
+    /** 只平移顶层 offset；嵌套子块的 offset 是子行列表局部坐标，与全量解析一致，按引用复用。 */
+    private fun shiftBlockOffsets(block: MdBlock, delta: Int): MdBlock {
+        return when (block) {
+            is MdBlock.Heading -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.CodeBlock -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.UnorderedList -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.OrderedList -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.TaskList -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.Blockquote -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.Table -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.MathBlock -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.Paragraph -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+            is MdBlock.HorizontalRule -> block.copy(startOffset = block.startOffset + delta, endOffset = block.endOffset + delta)
+        }
+    }
+
     private fun collectLinkDefinitions(
         lines: List<String>,
         isStreaming: Boolean,
@@ -554,7 +653,12 @@ class BlockParser {
             }
         }
 
-        val children = parseBlocks(quoteLines, 0, quoteLines.size, isStreaming, linkDefs, tailLineComplete)
+        // 仅当引用块消费到本层末尾（可能含全局尾行）才下传真实 tailLineComplete；
+        // 中部容器的子行全部是完整行，按稳定处理，保证前缀 block 的解析只依赖自身内容。
+        val children = parseBlocks(
+            quoteLines, 0, quoteLines.size, isStreaming, linkDefs,
+            if (i >= lines.size) tailLineComplete else true
+        )
         val endOffset = offset - 1
 
         return BlockquoteResult(MdBlock.Blockquote(children, startOffset, endOffset), i, offset)
@@ -595,7 +699,11 @@ class BlockParser {
                 childLines.addAll(normalizeListContinuationLines(continuation.lines))
                 i = continuation.nextLineIndex
                 offset = continuation.nextOffset
-                val childBlocks = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
+                // 同引用块：仅列表项延伸到本层末尾时才下传真实 tailLineComplete
+                val childBlocks = parseBlocks(
+                    childLines, 0, childLines.size, isStreaming, linkDefs,
+                    if (i >= lines.size) tailLineComplete else true
+                )
                 items.add(Pair(taskItem, childBlocks))
             } else {
                 break
@@ -637,7 +745,11 @@ class BlockParser {
                 childLines.addAll(normalizeListContinuationLines(continuation.lines))
                 i = continuation.nextLineIndex
                 offset = continuation.nextOffset
-                val childBlocks = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
+                // 同引用块：仅列表项延伸到本层末尾时才下传真实 tailLineComplete
+                val childBlocks = parseBlocks(
+                    childLines, 0, childLines.size, isStreaming, linkDefs,
+                    if (i >= lines.size) tailLineComplete else true
+                )
                 items.add(childBlocks)
             } else {
                 break
@@ -680,7 +792,11 @@ class BlockParser {
                 childLines.addAll(normalizeListContinuationLines(continuation.lines))
                 i = continuation.nextLineIndex
                 offset = continuation.nextOffset
-                val childBlocks = parseBlocks(childLines, 0, childLines.size, isStreaming, linkDefs, tailLineComplete)
+                // 同引用块：仅列表项延伸到本层末尾时才下传真实 tailLineComplete
+                val childBlocks = parseBlocks(
+                    childLines, 0, childLines.size, isStreaming, linkDefs,
+                    if (i >= lines.size) tailLineComplete else true
+                )
                 items.add(childBlocks)
             } else {
                 break
