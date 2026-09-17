@@ -22,9 +22,11 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util.UUID
 
 object ChatHistoryStore {
@@ -848,12 +850,16 @@ object ChatHistoryStore {
         if (!file.exists() || !file.isFile) {
             return null
         }
-        return runCatching {
-            JSONObject(file.readText(Charsets.UTF_8))
-        }.onFailure { error ->
+        // 读取失败多为瞬时 IO 错误，不当作损坏隔离，留待下次重试；只有内容确实解析失败才隔离。
+        val text = runCatching { file.readText(Charsets.UTF_8) }.getOrElse { error ->
             MoteLog.e(Component, MoteLog.event("读取历史记录失败", "file" to file.name), error)
+            return null
+        }
+        return runCatching { JSONObject(text) }.getOrElse { error ->
+            MoteLog.e(Component, MoteLog.event("解析历史记录失败", "file" to file.name), error)
             quarantineCorruptedJsonFile(file)
-        }.getOrNull()
+            null
+        }
     }
 
     private fun quarantineCorruptedJsonFile(file: File) {
@@ -937,11 +943,27 @@ object ChatHistoryStore {
                 StandardCopyOption.REPLACE_EXISTING
             )
         } catch (_: AtomicMoveNotSupportedException) {
+            // 降级路径等价 copy+delete，非原子；记录警告便于定位半截文件，损坏由 quarantine 兜底。
+            MoteLog.w(Component, MoteLog.event("文件系统不支持原子移动，降级为普通替换", "file" to target.name))
             Files.move(
                 source.toPath(),
                 target.toPath(),
                 StandardCopyOption.REPLACE_EXISTING
             )
+        }
+        fsyncDirectoryQuietly(target.parentFile)
+    }
+
+    /**
+     * rename 后 fsync 父目录，掉电时保证新目录项已持久化。
+     * 不支持以只读方式打开目录的平台（如 Windows 测试环境）静默跳过，属尽力而为。
+     */
+    private fun fsyncDirectoryQuietly(dir: File?) {
+        dir ?: return
+        runCatching {
+            FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { channel ->
+                channel.force(true)
+            }
         }
     }
 
