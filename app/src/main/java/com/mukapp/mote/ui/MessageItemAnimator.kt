@@ -1,11 +1,11 @@
 package com.mukapp.mote.ui
 
-import android.animation.ObjectAnimator
 import androidx.recyclerview.widget.DefaultItemAnimator
-import androidx.recyclerview.widget.RecyclerView
 
 /**
- * 消息列表动画：新消息仅淡入，其余操作不做动画。
+ * 消息列表动画：新消息淡入（DefaultItemAnimator 的 add 动画本身即淡入，时长由 addDuration 控制），
+ * 禁用 change 动画。不再自定义 animateAdd：自跑动画并返回 false 违反 ItemAnimator 契约，
+ * 动画无法被 endAnimations 取消，holder 回收复用时会残留 alpha 动画。
  */
 class MessageItemAnimator : DefaultItemAnimator() {
 
@@ -13,24 +13,5 @@ class MessageItemAnimator : DefaultItemAnimator() {
         // 禁用 change 动画，避免流式更新时闪烁
         supportsChangeAnimations = false
         addDuration = 180
-    }
-
-    override fun animateAdd(holder: RecyclerView.ViewHolder): Boolean {
-        holder.itemView.alpha = 0f
-        val alphaAnim = ObjectAnimator.ofFloat(holder.itemView, "alpha", 0f, 1f).apply {
-            duration = addDuration
-        }
-        alphaAnim.addListener(object : android.animation.AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: android.animation.Animator) {
-                holder.itemView.alpha = 1f
-                dispatchAddFinished(holder)
-            }
-
-            override fun onAnimationCancel(animation: android.animation.Animator) {
-                holder.itemView.alpha = 1f
-            }
-        })
-        alphaAnim.start()
-        return false
     }
 }
