@@ -178,6 +178,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val streamingBuilders = mutableMapOf<String, StringBuilder>()
     private val dirtyStreamingPartIds = mutableSetOf<String>()
     private var cachedAssistantContent: String? = null
+    /** [cachedAssistantContent] 对应的 parts 列表实例；不同列表调用 buildAssistantContent 时防止串缓存。 */
+    private var cachedAssistantContentOwner: List<AssistantPart>? = null
     private var streamingTarget: StreamingTarget? = null
     private val streamingPublishScheduled = AtomicBoolean(false)
 
@@ -1341,20 +1343,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return parts + AssistantMarkdownPart(text = failureNotice)
     }
 
-    private fun appendAssistantToolResults(
-        parts: MutableList<AssistantPart>,
-        toolResults: List<ChatMessage>
-    ) {
-        toolResults.forEach { result ->
-            parts += AssistantToolPart(
-                id = result.toolCallId ?: UUID.randomUUID().toString(),
-                toolName = result.toolName.orEmpty(),
-                toolArguments = result.toolArguments.orEmpty(),
-                result = result.content
-            )
-        }
-    }
-
     private fun replaceLoadingToolParts(
         parts: MutableList<AssistantPart>,
         toolResults: List<ChatMessage>
@@ -1373,15 +1361,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun buildAssistantContent(parts: List<AssistantPart>): String = synchronized(streamingLock) {
-        cachedAssistantContent ?: parts.asSequence()
-            .mapNotNull { part ->
-                when (part) {
-                    is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
-                    else -> null
+        cachedAssistantContent?.takeIf { cachedAssistantContentOwner === parts }
+            ?: parts.asSequence()
+                .mapNotNull { part ->
+                    when (part) {
+                        is AssistantMarkdownPart -> part.text.takeIf { it.isNotBlank() }
+                        else -> null
+                    }
                 }
-            }
-            .joinToString(separator = "\n\n")
-            .also { cachedAssistantContent = it }
+                .joinToString(separator = "\n\n")
+                .also {
+                    cachedAssistantContent = it
+                    cachedAssistantContentOwner = parts
+                }
     }
 
     private suspend fun streamChatWithRetries(
@@ -1855,13 +1847,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             decision?.complete(false)
         }
-    }
-
-    private fun rebuildConversationFromUiMessages() {
-        conversationMessagesInternal.clear()
-        conversationMessagesInternal.addAll(ChatConversationContextHelper.rebuildConversationFromUiMessages(uiMessagesInternal))
-        contextSummariesInternal.clear()
-        clearContextTokenUsageAnchor()
     }
 
     private fun rebuildConversationAfterUiMutation(affectedMessageIds: Set<String>) {
