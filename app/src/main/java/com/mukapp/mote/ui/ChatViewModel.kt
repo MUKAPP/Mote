@@ -38,6 +38,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
@@ -1713,7 +1714,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return try {
             decision.await()
         } finally {
-            withContext(Dispatchers.Main) {
+            // await 被取消时协程已处于取消态，不加 NonCancellable 会在 withContext 入口
+            // 直接抛出而跳过清理，残留确认 UI 与决策句柄。
+            withContext(Dispatchers.Main + NonCancellable) {
                 if (pendingToolConfirmationDecision == decision) {
                     clearPendingToolConfirmation(discardToken = true, cancelDecision = true)
                 }
