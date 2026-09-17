@@ -86,7 +86,7 @@ class ChatFragment : Fragment() {
     private var latestSettings: ApiSettings = ApiSettings()
     private var latestIsSending: Boolean = false
     private var latestDraftAttachments: List<ChatAttachment> = emptyList()
-    private var latestShellConfirmation: ShellConfirmationUiState? = null
+    private var latestToolConfirmation: ToolConfirmationUiState? = null
     private var followOutput: Boolean = true
     private var userScrolling: Boolean = false
     private var updatingDraft: Boolean = false
@@ -410,10 +410,10 @@ class ChatFragment : Fragment() {
             }
         }
         binding.btnConfirmShellConfirmation.setOnClickListener {
-            viewModel.confirmPendingShellCommand()
+            viewModel.confirmPendingToolAction()
         }
         binding.btnCancelShellConfirmation.setOnClickListener {
-            viewModel.cancelPendingShellCommand()
+            viewModel.cancelPendingToolAction()
         }
         renderSendButton()
     }
@@ -526,9 +526,9 @@ class ChatFragment : Fragment() {
             updateScrollToBottomButton()
         }
 
-        viewModel.shellConfirmation.observe(viewLifecycleOwner) { confirmation ->
-            latestShellConfirmation = confirmation
-            renderShellConfirmation()
+        viewModel.toolConfirmation.observe(viewLifecycleOwner) { confirmation ->
+            latestToolConfirmation = confirmation
+            renderToolConfirmation()
         }
 
         viewModel.draftMessage.observe(viewLifecycleOwner) { draft ->
@@ -621,13 +621,19 @@ class ChatFragment : Fragment() {
         }
     }
 
-    private fun renderShellConfirmation() {
-        val confirmation = latestShellConfirmation
+    private fun renderToolConfirmation() {
+        val confirmation = latestToolConfirmation
         if (confirmation == null) {
-            setShellConfirmationVisible(false)
+            setToolConfirmationVisible(false)
             return
         }
 
+        binding.textShellConfirmationTitle.setText(
+            when (confirmation.type) {
+                ToolConfirmationType.Shell -> R.string.shell_confirmation_title
+                ToolConfirmationType.SensitivePath -> R.string.path_confirmation_title
+            }
+        )
         binding.textShellConfirmationRisk.text = getString(
             R.string.shell_confirmation_risk,
             confirmation.risk
@@ -636,16 +642,23 @@ class ChatFragment : Fragment() {
             R.string.shell_confirmation_description,
             confirmation.description.ifBlank { getString(R.string.shell_confirmation_description_empty) }
         )
-        binding.textShellConfirmationCommand.text = buildString {
-            val workDir = confirmation.workDir?.takeIf { it.isNotBlank() } ?: "默认目录"
-            append(getString(R.string.shell_confirmation_work_dir, workDir))
-            append('\n')
-            append(confirmation.command)
+        binding.textShellConfirmationCommand.text = when (confirmation.type) {
+            ToolConfirmationType.Shell -> buildString {
+                val workDir = confirmation.workDir?.takeIf { it.isNotBlank() } ?: "默认目录"
+                append(getString(R.string.shell_confirmation_work_dir, workDir))
+                append('\n')
+                append(confirmation.command.orEmpty())
+            }
+
+            ToolConfirmationType.SensitivePath -> getString(
+                R.string.path_confirmation_target,
+                confirmation.path.orEmpty()
+            )
         }
-        setShellConfirmationVisible(true)
+        setToolConfirmationVisible(true)
     }
 
-    private fun setShellConfirmationVisible(visible: Boolean) {
+    private fun setToolConfirmationVisible(visible: Boolean) {
         val binding = _binding ?: return
         if (binding.cardShellConfirmation.isVisible != visible) {
             binding.cardShellConfirmation.visibility = if (visible) View.VISIBLE else View.GONE

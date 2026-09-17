@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 object ShellProcessManager {
@@ -21,7 +22,9 @@ object ShellProcessManager {
         val outputBuffer: StringBuilder = StringBuilder(),
         val errorBuffer: StringBuilder = StringBuilder(),
         @Volatile var outputFinished: Boolean = false,
-        @Volatile var errorFinished: Boolean = false
+        @Volatile var errorFinished: Boolean = false,
+        /** 两条 reader 线程各 countDown 一次；进程退出后等待它读完管道残余再快照。 */
+        val streamsDrained: CountDownLatch = CountDownLatch(2)
     ) {
         val isComplete: Boolean get() = !process.isAlive && outputFinished && errorFinished
     }
@@ -216,6 +219,7 @@ object ShellProcessManager {
                 MoteLog.w(Component, MoteLog.event("shell 标准输出读取异常", "id" to id), error)
             } finally {
                 entry.outputFinished = true
+                entry.streamsDrained.countDown()
                 MoteLog.d(Component, MoteLog.event("shell 标准输出读取结束", "id" to id))
             }
         }, "ShellStdout-$id").start()
@@ -237,6 +241,7 @@ object ShellProcessManager {
                 MoteLog.w(Component, MoteLog.event("shell 标准错误读取异常", "id" to id), error)
             } finally {
                 entry.errorFinished = true
+                entry.streamsDrained.countDown()
                 MoteLog.d(Component, MoteLog.event("shell 标准错误读取结束", "id" to id))
             }
         }, "ShellStderr-$id").start()

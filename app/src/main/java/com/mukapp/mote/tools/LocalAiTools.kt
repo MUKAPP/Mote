@@ -26,10 +26,12 @@ import org.json.JSONTokener
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InterruptedIOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
+import java.nio.channels.ClosedByInterruptException
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
@@ -48,6 +50,7 @@ import java.util.concurrent.atomic.AtomicReference
 object LocalAiTools {
     private const val Component = "Tools"
     private const val ReadFileToolName = "read_file"
+    private const val ReadLocalFileToolAlias = "read_local_file"
     private const val ListPathToolName = "list_path"
     private const val GetCurrentTimeToolName = "get_current_time"
     private const val FetchUrlToolName = "fetch_url"
@@ -57,6 +60,10 @@ object LocalAiTools {
     private const val ShellStatusToolName = "shell_status"
     private const val ShellStopToolName = "shell_stop"
     const val WaitToolName = "wait"
+
+    /** 可能返回 needs_confirmation 结果的工具，UI 层据此识别历史消息中的确认请求。 */
+    private val ConfirmationCapableToolNames =
+        setOf(ShellToolName, ReadFileToolName, ReadLocalFileToolAlias, ListPathToolName)
 
     private const val MaxReadLines = 400
     private const val MaxListEntries = 200
@@ -80,17 +87,36 @@ object LocalAiTools {
     private const val DefaultAnysearchSearchEndpoint = "https://api.anysearch.com/v1/search"
     private const val ShellShortTimeoutMs = 30_000L
     private const val MaxShellOutputChars = 8000
-    private const val ShellConfirmationTtlMs = 10 * 60 * 1000L
+    private const val ToolConfirmationTtlMs = 10 * 60 * 1000L
+    private const val SensitivePathRisk = "读取应用私有数据"
 
-    private data class PendingShellConfirmation(
-        val id: String,
-        val command: String,
-        val workDir: String?,
-        val background: Boolean,
-        val risk: String,
-        val createdAtMs: Long = System.currentTimeMillis(),
-        @Volatile var active: Boolean = false
-    )
+    /** 待用户确认的工具操作令牌。sealed 载荷决定消费时的指纹匹配方式。 */
+    private sealed interface PendingToolConfirmation {
+        val id: String
+        val risk: String
+        val createdAtMs: Long
+        var active: Boolean
+
+        data class Shell(
+            override val id: String,
+            val command: String,
+            val workDir: String?,
+            val background: Boolean,
+            override val risk: String,
+            override val createdAtMs: Long = System.currentTimeMillis(),
+            @Volatile override var active: Boolean = false
+        ) : PendingToolConfirmation
+
+        data class SensitivePath(
+            override val id: String,
+            /** 规范化工具名：read_local_file 别名归一为 read_file。 */
+            val toolName: String,
+            val canonicalPath: String,
+            override val risk: String,
+            override val createdAtMs: Long = System.currentTimeMillis(),
+            @Volatile override var active: Boolean = false
+        ) : PendingToolConfirmation
+    }
 
     internal data class WebViewFetchOptions(
         val url: URL,
@@ -112,10 +138,19 @@ object LocalAiTools {
         val error: String? = null
     )
 
+    /** fetch_webview 主线程交回 IO 线程的结果载体：重解析（JSON + HTML→Markdown）留给 IO 线程做。 */
+    private sealed interface WebViewFetchOutcome {
+        /** evaluateJavascript 的原始返回值，待 IO 线程解析。finalUrl 须在销毁 WebView 前于主线程取好。 */
+        data class RawExtraction(val value: String?, val finalUrl: String) : WebViewFetchOutcome
+
+        /** 已构造完成的最终 JSON（错误/超时路径，构造成本低，留在主线程）。 */
+        data class Completed(val json: String) : WebViewFetchOutcome
+    }
+
     internal var tavilySearchEndpoint: String = DefaultTavilySearchEndpoint
     internal var anysearchSearchEndpoint: String = DefaultAnysearchSearchEndpoint
 
-    private val pendingShellConfirmations = ConcurrentHashMap<String, PendingShellConfirmation>()
+    private val pendingToolConfirmations = ConcurrentHashMap<String, PendingToolConfirmation>()
 
     internal var htmlToMarkdownConverter: (String) -> String = { html ->
         FlexmarkHtmlConverter.builder().build().convert(html).trim()
@@ -186,8 +221,9 @@ object LocalAiTools {
         )
         val output = runCatching {
             when (toolCall.name) {
-                ReadFileToolName, "read_local_file" -> readFile(toolCall.arguments)
-                ListPathToolName -> listPath(toolCall.arguments)
+                ReadFileToolName, ReadLocalFileToolAlias ->
+                    readFile(toolCall.arguments, SensitivePathGuard.forPrivateData(context))
+                ListPathToolName -> listPath(toolCall.arguments, SensitivePathGuard.forPrivateData(context))
                 GetCurrentTimeToolName -> getCurrentTime()
                 FetchUrlToolName -> fetchUrl(toolCall.arguments)
                 FetchWebViewToolName -> fetchWebView(context, toolCall.arguments)
@@ -213,6 +249,11 @@ object LocalAiTools {
                 )
             )
         }.getOrElse { error ->
+            if (error.isInterruption()) {
+                // 工具被取消（runInterruptible 中断执行线程）：恢复中断位并上抛，让协程取消正常传播。
+                Thread.currentThread().interrupt()
+                throw error
+            }
             JSONObject().apply {
                 put("ok", false)
                 put("error", error.message ?: "工具执行失败")
@@ -239,20 +280,27 @@ object LocalAiTools {
         )
     }
 
-    fun activatePendingShellConfirmation(confirmationId: String): Boolean {
+    /** 中断族异常：线程被 runInterruptible 中断（工具取消）时抛出，不应被吞成普通错误结果。 */
+    private fun Throwable.isInterruption(): Boolean =
+        this is InterruptedException ||
+                this is InterruptedIOException ||
+                this is ClosedByInterruptException ||
+                (cause?.isInterruption() == true)
+
+    fun activatePendingToolConfirmation(confirmationId: String): Boolean {
         val now = System.currentTimeMillis()
-        val confirmation = pendingShellConfirmations[confirmationId] ?: run {
+        val confirmation = pendingToolConfirmations[confirmationId] ?: run {
             MoteLog.w(
                 Component,
-                MoteLog.event("Shell 确认令牌不存在", "confirmationId" to MoteLog.shortId(confirmationId))
+                MoteLog.event("工具确认令牌不存在", "confirmationId" to MoteLog.shortId(confirmationId))
             )
             return false
         }
-        if (now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
-            pendingShellConfirmations.remove(confirmationId)
+        if (now - confirmation.createdAtMs > ToolConfirmationTtlMs) {
+            pendingToolConfirmations.remove(confirmationId)
             MoteLog.w(
                 Component,
-                MoteLog.event("Shell 确认令牌已过期", "confirmationId" to MoteLog.shortId(confirmationId))
+                MoteLog.event("工具确认令牌已过期", "confirmationId" to MoteLog.shortId(confirmationId))
             )
             return false
         }
@@ -260,9 +308,9 @@ object LocalAiTools {
         MoteLog.i(
             Component,
             MoteLog.event(
-                "Shell 确认令牌已激活",
+                "工具确认令牌已激活",
                 "confirmationId" to MoteLog.shortId(confirmationId),
-                "background" to confirmation.background,
+                "type" to confirmation.javaClass.simpleName,
                 "risk" to confirmation.risk
             )
         )
@@ -271,61 +319,185 @@ object LocalAiTools {
 
     /**
      * 清掉从未被查询过的过期令牌。
-     * 令牌里带着完整命令文本，而 [activatePendingShellConfirmation] 只在命中时才发现过期，
+     * 令牌里带着完整命令文本或路径，而 [activatePendingToolConfirmation] 只在命中时才发现过期，
      * 没有这一步的话它们会随进程常驻。注册频率很低，不需要独立定时器。
      */
-    private fun purgeExpiredShellConfirmations() {
+    private fun purgeExpiredToolConfirmations() {
         val now = System.currentTimeMillis()
-        val expired = pendingShellConfirmations.entries
-            .filter { (_, confirmation) -> now - confirmation.createdAtMs > ShellConfirmationTtlMs }
+        val expired = pendingToolConfirmations.entries
+            .filter { (_, confirmation) -> now - confirmation.createdAtMs > ToolConfirmationTtlMs }
             .map { (id, _) -> id }
         if (expired.isEmpty()) {
             return
         }
-        expired.forEach { pendingShellConfirmations.remove(it) }
+        expired.forEach { pendingToolConfirmations.remove(it) }
         MoteLog.d(
             Component,
-            MoteLog.event("已清理过期 Shell 确认令牌", "count" to expired.size)
+            MoteLog.event("已清理过期工具确认令牌", "count" to expired.size)
         )
     }
 
-    /** ViewModel 销毁时调用，避免命令文本随进程常驻。 */
-    fun discardAllPendingShellConfirmations() {
-        val count = pendingShellConfirmations.size
+    /** ViewModel 销毁时调用，避免命令文本或路径随进程常驻。 */
+    fun discardAllPendingToolConfirmations() {
+        val count = pendingToolConfirmations.size
         if (count == 0) {
             return
         }
-        pendingShellConfirmations.clear()
+        pendingToolConfirmations.clear()
         MoteLog.i(
             Component,
-            MoteLog.event("已丢弃全部 Shell 确认令牌", "count" to count)
+            MoteLog.event("已丢弃全部工具确认令牌", "count" to count)
         )
     }
 
-    fun discardPendingShellConfirmation(confirmationId: String) {
-        pendingShellConfirmations.remove(confirmationId)?.let { confirmation ->
+    fun discardPendingToolConfirmation(confirmationId: String) {
+        pendingToolConfirmations.remove(confirmationId)?.let { confirmation ->
             MoteLog.i(
                 Component,
                 MoteLog.event(
-                    "Shell 确认令牌已丢弃",
+                    "工具确认令牌已丢弃",
                     "confirmationId" to MoteLog.shortId(confirmationId),
-                    "background" to confirmation.background,
+                    "type" to confirmation.javaClass.simpleName,
                     "risk" to confirmation.risk
                 )
             )
         }
     }
 
-    fun isShellConfirmationRequest(message: ChatMessage): Boolean {
-        return message.toolName == ShellToolName && isShellConfirmationRequest(message.content)
+    fun isToolConfirmationRequest(message: ChatMessage): Boolean {
+        return message.toolName in ConfirmationCapableToolNames && isToolConfirmationRequest(message.content)
     }
 
-    fun isShellConfirmationRequest(content: String): Boolean {
+    fun isToolConfirmationRequest(content: String): Boolean {
         val payload = runCatching { JSONObject(content) }.getOrNull() ?: return false
         return !payload.optBoolean("ok", true) && payload.optBoolean("needs_confirmation", false)
     }
 
-    internal fun readFile(arguments: String): String {
+    /** read_file/list_path 的敏感路径守卫：应用私有数据目录须经用户确认，files/shell 子树豁免。 */
+    internal class SensitivePathGuard private constructor(
+        private val sensitiveRoots: List<File>,
+        private val exemptRoots: List<File>
+    ) {
+        fun isSensitive(canonicalTarget: File): Boolean =
+            sensitiveRoots.any { isUnder(canonicalTarget, it) } &&
+                    exemptRoots.none { isUnder(canonicalTarget, it) }
+
+        private fun isUnder(target: File, root: File): Boolean =
+            target.path == root.path || target.path.startsWith(root.path + File.separator)
+
+        companion object {
+            /** 空守卫：不拦截任何路径（单元测试使用）。 */
+            val Disabled = SensitivePathGuard(emptyList(), emptyList())
+
+            fun forPrivateData(context: Context): SensitivePathGuard {
+                // /data/data/<pkg> 与 /data/user/0/<pkg> 互为别名，目标路径 canonical 后通常归一；
+                // 为防设备差异两个根都登记（canonical 失败退回原始 File 仍可前缀匹配）。
+                val roots = listOf(context.dataDir, File("/data/data/${context.packageName}"))
+                    .map { root -> runCatching { root.canonicalFile }.getOrDefault(root) }
+                    .distinctBy { it.path }
+                // 豁免 BusyBox 目录与 AI 临时目录回退位置（filesDir/shell/tmp），避免误伤正常工具链。
+                val shellDir = File(context.filesDir, "shell")
+                val exempt = listOf(runCatching { shellDir.canonicalFile }.getOrDefault(shellDir))
+                return SensitivePathGuard(roots, exempt)
+            }
+        }
+    }
+
+    /**
+     * 敏感路径确认检查：目标位于私有数据目录且未持有效确认令牌时，登记令牌并返回 needs_confirmation 结果。
+     * 必须在 exists/canRead 检查之前调用，避免通过报错文案探测私有目录内文件的存在性。
+     */
+    private fun checkSensitivePathConfirmation(
+        payload: JSONObject,
+        toolName: String,
+        target: File,
+        guard: SensitivePathGuard
+    ): String? {
+        if (!guard.isSensitive(target)) {
+            return null
+        }
+        val confirmationId = payload.optString("confirmation_id").trim().takeIf { it.isNotEmpty() }
+        if (consumeSensitivePathConfirmation(confirmationId, toolName, target.path)) {
+            return null
+        }
+        val id = "confirm_${UUID.randomUUID().toString().take(8)}"
+        purgeExpiredToolConfirmations()
+        pendingToolConfirmations[id] = PendingToolConfirmation.SensitivePath(
+            id = id,
+            toolName = toolName,
+            canonicalPath = target.path,
+            risk = SensitivePathRisk
+        )
+        MoteLog.w(
+            Component,
+            MoteLog.event(
+                "工具访问应用私有数据目录，等待用户确认",
+                "confirmationId" to MoteLog.shortId(id),
+                "tool" to toolName,
+                "pathHash" to MoteLog.fingerprint(target.path)
+            )
+        )
+        return JSONObject().apply {
+            put("ok", false)
+            put("needs_confirmation", true)
+            put("confirmation_type", "sensitive_path")
+            put("confirmation_id", id)
+            put("tool", toolName)
+            put("path", target.path)
+            put("risk", SensitivePathRisk)
+            put("message", "目标路径位于应用私有数据目录，可能包含 API 密钥等敏感信息，需要用户确认后才能读取。")
+        }.toString(2)
+    }
+
+    private fun consumeSensitivePathConfirmation(
+        confirmationId: String?,
+        toolName: String,
+        canonicalPath: String
+    ): Boolean {
+        val id = confirmationId ?: return false
+        val confirmation = pendingToolConfirmations[id] ?: return false
+        val now = System.currentTimeMillis()
+        if (!confirmation.active || now - confirmation.createdAtMs > ToolConfirmationTtlMs) {
+            pendingToolConfirmations.remove(id)
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "敏感路径确认消费失败：未激活或已过期",
+                    "confirmationId" to MoteLog.shortId(id),
+                    "active" to confirmation.active
+                )
+            )
+            return false
+        }
+        if (confirmation !is PendingToolConfirmation.SensitivePath ||
+            confirmation.toolName != toolName ||
+            confirmation.canonicalPath != canonicalPath
+        ) {
+            MoteLog.w(
+                Component,
+                MoteLog.event(
+                    "敏感路径确认消费失败：请求不匹配",
+                    "confirmationId" to MoteLog.shortId(id),
+                    "tool" to toolName,
+                    "pathHash" to MoteLog.fingerprint(canonicalPath)
+                )
+            )
+            return false
+        }
+        pendingToolConfirmations.remove(id)
+        MoteLog.i(
+            Component,
+            MoteLog.event(
+                "敏感路径确认令牌已消费",
+                "confirmationId" to MoteLog.shortId(id),
+                "tool" to toolName,
+                "pathHash" to MoteLog.fingerprint(canonicalPath)
+            )
+        )
+        return true
+    }
+
+    internal fun readFile(arguments: String, guard: SensitivePathGuard = SensitivePathGuard.Disabled): String {
         val payload = JSONObject(arguments)
         val rawPath = payload.optString("path").trim()
         require(rawPath.isNotEmpty()) { "path 不能为空。" }
@@ -337,6 +509,7 @@ object LocalAiTools {
         val firstLines = rawFirstLines?.takeIf { it > 0 || !hasExplicitRange }
 
         val targetFile = File(rawPath).canonicalFile
+        checkSensitivePathConfirmation(payload, ReadFileToolName, targetFile, guard)?.let { return it }
         require(targetFile.exists() && targetFile.isFile) { "文件不存在。" }
         require(targetFile.canRead()) {
             "文件不可读，当前应用可能没有权限访问该路径。对于外部存储路径，请先在设置页授予文件管理应用权限。"
@@ -414,7 +587,7 @@ object LocalAiTools {
         }.toString(2)
     }
 
-    private fun listPath(arguments: String): String {
+    private fun listPath(arguments: String, guard: SensitivePathGuard = SensitivePathGuard.Disabled): String {
         val payload = JSONObject(arguments)
         val rawPath = payload.optString("path").trim()
         require(rawPath.isNotEmpty()) { "path 不能为空。" }
@@ -424,6 +597,7 @@ object LocalAiTools {
         require(limit <= MaxListEntries) { "limit 不能超过 $MaxListEntries。" }
 
         val target = File(rawPath).canonicalFile
+        checkSensitivePathConfirmation(payload, ListPathToolName, target, guard)?.let { return it }
         require(target.exists()) { "路径不存在。" }
         require(target.canRead()) {
             "路径不可读，当前应用可能没有权限访问该路径。对于外部存储路径，请先在设置页授予文件管理应用权限。"
@@ -533,6 +707,9 @@ object LocalAiTools {
         var currentUrl = initialUrl
         val redirects = JSONArray()
         repeat(MaxFetchRedirects + 1) { redirectCount ->
+            if (Thread.interrupted()) {
+                throw InterruptedException("fetch_url 已被中断。")
+            }
             val connection = (currentUrl.openConnection() as HttpURLConnection)
             try {
                 connection.instanceFollowRedirects = false
@@ -758,14 +935,16 @@ object LocalAiTools {
             }.toString(2)
         }
 
-        val result = AtomicReference<String>()
+        val result = AtomicReference<WebViewFetchOutcome>()
         val latch = CountDownLatch(1)
+        val cancelHook = AtomicReference<(() -> Unit)?>()
         Handler(Looper.getMainLooper()).post {
             runCatching {
-                startFetchWebViewOnMainThread(context.applicationContext, options) { output ->
-                    result.set(output)
+                val hook = startFetchWebViewOnMainThread(context.applicationContext, options) { outcome ->
+                    result.set(outcome)
                     latch.countDown()
                 }
+                cancelHook.set(hook)
             }.onFailure { error ->
                 MoteLog.w(
                     Component,
@@ -776,18 +955,20 @@ object LocalAiTools {
                     )
                 )
                 result.set(
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("url", options.url.toString())
-                        put("final_url", options.url.toString())
-                        put("output_format", options.outputFormat)
-                        put("error", error.message ?: "WebView 初始化失败。")
-                    }.toString(2)
+                    WebViewFetchOutcome.Completed(
+                        buildWebViewErrorJson(options, error.message ?: "WebView 初始化失败。", options.url.toString())
+                    )
                 )
                 latch.countDown()
             }
         }
-        val completed = latch.await((options.timeoutSeconds + 5).toLong(), TimeUnit.SECONDS)
+        val completed = try {
+            latch.await((options.timeoutSeconds + 5).toLong(), TimeUnit.SECONDS)
+        } catch (interrupted: InterruptedException) {
+            // 工具被取消：回主线程销毁 WebView（finishOnce 的 CAS 防重复），中断继续上抛。
+            Handler(Looper.getMainLooper()).post { cancelHook.get()?.invoke() }
+            throw interrupted
+        }
         if (!completed) {
             MoteLog.w(
                 Component,
@@ -797,28 +978,52 @@ object LocalAiTools {
                     "timeoutSeconds" to options.timeoutSeconds
                 )
             )
-            return JSONObject().apply {
-                put("ok", false)
-                put("url", options.url.toString())
-                put("final_url", options.url.toString())
-                put("output_format", options.outputFormat)
-                put("error", "WebView 抓取等待超时。")
-            }.toString(2)
+            return buildWebViewErrorJson(options, "WebView 抓取等待超时。", options.url.toString())
         }
-        return result.get().orEmpty()
+        // 重解析在 IO 线程完成，主线程只负责交出原始提取值。
+        return when (val outcome = result.get()) {
+            null -> ""
+            is WebViewFetchOutcome.Completed -> outcome.json
+            is WebViewFetchOutcome.RawExtraction -> runCatching {
+                val page = parseWebViewExtractedPage(outcome.value, outcome.finalUrl)
+                formatWebViewFetchResult(options, page)
+            }.getOrElse { error ->
+                MoteLog.w(
+                    Component,
+                    MoteLog.event(
+                        "fetch_webview 内容处理失败",
+                        "origin" to MoteLog.safeUrlOrigin(options.url.toString()),
+                        "error" to error
+                    )
+                )
+                buildWebViewErrorJson(options, "WebView 内容处理失败：${error.readableMessage()}", outcome.finalUrl)
+            }
+        }
     }
 
+    private fun buildWebViewErrorJson(options: WebViewFetchOptions, message: String, finalUrl: String): String {
+        return JSONObject().apply {
+            put("ok", false)
+            put("url", options.url.toString())
+            put("final_url", finalUrl)
+            put("output_format", options.outputFormat)
+            put("truncated", false)
+            put("error", message)
+        }.toString(2)
+    }
+
+    /** 在主线程创建并驱动 WebView。返回取消钩子（须在主线程调用），用于工具被取消时销毁 WebView。 */
     @SuppressLint("SetJavaScriptEnabled")
     private fun startFetchWebViewOnMainThread(
         context: Context,
         options: WebViewFetchOptions,
-        onComplete: (String) -> Unit
-    ) {
+        onComplete: (WebViewFetchOutcome) -> Unit
+    ): () -> Unit {
         val webView = WebView(context)
         val completed = AtomicBoolean(false)
         val handler = Handler(Looper.getMainLooper())
 
-        fun finishOnce(output: String) {
+        fun finishOnce(output: WebViewFetchOutcome) {
             if (!completed.compareAndSet(false, true)) {
                 return
             }
@@ -841,16 +1046,7 @@ object LocalAiTools {
                     "messageLength" to message.length
                 )
             )
-            finishOnce(
-                JSONObject().apply {
-                    put("ok", false)
-                    put("url", options.url.toString())
-                    put("final_url", finalUrl)
-                    put("output_format", options.outputFormat)
-                    put("truncated", false)
-                    put("error", message)
-                }.toString(2)
-            )
+            finishOnce(WebViewFetchOutcome.Completed(buildWebViewErrorJson(options, message, finalUrl)))
         }
 
         fun extractPage() {
@@ -863,14 +1059,9 @@ object LocalAiTools {
                     if (completed.get()) {
                         return@evaluateJavascript
                     }
-                    runCatching {
-                        val page = parseWebViewExtractedPage(value, webView.url ?: options.url.toString())
-                        formatWebViewFetchResult(options, page)
-                    }.onSuccess { output ->
-                        finishOnce(output)
-                    }.onFailure { error ->
-                        finishError("WebView 内容处理失败：${error.readableMessage()}")
-                    }
+                    // 只交出原始值；JSON 解析与 HTML→Markdown 由 IO 线程完成，避免主线程重处理。
+                    val finalUrl = webView.url ?: options.url.toString()
+                    finishOnce(WebViewFetchOutcome.RawExtraction(value, finalUrl))
                 }
             }.onFailure { error ->
                 finishError("WebView 内容提取失败：${error.readableMessage()}")
@@ -934,6 +1125,8 @@ object LocalAiTools {
         }, options.timeoutSeconds * 1000L)
 
         webView.loadUrl(options.url.toString())
+
+        return { finishError("fetch_webview 已被取消。") }
     }
 
     private fun buildWebViewExtractionScript(outputFormat: String): String {
@@ -1065,6 +1258,9 @@ object LocalAiTools {
         stream.use { input ->
             val buffer = ByteArray(8192)
             while (true) {
+                if (Thread.interrupted()) {
+                    throw InterruptedException("网络读取已被中断。")
+                }
                 val read = input.read(buffer)
                 if (read == -1) {
                     break
@@ -1665,6 +1861,9 @@ object LocalAiTools {
         stream.bufferedReader(Charsets.UTF_8).use { reader ->
             val buffer = CharArray(4096)
             while (output.length <= maxChars) {
+                if (Thread.interrupted()) {
+                    throw InterruptedException("网络读取已被中断。")
+                }
                 val read = reader.read(buffer)
                 if (read == -1) {
                     break
@@ -1875,8 +2074,8 @@ object LocalAiTools {
         val risk = ShellRiskDetector.detect(command)
         if (risk != null && !consumeShellConfirmation(confirmationId, command, workDir, background)) {
             val id = "confirm_${UUID.randomUUID().toString().take(8)}"
-            purgeExpiredShellConfirmations()
-            pendingShellConfirmations[id] = PendingShellConfirmation(
+            purgeExpiredToolConfirmations()
+            pendingToolConfirmations[id] = PendingToolConfirmation.Shell(
                 id = id,
                 command = command,
                 workDir = workDir,
@@ -1897,6 +2096,7 @@ object LocalAiTools {
             return JSONObject().apply {
                 put("ok", false)
                 put("needs_confirmation", true)
+                put("confirmation_type", "shell")
                 put("confirmation_id", id)
                 put("command", command)
                 put("work_dir", workDir ?: JSONObject.NULL)
@@ -1941,6 +2141,11 @@ object LocalAiTools {
 
         val finished = entry.process.waitFor(ShellShortTimeoutMs, TimeUnit.MILLISECONDS)
         if (finished) {
+            // 进程退出不代表 reader 线程已读完管道残余，等它 drain 完再快照，避免尾部输出丢失。
+            val drained = entry.streamsDrained.await(2, TimeUnit.SECONDS)
+            if (!drained) {
+                MoteLog.w(Component, MoteLog.event("shell 输出流未在期限内读完", "id" to id))
+            }
             val stdout: String
             val stderr: String
             synchronized(entry.outputBuffer) { stdout = entry.outputBuffer.toString() }
@@ -2000,10 +2205,10 @@ object LocalAiTools {
         background: Boolean
     ): Boolean {
         val id = confirmationId ?: return false
-        val confirmation = pendingShellConfirmations[id] ?: return false
+        val confirmation = pendingToolConfirmations[id] ?: return false
         val now = System.currentTimeMillis()
-        if (!confirmation.active || now - confirmation.createdAtMs > ShellConfirmationTtlMs) {
-            pendingShellConfirmations.remove(id)
+        if (!confirmation.active || now - confirmation.createdAtMs > ToolConfirmationTtlMs) {
+            pendingToolConfirmations.remove(id)
             MoteLog.w(
                 Component,
                 MoteLog.event(
@@ -2014,7 +2219,11 @@ object LocalAiTools {
             )
             return false
         }
-        if (confirmation.command != command || confirmation.workDir != workDir || confirmation.background != background) {
+        if (confirmation !is PendingToolConfirmation.Shell ||
+            confirmation.command != command ||
+            confirmation.workDir != workDir ||
+            confirmation.background != background
+        ) {
             MoteLog.w(
                 Component,
                 MoteLog.event(
@@ -2025,7 +2234,7 @@ object LocalAiTools {
             )
             return false
         }
-        pendingShellConfirmations.remove(id)
+        pendingToolConfirmations.remove(id)
         MoteLog.i(
             Component,
             MoteLog.event(
@@ -2097,7 +2306,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ReadFileToolName)
-                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line。")
+                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line。读取应用私有数据目录（如 shared_prefs、files）需要用户确认。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -2134,6 +2343,13 @@ object LocalAiTools {
                                             put("description", "结束行号，从 1 开始，且不能小于 start_line。")
                                         }
                                     )
+                                    put(
+                                        "confirmation_id",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "读取应用私有数据目录前由应用内部填充的确认 ID。模型不要自行生成此字段。")
+                                        }
+                                    )
                                 }
                             )
                             put("required", JSONArray().put("description").put("path"))
@@ -2152,7 +2368,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ListPathToolName)
-                    put("description", "列出目录内容，或者返回单个文件的基础信息")
+                    put("description", "列出目录内容，或者返回单个文件的基础信息。查看应用私有数据目录需要用户确认。")
                     put(
                         "parameters",
                         JSONObject().apply {
@@ -2173,6 +2389,13 @@ object LocalAiTools {
                                         JSONObject().apply {
                                             put("type", "integer")
                                             put("description", "目录列表最多返回多少项，默认 100，最大 200")
+                                        }
+                                    )
+                                    put(
+                                        "confirmation_id",
+                                        JSONObject().apply {
+                                            put("type", "string")
+                                            put("description", "查看应用私有数据目录前由应用内部填充的确认 ID。模型不要自行生成此字段。")
                                         }
                                     )
                                 }

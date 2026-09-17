@@ -195,4 +195,6 @@
     <string name="shell_confirmation_description_empty">未提供说明</string>
     <string name="shell_confirmation_work_dir">工作目录：%1$s</string>
     <string name="shell_confirmation_confirm">确认执行</string>
+    <string name="path_confirmation_title">确认读取应用私有数据</string>
+    <string name="path_confirmation_target">目标路径：%1$s</string>
 </resources>
