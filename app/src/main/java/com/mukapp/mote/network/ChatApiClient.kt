@@ -62,6 +62,12 @@ object ChatApiClient {
         }
         .build()
 
+    // 流式聊天期间深度推理模型可能长时间不产出任何字节，120s 读超时会误判断流并触发重试；
+    // 派生共享连接池的流式专用 client，仅放宽读超时，其余超时与拦截器沿用。
+    private val streamingClient = client.newBuilder()
+        .readTimeout(300, TimeUnit.SECONDS)
+        .build()
+
     suspend fun generateConversationTitle(
         model: ResolvedModel,
         userMessage: String
@@ -386,7 +392,7 @@ object ChatApiClient {
             }.toString()
 
             val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = true)
-            val response = executeRequest(request)
+            val response = executeRequest(request, streamingClient)
 
             val statusCode = response.code
             MoteLog.i(
@@ -605,9 +611,12 @@ object ChatApiClient {
             .build()
     }
 
-    private suspend fun executeRequest(request: Request): Response {
+    private suspend fun executeRequest(
+        request: Request,
+        httpClient: OkHttpClient = client
+    ): Response {
         return suspendCancellableCoroutine { continuation ->
-            val call = client.newCall(request)
+            val call = httpClient.newCall(request)
             continuation.invokeOnCancellation {
                 call.cancel()
             }
