@@ -73,6 +73,10 @@ object LocalAiTools {
     private const val MaxFetchMaxChars = 100_000
     private const val MaxFetchResponseBytes = 1_000_000
     private const val MaxFetchRedirects = 5
+    // 文本清洗/Markdown 转换输入上限：输出按 max_chars 截断，超过 max_chars 若干倍的输入
+    // 几乎不可能进入输出，提前截掉以限制多遍正则与 Flexmark 的最坏处理成本。
+    private const val FetchProcessingCharsFactor = 8
+    private const val MinFetchProcessingChars = 160_000
     private const val DefaultWebViewTimeoutSeconds = 20
     private const val MaxWebViewTimeoutSeconds = 60
     private const val DefaultWebViewSettleMs = 1_000
@@ -852,15 +856,23 @@ object LocalAiTools {
                     }.toString(2)
                 }
                 val isHtml = isHtmlContent(contentType, bodyText)
+                // raw 直接按 max_chars 截断即可；text/markdown 的清洗与转换先限制输入长度，
+                // 避免为最终只保留 max_chars 的输出在整个响应体上做多遍处理。
+                val processingLimit = (maxChars.toLong() * FetchProcessingCharsFactor)
+                    .coerceAtLeast(MinFetchProcessingChars.toLong())
+                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                    .toInt()
+                val inputClipped = outputFormat != "raw" && bodyText.length > processingLimit
+                val processingInput = if (inputClipped) bodyText.substring(0, processingLimit) else bodyText
                 val markdownConversion = if (outputFormat == "markdown" && isHtml) {
-                    htmlToMarkdown(bodyText)
+                    htmlToMarkdown(processingInput)
                 } else {
                     null
                 }
                 val formattedContent = when (outputFormat) {
                     "raw" -> bodyText
-                    "markdown" -> markdownConversion?.content ?: bodyText
-                    else -> if (isHtml) htmlToPlainText(bodyText) else bodyText
+                    "markdown" -> markdownConversion?.content ?: processingInput
+                    else -> if (isHtml) htmlToPlainText(processingInput) else processingInput
                 }
                 val truncatedContent = formattedContent.length > maxChars
                 MoteLog.i(
@@ -873,7 +885,7 @@ object LocalAiTools {
                         "contentType" to contentType.substringBefore(';').ifBlank { "未返回" },
                         "redirects" to redirects.length(),
                         "converted" to (markdownConversion?.converted ?: false),
-                        "truncated" to (responseBody.truncated || truncatedContent),
+                        "truncated" to (responseBody.truncated || truncatedContent || inputClipped),
                         "contentLength" to formattedContent.length,
                         "durationMs" to MoteLog.durationMs(startMs)
                     )
@@ -887,7 +899,7 @@ object LocalAiTools {
                     put("output_format", outputFormat)
                     put("converted", markdownConversion?.converted ?: false)
                     markdownConversion?.error?.let { put("conversion_error", it) }
-                    put("truncated", responseBody.truncated || truncatedContent)
+                    put("truncated", responseBody.truncated || truncatedContent || inputClipped)
                     put("redirects", redirects)
                     put("content", if (truncatedContent) formattedContent.take(maxChars) else formattedContent)
                 }.toString(2)
