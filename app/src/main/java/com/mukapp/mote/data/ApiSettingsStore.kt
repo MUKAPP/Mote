@@ -36,20 +36,31 @@ object ApiSettingsStore {
     private const val LegacyKeyReasoningEffort = "reasoning_effort"
 
     fun load(context: Context): ApiSettings {
-        return load(context.getSharedPreferences(PrefName, Context.MODE_PRIVATE))
+        val preferences = context.getSharedPreferences(PrefName, Context.MODE_PRIVATE)
+        val storedJson = preferences.getString(KeySettingsJson, null)
+        val settings = load(preferences, KeystoreSecretCodec)
+        // 存量明文密钥升级：解析成功且发现明文密钥时立即以加密形式回写。
+        if (!storedJson.isNullOrBlank() && containsPlaintextSecret(storedJson)) {
+            save(preferences, settings, KeystoreSecretCodec)
+            MoteLog.i("Settings", "已将明文密钥升级为加密存储。")
+        }
+        return settings
     }
 
-    internal fun load(preferences: SharedPreferences): ApiSettings {
+    internal fun load(preferences: SharedPreferences, codec: SecretCodec = PlainSecretCodec): ApiSettings {
         val json = preferences.getString(KeySettingsJson, null)
         val settings = if (!json.isNullOrBlank()) {
-            runCatching { deserialize(JSONObject(json)) }.getOrElse { error ->
+            runCatching { deserialize(JSONObject(json), codec) }.getOrElse { error ->
                 MoteLog.w("Settings", "解析 API 设置 JSON 失败，回退为空设置。", error)
                 ApiSettings()
             }
         } else if (preferences.contains(LegacyKeyBaseUrl) || preferences.contains(LegacyKeyModel)) {
             migrateLegacy(preferences).also { migrated ->
-                // 迁移结果回写为新版 JSON，下次直接读取。
-                preferences.edit { putString(KeySettingsJson, serialize(migrated).toString()) }
+                // 迁移结果回写为新版 JSON，下次直接读取；同时清除旧版明文键。
+                preferences.edit {
+                    putString(KeySettingsJson, serialize(migrated, codec).toString())
+                    removeLegacyKeys()
+                }
                 MoteLog.i("Settings", "已迁移旧版单提供商设置为多提供商结构。")
             }
         } else {
@@ -60,40 +71,58 @@ object ApiSettingsStore {
     }
 
     fun save(context: Context, settings: ApiSettings) {
-        save(context.getSharedPreferences(PrefName, Context.MODE_PRIVATE), settings)
+        save(context.getSharedPreferences(PrefName, Context.MODE_PRIVATE), settings, KeystoreSecretCodec)
     }
 
-    internal fun save(preferences: SharedPreferences, settings: ApiSettings) {
+    internal fun save(
+        preferences: SharedPreferences,
+        settings: ApiSettings,
+        codec: SecretCodec = PlainSecretCodec
+    ) {
         preferences.edit {
-            putString(KeySettingsJson, serialize(settings).toString())
-            // 清理旧键，避免重复迁移。
-            remove(LegacyKeyBaseUrl)
-            remove(LegacyKeyApiKey)
-            remove(LegacyKeyModel)
-            remove(LegacyKeyTitleModel)
-            remove(LegacyKeyCompressionModel)
-            remove(LegacyKeyModelContextLength)
-            remove(LegacyKeyCompressionTriggerLength)
-            remove(LegacyKeySearxngUrl)
-            remove(LegacyKeyTavilyApiKey)
-            remove(LegacyKeyReasoningEffort)
+            putString(KeySettingsJson, serialize(settings, codec).toString())
+            removeLegacyKeys()
         }
         MoteLog.i("Settings", MoteLog.event("已保存 API 设置", *settings.safeLogFields()))
     }
 
-    // ==================== 序列化 ====================
-
-    /** 提供商与编辑页之间通过 JSON 字符串传递。 */
-    fun providerToJson(provider: ModelProvider): String = serializeProvider(provider).toString()
-
-    fun providerFromJson(json: String): ModelProvider? {
-        return runCatching { deserializeProvider(JSONObject(json)) }.getOrNull()
+    private fun SharedPreferences.Editor.removeLegacyKeys() {
+        // 清理旧键，避免重复迁移与明文密钥残留。
+        remove(LegacyKeyBaseUrl)
+        remove(LegacyKeyApiKey)
+        remove(LegacyKeyModel)
+        remove(LegacyKeyTitleModel)
+        remove(LegacyKeyCompressionModel)
+        remove(LegacyKeyModelContextLength)
+        remove(LegacyKeyCompressionTriggerLength)
+        remove(LegacyKeySearxngUrl)
+        remove(LegacyKeyTavilyApiKey)
+        remove(LegacyKeyReasoningEffort)
     }
 
-    private fun serialize(settings: ApiSettings): JSONObject {
+    /** 存量 JSON 中是否存在未加密的非空密钥字段。解析失败按无处理，与加载回退行为一致。 */
+    private fun containsPlaintextSecret(storedJson: String): Boolean {
+        return runCatching {
+            val root = JSONObject(storedJson)
+            val secrets = buildList {
+                add(root.optString("tavilyApiKey"))
+                add(root.optString("anysearchApiKey"))
+                root.optJSONArray("providers")?.let { array ->
+                    for (index in 0 until array.length()) {
+                        array.optJSONObject(index)?.let { add(it.optString("apiKey")) }
+                    }
+                }
+            }
+            secrets.any { it.isNotBlank() && !KeystoreSecretCodec.isEncoded(it) }
+        }.getOrDefault(false)
+    }
+
+    // ==================== 序列化 ====================
+
+    private fun serialize(settings: ApiSettings, codec: SecretCodec): JSONObject {
         return JSONObject().apply {
             put("providers", JSONArray().apply {
-                settings.providers.forEach { provider -> put(serializeProvider(provider)) }
+                settings.providers.forEach { provider -> put(serializeProvider(provider, codec)) }
             })
             settings.chatModel?.let { put("chatModel", serializeRef(it)) }
             settings.titleModel?.let { put("titleModel", serializeRef(it)) }
@@ -101,17 +130,17 @@ object ApiSettingsStore {
             put("compressionTriggerPercent", settings.compressionTriggerPercent)
             settings.searchProvider?.let { put("searchProvider", it.storageKey) }
             put("searxngUrl", settings.searxngUrl)
-            put("tavilyApiKey", settings.tavilyApiKey)
-            put("anysearchApiKey", settings.anysearchApiKey)
+            put("tavilyApiKey", codec.encode(settings.tavilyApiKey))
+            put("anysearchApiKey", codec.encode(settings.anysearchApiKey))
         }
     }
 
-    private fun serializeProvider(provider: ModelProvider): JSONObject {
+    private fun serializeProvider(provider: ModelProvider, codec: SecretCodec): JSONObject {
         return JSONObject().apply {
             put("id", provider.id)
             put("name", provider.name)
             put("baseUrl", provider.baseUrl)
-            put("apiKey", provider.apiKey)
+            put("apiKey", codec.encode(provider.apiKey))
             put("type", provider.type.storageKey)
             put("models", JSONArray().apply {
                 provider.models.forEach { model -> put(serializeModel(model, provider.type)) }
@@ -144,15 +173,17 @@ object ApiSettingsStore {
         }
     }
 
-    private fun deserialize(root: JSONObject): ApiSettings {
+    private fun deserialize(root: JSONObject, codec: SecretCodec): ApiSettings {
         val providers = root.optJSONArray("providers")?.let { array ->
             buildList {
                 for (index in 0 until array.length()) {
                     val item = array.optJSONObject(index) ?: continue
-                    add(deserializeProvider(item))
+                    add(deserializeProvider(item, codec))
                 }
             }
         }.orEmpty()
+        val tavilyApiKey = codec.decode(root.optString("tavilyApiKey"))
+        val anysearchApiKey = codec.decode(root.optString("anysearchApiKey"))
         return ApiSettings(
             providers = providers,
             chatModel = normalizeRef(providers, deserializeRef(root.optJSONObject("chatModel"))),
@@ -167,16 +198,16 @@ object ApiSettingsStore {
             searchProvider = SearchProvider.fromStorage(root.optString("searchProvider"))
                 ?: inferSearchProvider(
                     searxngUrl = root.optString("searxngUrl"),
-                    tavilyApiKey = root.optString("tavilyApiKey"),
-                    anysearchApiKey = root.optString("anysearchApiKey")
+                    tavilyApiKey = tavilyApiKey,
+                    anysearchApiKey = anysearchApiKey
                 ),
             searxngUrl = root.optString("searxngUrl"),
-            tavilyApiKey = root.optString("tavilyApiKey"),
-            anysearchApiKey = root.optString("anysearchApiKey")
+            tavilyApiKey = tavilyApiKey,
+            anysearchApiKey = anysearchApiKey
         )
     }
 
-    private fun deserializeProvider(json: JSONObject): ModelProvider {
+    private fun deserializeProvider(json: JSONObject, codec: SecretCodec): ModelProvider {
         val providerType = ProviderType.fromStorage(json.optString("type"))
         val models = json.optJSONArray("models")?.let { array ->
             buildList {
@@ -217,7 +248,7 @@ object ApiSettingsStore {
             id = json.optString("id").ifBlank { UUID.randomUUID().toString() },
             name = json.optString("name"),
             baseUrl = json.optString("baseUrl"),
-            apiKey = json.optString("apiKey"),
+            apiKey = codec.decode(json.optString("apiKey")),
             type = providerType,
             models = models
         )
