@@ -36,6 +36,7 @@ import kotlin.coroutines.resumeWithException
 object ChatApiClient {
     private const val Component = "Api"
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
+    private const val MAX_JSON_CANDIDATE_ATTEMPTS = 24
     private const val MODEL_API_USER_AGENT = "Mote/1.0 (Android; OpenAI-Compatible Client)"
 
     private val client = OkHttpClient.Builder()
@@ -437,7 +438,9 @@ object ChatApiClient {
                 val responseText = response.body?.string() ?: ""
                 currentCoroutineContext().ensureActive()
                 // 部分网关/反代会以 200 + HTML/错误 JSON 返回失败，先当错误响应解析。
-                if (looksLikeHtml(responseText) || looksLikeErrorPayload(responseText)) {
+                // 响应体只做一次 JSON 解析，判错与取结果复用同一 root。
+                val responseJson = runCatching { JSONObject(responseText.trim()) }.getOrNull()
+                if (responseJson == null || isErrorPayloadRoot(responseJson)) {
                     val errorMessage = parseErrorMessage(responseText)
                     throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
                 }
@@ -1081,6 +1084,13 @@ object ChatApiClient {
         val responseJson = runCatching { JSONObject(trimmedResponse) }.getOrElse { error ->
             throw IllegalStateException(parseErrorMessage(trimmedResponse), error)
         }
+        return parseAssistantReply(responseJson, appendFinishReasonNotice)
+    }
+
+    private fun parseAssistantReply(
+        responseJson: JSONObject,
+        appendFinishReasonNotice: Boolean = true
+    ): ChatCompletionResult {
         responseJson.opt("error")?.let { errorNode ->
             val errorText = when (errorNode) {
                 is JSONObject -> errorNode.toString()
@@ -1089,7 +1099,7 @@ object ChatApiClient {
             }
             // 有些网关会在 200 响应里塞 error，同时不给 choices。
             if (responseJson.optJSONArray("choices").isNullOrEmpty()) {
-                throw IllegalStateException(parseErrorMessage(errorText.ifBlank { trimmedResponse }))
+                throw IllegalStateException(parseErrorMessage(errorText.ifBlank { responseJson.toString() }))
             }
         }
         val choices = responseJson.optJSONArray("choices")
@@ -1371,11 +1381,17 @@ object ChatApiClient {
         }
 
         val candidate = trimmed.substring(start).trim()
-        // 逐步回退到最后一个 } 或 ]，尽量恢复被 HTML 包裹的 JSON。
+        // 逐步回退到靠后的 } 或 ]，尽量恢复被 HTML 包裹的 JSON。
+        // 每次尝试都是一遍完整解析，最坏 O(n²)，因此只试尾部有限个候选终点
+        //（真实场景 JSON 后通常只跟少量 HTML 收尾标签）。
+        var attempts = 0
         for (end in candidate.length downTo 2) {
             val ch = candidate[end - 1]
             if (ch != '}' && ch != ']') {
                 continue
+            }
+            if (++attempts > MAX_JSON_CANDIDATE_ATTEMPTS) {
+                break
             }
             val slice = candidate.substring(0, end).trim()
             if (runCatching { JSONObject(slice) }.isSuccess ||
@@ -1415,6 +1431,10 @@ object ChatApiClient {
                 runCatching { JSONObject(candidate) }.getOrNull()
             }
             ?: return false
+        return isErrorPayloadRoot(root)
+    }
+
+    private fun isErrorPayloadRoot(root: JSONObject): Boolean {
         if (root.has("error")) {
             return true
         }
