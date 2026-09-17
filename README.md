@@ -127,7 +127,7 @@ Shell 工具具备风险检测机制。命中删除、覆盖、权限破坏等�
 
 ## 数据存储
 
-- API 设置保存在应用私有存储中。
+- API 设置保存在应用私有存储中，接口密钥经 Android Keystore 加密后落盘。
 - 对话文件保存在 `chat_history/conversations/{conversationId}.json`（`schemaVersion=3`）。
 - 当前对话指针保存在 `chat_history/index.json`；对话列表摘要索引保存在 `chat_history/summaries.json`（损坏时自动重建）。
 - 图片附件的 base64 数据外置到 `chat_history/blobs/{conversationId}/` 目录，对话 JSON 只保存引用；旧版内联格式可直接读取，保存时自动升级。

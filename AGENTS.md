@@ -169,7 +169,7 @@ Start-Process -FilePath ".\gradlew.bat" -ArgumentList "connectedAndroidTest", "-
 | 修改范围 | 需同步更新 |
 | --- | --- |
 | 数据模型 | `ChatHistoryStore` 序列化/反序列化 |
-| `ApiSettings`/`ModelProvider`/`ModelInfo`/`ModelRef` 字段 | `ApiSettingsStore`（JSON 序列化 + 旧键迁移）、`SettingsActivity`、`ProviderEditorActivity`、`ModelPickerBottomSheet`、设置页布局、`ApiSettingsStoreTest` |
+| `ApiSettings`/`ModelProvider`/`ModelInfo`/`ModelRef` 字段 | `ApiSettingsStore`（JSON 序列化 + 旧键迁移；apiKey/tavilyApiKey/anysearchApiKey 经 `SecretCodec` Keystore 加密落盘，明文读取兼容）、`SettingsActivity`、`ProviderEditorActivity`（Intent 只传 providerId，不传含密钥的整包）、`ModelPickerBottomSheet`、设置页布局、`ApiSettingsStoreTest` |
 | `ConversationSummary`/`SavedConversationState`/历史根字段 | 多对话索引、旧历史迁移、侧栏刷新 |
 | `ContextSummary`/上下文压缩/token 估算 | 摘要替换、摘要失效、usage 锚点、历史迁移、`ChatConversationContextHelperTest` |
 | `AssistantPart` 字段 | `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter`、工具结果展开状态 |
