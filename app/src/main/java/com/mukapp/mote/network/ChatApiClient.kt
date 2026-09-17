@@ -52,6 +52,15 @@ object ChatApiClient {
             }
             chain.proceed(chain.request())
         }
+        // 应用拦截器只见初始 URL；30x 重定向由 OkHttp 内部跟随，须在网络层逐跳复查，
+        // 否则 https 接口可通过重定向把携带密钥的请求引到公网明文地址。
+        .addNetworkInterceptor { chain ->
+            val url = chain.request().url
+            if (!CleartextGuard.isCleartextAllowed(url.scheme, url.host)) {
+                throw IOException(CleartextGuard.blockedMessage(url.host, "模型接口请求（重定向）"))
+            }
+            chain.proceed(chain.request())
+        }
         .build()
 
     suspend fun generateConversationTitle(
