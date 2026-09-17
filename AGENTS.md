@@ -99,7 +99,7 @@ app/src/main/java/com/mukapp/mote/
 
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
-| `read_file` | 读取文本文件（别名 `read_local_file`，默认前 200 行，最多 400 行）；读取应用私有数据目录需用户确认（`files/shell` 豁免） | `path`, `first_lines` / `start_line`+`end_line`, `confirmation_id` |
+| `read_file` | 读取文本文件（别名 `read_local_file`，默认前 200 行，最多 400 行；单行超 4000 字符或总输出超 48000 字符时截断并置 `content_truncated`）；读取应用私有数据目录需用户确认（`files/shell` 豁免） | `path`, `first_lines` / `start_line`+`end_line`, `confirmation_id` |
 | `list_path` | 列出目录或文件信息（默认 100 项，最多 200 项）；查看应用私有数据目录需用户确认（`files/shell` 豁免） | `path`, `limit`, `confirmation_id` |
 | `get_current_time` | 获取设备当前本地时间、时区和 UTC 偏移量 | 无（仅需 `description`） |
 | `fetch_url` | HTTP(S) 获取网页内容（`max_chars` 默认 20000，最大 100000） | `url`, `output_format`, `max_chars` |
