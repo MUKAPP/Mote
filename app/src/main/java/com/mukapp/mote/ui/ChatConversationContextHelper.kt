@@ -422,11 +422,17 @@ internal object ChatConversationContextHelper {
         return tokens.coerceAtLeast(1)
     }
 
+    /**
+     * 按消息 id 判断前缀：同 id 视为同一消息，避免对含大附件的消息做全字段比较。
+     * 依赖约定：所有改变已有消息内容的路径要么清除 usage 锚点、要么生成新 id；
+     * 唯一保 id 改内容的变换是 limitToolResultForContext（截断不改变消息身份，正是希望忽略的差异）。
+     * 未来新增"保 id 改内容且不清锚点"的变换时须重新评估锚点检查。
+     */
     fun hasMessagePrefix(messages: List<ChatMessage>, prefix: List<ChatMessage>): Boolean {
         if (prefix.size > messages.size) {
             return false
         }
-        return prefix.indices.all { index -> messages[index] == prefix[index] }
+        return prefix.indices.all { index -> messages[index].id == prefix[index].id }
     }
 
     private fun addTokenCounts(first: Int, second: Int): Int {

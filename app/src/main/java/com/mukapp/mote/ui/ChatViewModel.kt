@@ -1530,47 +1530,51 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
             var result = executeLocalToolCall(settings, toolCall)
-            val confirmation = parseShellConfirmationRequest(result.content, toolCall.arguments)
+            val confirmation = parseToolConfirmationRequest(result.content, toolCall.arguments)
             if (confirmation != null) {
                 MoteLog.w(
                     logComponent,
                     MoteLog.event(
-                        "工具请求 Shell 高风险确认",
+                        "工具请求用户确认",
                         "confirmationId" to MoteLog.shortId(confirmation.confirmationId),
-                        "background" to confirmation.background,
+                        "type" to confirmation.javaClass.simpleName,
                         "risk" to confirmation.risk
                     )
                 )
-                val approved = awaitShellConfirmation(
+                val approved = awaitToolConfirmation(
                     confirmation = confirmation,
                     assistantParts = assistantParts,
                     assistantIndex = assistantIndex,
                     assistantId = assistantId
                 )
                 if (!approved) {
-                    LocalAiTools.discardPendingShellConfirmation(confirmation.confirmationId)
+                    LocalAiTools.discardPendingToolConfirmation(confirmation.confirmationId)
                     MoteLog.i(
                         logComponent,
                         MoteLog.event(
-                            "Shell 高风险确认未通过",
+                            "工具确认未通过",
                             "confirmationId" to MoteLog.shortId(confirmation.confirmationId)
                         )
                     )
-                    results += buildCancelledShellToolResult(toolCall, confirmation)
-                    return ToolExecutionBatch(results = results, cancelled = true)
+                    results += buildCancelledToolResult(toolCall, confirmation)
+                    val notice = when (confirmation) {
+                        is ToolConfirmationRequest.Shell -> "已取消执行高风险 shell 命令。"
+                        is ToolConfirmationRequest.SensitivePath -> "已取消读取敏感路径。"
+                    }
+                    return ToolExecutionBatch(results = results, cancelled = true, cancelledNotice = notice)
                 }
 
                 MoteLog.i(
                     logComponent,
                     MoteLog.event(
-                        "Shell 高风险确认已通过，继续执行工具",
+                        "工具确认已通过，继续执行工具",
                         "confirmationId" to MoteLog.shortId(confirmation.confirmationId)
                     )
                 )
                 result = executeLocalToolCall(
                     settings,
                     toolCall.copy(
-                        arguments = addShellConfirmationId(
+                        arguments = addConfirmationId(
                             toolCall.arguments,
                             confirmation.confirmationId
                         )
@@ -1811,15 +1815,40 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return result.requestMessages
     }
 
+    private data class PreparedCompressionContext(
+        val normalizedMessages: List<ChatMessage>,
+        val requestMessages: List<ChatMessage>,
+        val tokenCount: ChatConversationContextHelper.ContextTokenCount,
+        val plan: ContextCompressionPlan?
+    )
+
     private suspend fun compressConversationForContext(
         settings: ApiSettings,
         rawMessages: List<ChatMessage>
     ): ContextCompressionResult {
-        val normalizedMessages = ChatConversationContextHelper.filterConversationMessages(rawMessages)
-            .filterNot { it.isContextSummary }
-        val requestMessages = buildLimitedRequestContextMessages(normalizedMessages)
-        val tokenCount = resolveConversationTokenCount(requestMessages)
-        val plan = buildContextCompressionPlan(settings, requestMessages, tokenCount)
+        // 主线程先快照，重计算移入 Default；副作用（摘要追加、锚点、通知）回主线程执行
+        val rawSnapshot = rawMessages.toList()
+        val summariesSnapshot = contextSummariesInternal.toList()
+        val anchorSnapshot = contextTokenUsageAnchor
+        val prepared = withContext(Dispatchers.Default) {
+            val normalizedMessages = ChatConversationContextHelper.filterConversationMessages(rawSnapshot)
+                .filterNot { it.isContextSummary }
+            val requestMessages = buildLimitedRequestContextMessages(normalizedMessages, summariesSnapshot)
+            val tokenCount = ChatConversationContextHelper.resolveConversationTokenCount(
+                messages = requestMessages,
+                usageAnchor = anchorSnapshot
+            )
+            PreparedCompressionContext(
+                normalizedMessages = normalizedMessages,
+                requestMessages = requestMessages,
+                tokenCount = tokenCount,
+                plan = buildContextCompressionPlan(settings, requestMessages, tokenCount)
+            )
+        }
+        val normalizedMessages = prepared.normalizedMessages
+        val requestMessages = prepared.requestMessages
+        val tokenCount = prepared.tokenCount
+        val plan = prepared.plan
         if (plan == null) {
             MoteLog.d(
                 logComponent,
@@ -1877,8 +1906,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
             clearContextTokenUsageAnchor()
+            val refreshedRequestMessages = withContext(Dispatchers.Default) {
+                buildLimitedRequestContextMessages(normalizedMessages, summariesSnapshot + summary)
+            }
             return ContextCompressionResult(
-                requestMessages = buildLimitedRequestContextMessages(normalizedMessages),
+                requestMessages = refreshedRequestMessages,
                 compressed = true
             )
         }
@@ -1903,11 +1935,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         contextSummariesInternal += newSummary
     }
 
-    private fun buildLimitedRequestContextMessages(rawMessages: List<ChatMessage>): List<ChatMessage> {
+    private fun buildLimitedRequestContextMessages(
+        rawMessages: List<ChatMessage>,
+        summaries: List<ContextSummary> = contextSummariesInternal
+    ): List<ChatMessage> {
         return ChatConversationContextHelper.limitToolResultsForContext(
             ChatConversationContextHelper.applyContextSummariesForRequest(
                 conversationMessages = rawMessages,
-                contextSummaries = contextSummariesInternal
+                contextSummaries = summaries
             )
         )
     }
@@ -1946,10 +1981,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val recentBudget = calculateRecentContextBudget(settings)
         var splitIndex = userIndices.last()
+        // 从尾部单遍累积估算，避免对每个候选重复扫描整个尾部
+        var tailTokens = 0
+        var prevBoundary = messages.size
         for (candidate in userIndices.asReversed()) {
-            val tailTokens = ChatConversationContextHelper.estimateConversationTokens(
-                messages.subList(candidate, messages.size)
+            tailTokens += ChatConversationContextHelper.estimateConversationTokens(
+                messages.subList(candidate, prevBoundary)
             )
+            prevBoundary = candidate
             if (tailTokens <= recentBudget) {
                 splitIndex = candidate
             } else {
@@ -2017,7 +2056,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val anchoredMessages = contextTokenUsageAnchor?.messages
         if (anchoredMessages != null &&
             !ChatConversationContextHelper.hasMessagePrefix(
-                buildLimitedRequestContextMessages(conversationMessagesInternal),
+                // 锚点检查按消息 id 比较，工具结果限流不改变 id 序列，可跳过 limitToolResultsForContext
+                ChatConversationContextHelper.applyContextSummariesForRequest(
+                    conversationMessages = conversationMessagesInternal,
+                    contextSummaries = contextSummariesInternal
+                ),
                 anchoredMessages
             )
         ) {
