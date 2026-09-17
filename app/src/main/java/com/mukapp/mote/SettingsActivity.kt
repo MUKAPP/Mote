@@ -16,11 +16,11 @@ import androidx.core.widget.doAfterTextChanged
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.model.ApiSettings
-import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.SearchProvider
 import com.mukapp.mote.data.model.findProvider
+import com.mukapp.mote.data.model.normalizingRoleRefs
 import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.databinding.ActivitySettingsBinding
 import com.mukapp.mote.ui.ModelPickerBottomSheet
@@ -46,8 +46,11 @@ class SettingsActivity : AppCompatActivity() {
             removeProvider(providerId)
             return@registerForActivityResult
         }
-        val json = data.getStringExtra(ProviderEditorActivity.EXTRA_PROVIDER) ?: return@registerForActivityResult
-        ApiSettingsStore.providerFromJson(json)?.let { applyProvider(it) }
+        // 编辑结果已由编辑页写入存储（密钥不经 Intent 回传），重新加载刷新界面。
+        if (providerId.isNotBlank()) {
+            workingSettings = ApiSettingsStore.load(this)
+            applySettings(workingSettings)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,7 +108,7 @@ class SettingsActivity : AppCompatActivity() {
         providerAdapter = ProviderAdapter(
             onClick = { provider ->
                 providerEditorLauncher.launch(
-                    ProviderEditorActivity.newIntent(this, ApiSettingsStore.providerToJson(provider))
+                    ProviderEditorActivity.newIntent(this, provider.id)
                 )
             },
             onDelete = { provider -> removeProvider(provider.id) }
@@ -227,55 +230,11 @@ class SettingsActivity : AppCompatActivity() {
         ModelPickerBottomSheet.show(this, workingSettings, selected, onSelected)
     }
 
-    /** 应用提供商编辑结果：替换或新增，并在缺省时自动选择对话模型。 */
-    private fun applyProvider(provider: ModelProvider) {
-        val providers = workingSettings.providers.toMutableList()
-        val index = providers.indexOfFirst { it.id == provider.id }
-        if (index >= 0) {
-            providers[index] = provider
-        } else {
-            providers.add(provider)
-        }
-        var updated = workingSettings.copy(providers = providers)
-        // 引用的模型或其档位若已失效则清空档位；模型删除时清空整条用途引用。
-        updated = updated.copy(
-            chatModel = normalizeRoleRef(updated, updated.chatModel),
-            titleModel = normalizeRoleRef(updated, updated.titleModel),
-            compressionModel = normalizeRoleRef(updated, updated.compressionModel)
-        )
-        // 尚未选择对话模型且该提供商有模型时，默认选第一个。
-        if (updated.chatModel == null) {
-            provider.models.firstOrNull()?.let { model ->
-                updated = updated.copy(chatModel = ModelRef(provider.id, model.id))
-            }
-        }
-        workingSettings = updated
-        persist()
-    }
-
     private fun removeProvider(providerId: String) {
         if (providerId.isBlank()) return
         val providers = workingSettings.providers.filterNot { it.id == providerId }
-        var updated = workingSettings.copy(providers = providers)
-        updated = updated.copy(
-            chatModel = normalizeRoleRef(updated, updated.chatModel),
-            titleModel = normalizeRoleRef(updated, updated.titleModel),
-            compressionModel = normalizeRoleRef(updated, updated.compressionModel)
-        )
-        workingSettings = updated
+        workingSettings = workingSettings.copy(providers = providers).normalizingRoleRefs()
         persist()
-    }
-
-    private fun normalizeRoleRef(settings: ApiSettings, ref: ModelRef?): ModelRef? {
-        ref ?: return null
-        val provider = settings.findProvider(ref.providerId) ?: return null
-        val model = provider.models.firstOrNull { it.id == ref.modelId } ?: return null
-        val reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
-            provider.type,
-            model.reasoningEfforts
-        )
-        val key = ref.reasoningEffort?.trim()?.lowercase()
-        return ref.copy(reasoningEffort = key?.takeIf { it in reasoningEfforts })
     }
 
     private fun persist() {

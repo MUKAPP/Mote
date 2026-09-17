@@ -167,6 +167,45 @@ fun ApiSettings.findProvider(providerId: String?): ModelProvider? {
     return providers.firstOrNull { it.id == providerId }
 }
 
+/** 应用提供商编辑结果：替换或新增，归一化失效引用，并在缺省时自动选择对话模型。 */
+fun ApiSettings.applyingProviderEdit(provider: ModelProvider): ApiSettings {
+    val updatedProviders = providers.toMutableList()
+    val index = updatedProviders.indexOfFirst { it.id == provider.id }
+    if (index >= 0) {
+        updatedProviders[index] = provider
+    } else {
+        updatedProviders.add(provider)
+    }
+    var updated = copy(providers = updatedProviders).normalizingRoleRefs()
+    if (updated.chatModel == null) {
+        provider.models.firstOrNull()?.let { model ->
+            updated = updated.copy(chatModel = ModelRef(provider.id, model.id))
+        }
+    }
+    return updated
+}
+
+/** 引用的模型或其档位若已失效则清空档位；模型删除时清空整条用途引用。 */
+fun ApiSettings.normalizingRoleRefs(): ApiSettings {
+    return copy(
+        chatModel = normalizeRoleRef(chatModel),
+        titleModel = normalizeRoleRef(titleModel),
+        compressionModel = normalizeRoleRef(compressionModel)
+    )
+}
+
+private fun ApiSettings.normalizeRoleRef(ref: ModelRef?): ModelRef? {
+    ref ?: return null
+    val provider = findProvider(ref.providerId) ?: return null
+    val model = provider.models.firstOrNull { it.id == ref.modelId } ?: return null
+    val reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
+        provider.type,
+        model.reasoningEfforts
+    )
+    val key = ref.reasoningEffort?.trim()?.lowercase()
+    return ref.copy(reasoningEffort = key?.takeIf { it in reasoningEfforts })
+}
+
 /** 把模型引用解析为网络层可用的 [ResolvedModel]，找不到返回 null。 */
 fun ApiSettings.resolve(ref: ModelRef?): ResolvedModel? {
     ref ?: return null

@@ -26,6 +26,8 @@ import com.mukapp.mote.data.model.ModelInfo
 import com.mukapp.mote.data.model.ModelProvider
 import com.mukapp.mote.data.model.ProviderType
 import com.mukapp.mote.data.model.ReasoningEffortOptions
+import com.mukapp.mote.data.model.applyingProviderEdit
+import com.mukapp.mote.data.model.findProvider
 import com.mukapp.mote.databinding.ActivityProviderEditorBinding
 import com.mukapp.mote.databinding.DialogEditModelBinding
 import com.mukapp.mote.network.ChatApiClient
@@ -40,6 +42,7 @@ class ProviderEditorActivity : AppCompatActivity() {
     private lateinit var fetchedModelAdapter: ProviderModelAdapter
 
     private var providerId: String = ""
+    private var originalProvider: ModelProvider = ModelProvider()
     private val models = mutableListOf<ModelInfo>()
     private val fetchedModels = mutableListOf<ModelInfo>()
     private var isExistingProvider = false
@@ -58,10 +61,14 @@ class ProviderEditorActivity : AppCompatActivity() {
         setContentView(binding.root)
         setSupportActionBar(binding.toolbar)
 
-        val incoming = intent.getStringExtra(EXTRA_PROVIDER)?.let { ApiSettingsStore.providerFromJson(it) }
+        // 密钥不经 Intent 传递：只收提供商 ID，从存储加载（设置页的每次变更都已即时持久化）。
+        val incoming = intent.getStringExtra(EXTRA_PROVIDER_ID)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { id -> ApiSettingsStore.load(this).findProvider(id) }
         isExistingProvider = incoming != null
         val provider = incoming ?: ModelProvider()
         providerId = provider.id
+        originalProvider = provider
 
         setupChrome()
         setupInsets()
@@ -394,8 +401,10 @@ class ProviderEditorActivity : AppCompatActivity() {
         }
         if (!valid) return
 
+        // 编辑结果直接写回存储（密钥不回传 Intent），结果只携带 ID 供设置页刷新。
+        val updatedSettings = ApiSettingsStore.load(this).applyingProviderEdit(buildCurrentProvider())
+        ApiSettingsStore.save(this, updatedSettings)
         val resultIntent = Intent().apply {
-            putExtra(EXTRA_PROVIDER, ApiSettingsStore.providerToJson(buildCurrentProvider()))
             putExtra(EXTRA_PROVIDER_ID, providerId)
         }
         setResult(Activity.RESULT_OK, resultIntent)
@@ -419,9 +428,7 @@ class ProviderEditorActivity : AppCompatActivity() {
     }
 
     private fun hasUnsavedChanges(): Boolean {
-        val original = intent.getStringExtra(EXTRA_PROVIDER)?.let { ApiSettingsStore.providerFromJson(it) }
-            ?: ModelProvider(id = providerId)
-        return buildCurrentProvider() != original
+        return buildCurrentProvider() != originalProvider
     }
 
     private fun handleBack() {
@@ -438,14 +445,13 @@ class ProviderEditorActivity : AppCompatActivity() {
     }
 
     companion object {
-        const val EXTRA_PROVIDER = "extra_provider"
         const val EXTRA_PROVIDER_ID = "extra_provider_id"
         const val EXTRA_DELETED = "extra_deleted"
 
-        fun newIntent(context: Context, providerJson: String?): Intent {
+        fun newIntent(context: Context, providerId: String?): Intent {
             return Intent(context, ProviderEditorActivity::class.java).apply {
-                if (providerJson != null) {
-                    putExtra(EXTRA_PROVIDER, providerJson)
+                if (!providerId.isNullOrBlank()) {
+                    putExtra(EXTRA_PROVIDER_ID, providerId)
                 }
             }
         }
