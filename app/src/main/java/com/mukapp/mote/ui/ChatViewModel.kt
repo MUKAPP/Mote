@@ -187,6 +187,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var streamingPublishEnabled = false
     private var contextTokenUsageAnchor: ChatConversationContextHelper.ContextTokenUsageAnchor? = null
 
+    // 冷启动历史加载状态：加载完成前 sendMessage 会被挂起，完成后自动重放。均只在主线程访问。
+    private var historyLoaded = false
+    private var pendingSendAfterHistoryLoad = false
+
     init {
         loadHistory()
     }
@@ -482,6 +486,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val content = _draftMessage.value.orEmpty().trim()
         val attachments = _draftAttachments.value.orEmpty()
         if ((content.isEmpty() && attachments.isEmpty()) || _isSending.value == true) {
+            return
+        }
+
+        // 冷启动历史尚未加载完成时先挂起本次发送：此刻入列的消息会让加载结果被丢弃，
+        // 用户消息随之落入未记录指针的空对话。加载完成后自动重放（草稿仍在）。
+        if (!historyLoaded) {
+            pendingSendAfterHistoryLoad = true
+            MoteLog.i(logComponent, "历史记录尚未加载完成，发送已挂起，加载完成后自动执行。")
             return
         }
 
@@ -1054,22 +1066,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrDefault(emptyList())
 
             withContext(Dispatchers.Main) {
-                if (stateVersion.get() != loadVersion) {
-                    return@withContext
-                }
-                applyConversationState(historyState)
-                _conversationSummaries.value = summaries
-                MoteLog.i(
-                    logComponent,
-                    MoteLog.event(
-                        "历史记录加载完成",
-                        "conversationId" to MoteLog.shortId(historyState.conversationId),
-                        "uiMessages" to historyState.uiMessages.size,
-                        "conversationMessages" to historyState.conversationMessages.size,
-                        "contextSummaries" to historyState.contextSummaries.size,
-                        "summaries" to summaries.size
+                if (stateVersion.get() == loadVersion) {
+                    applyConversationState(historyState)
+                    _conversationSummaries.value = summaries
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "历史记录加载完成",
+                            "conversationId" to MoteLog.shortId(historyState.conversationId),
+                            "uiMessages" to historyState.uiMessages.size,
+                            "conversationMessages" to historyState.conversationMessages.size,
+                            "contextSummaries" to historyState.contextSummaries.size,
+                            "summaries" to summaries.size
+                        )
                     )
-                )
+                } else {
+                    MoteLog.i(logComponent, "历史记录加载结果已过期，跳过应用。")
+                }
+                historyLoaded = true
+                if (pendingSendAfterHistoryLoad) {
+                    pendingSendAfterHistoryLoad = false
+                    sendMessage()
+                }
             }
         }
     }
