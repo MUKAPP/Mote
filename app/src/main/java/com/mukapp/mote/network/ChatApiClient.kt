@@ -259,18 +259,28 @@ object ChatApiClient {
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit = {}
     ): ChatCompletionResult {
+        // 已向回调推送过增量后禁止内部降级重试：流中途失败重发会把两次输出拼接展示并重复计费。
+        var deltaEmitted = false
+        val trackedOnDelta: suspend (String) -> Unit = { delta ->
+            deltaEmitted = true
+            onDelta(delta)
+        }
+        val trackedOnThinkingDelta: suspend (String) -> Unit = { delta ->
+            deltaEmitted = true
+            onThinkingDelta(delta)
+        }
         return try {
             streamChatOnce(
                 model = model,
                 settings = settings,
                 messages = messages,
                 includeUsage = true,
-                onDelta = onDelta,
-                onThinkingDelta = onThinkingDelta
+                onDelta = trackedOnDelta,
+                onThinkingDelta = trackedOnThinkingDelta
             )
         } catch (error: Throwable) {
             currentCoroutineContext().ensureActive()
-            if (!shouldRetryWithoutStreamUsage(error)) {
+            if (deltaEmitted || !shouldRetryWithoutStreamUsage(error)) {
                 throw error
             }
             MoteLog.w(Component, "接口不兼容 stream_options.include_usage，改为不请求 usage 后重试。", error)
@@ -1424,12 +1434,15 @@ object ChatApiClient {
 
     private fun shouldRetryWithoutStreamUsage(error: Throwable): Boolean {
         val message = error.message.orEmpty().lowercase()
-        return "stream_options" in message ||
-                "include_usage" in message ||
-                "unrecognized parameter" in message ||
+        if ("stream_options" in message || "include_usage" in message) {
+            return true
+        }
+        // 泛化的参数报错须同时提到 stream，避免其他参数（如 tools）的报错误触发降级重试。
+        val mentionsParameter = "unrecognized parameter" in message ||
                 "unknown parameter" in message ||
                 "unsupported parameter" in message ||
                 "invalid parameter" in message
+        return mentionsParameter && "stream" in message
     }
 
     private fun buildEmptyResponseMessage(finishReason: String?): String {
