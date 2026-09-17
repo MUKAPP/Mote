@@ -66,6 +66,8 @@ object LocalAiTools {
         setOf(ShellToolName, ReadFileToolName, ReadLocalFileToolAlias, ListPathToolName)
 
     private const val MaxReadLines = 400
+    private const val MaxReadLineChars = 4_000
+    private const val MaxReadTotalChars = 48_000
     private const val MaxListEntries = 200
     private const val DefaultFetchMaxChars = 20_000
     private const val MaxFetchMaxChars = 100_000
@@ -539,12 +541,27 @@ object LocalAiTools {
         val selectedLines = mutableListOf<String>()
         var lastSeenLine = 0
         var hasMore = false
+        var contentChars = 0
+        var contentTruncated = false
         targetFile.bufferedReader(Charsets.UTF_8).useLines { sequence ->
             for ((index, line) in sequence.withIndex()) {
                 val lineNumber = index + 1
                 lastSeenLine = lineNumber
                 if (lineNumber in actualStartLine..actualEndLine) {
-                    selectedLines += "$lineNumber: $line"
+                    // 行数上限约束不了单行极长的文件，字符层面再做兜底，避免膨胀上下文与持久化。
+                    val clippedLine = if (line.length > MaxReadLineChars) {
+                        contentTruncated = true
+                        line.take(MaxReadLineChars) + "…[行过长已截断，原 ${line.length} 字符]"
+                    } else {
+                        line
+                    }
+                    selectedLines += "$lineNumber: $clippedLine"
+                    contentChars += clippedLine.length
+                    if (contentChars >= MaxReadTotalChars && lineNumber < actualEndLine) {
+                        contentTruncated = true
+                        hasMore = true
+                        break
+                    }
                 }
                 if (lineNumber > actualEndLine) {
                     hasMore = true
@@ -570,7 +587,8 @@ object LocalAiTools {
                 "startLine" to actualStartLine,
                 "endLine" to actualEndLine,
                 "returnedLines" to selectedLines.size,
-                "hasMore" to hasMore
+                "hasMore" to hasMore,
+                "contentTruncated" to contentTruncated
             )
         )
         return JSONObject().apply {
@@ -580,6 +598,7 @@ object LocalAiTools {
             put("total_lines", if (totalLinesKnown) lastSeenLine else JSONObject.NULL)
             put("total_lines_known", totalLinesKnown)
             put("has_more", hasMore)
+            put("content_truncated", contentTruncated)
             put("start", if (selectedLines.isEmpty()) JSONObject.NULL else actualStartLine)
             put("end", if (selectedLines.isEmpty()) JSONObject.NULL else returnedEnd)
             put("lines", selectedLines.size)
@@ -2306,7 +2325,7 @@ object LocalAiTools {
                 "function",
                 JSONObject().apply {
                     put("name", ReadFileToolName)
-                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line。读取应用私有数据目录（如 shared_prefs、files）需要用户确认。")
+                    put("description", "按行读取设备上当前应用有权限访问的文本文件内容。行号从 1 开始。如果不提供行范围参数，默认读取前 200 行。读取中间内容时直接提供 start_line/end_line。单行或总输出过长会被截断并置 content_truncated=true，可用行范围分段读取。读取应用私有数据目录（如 shared_prefs、files）需要用户确认。")
                     put(
                         "parameters",
                         JSONObject().apply {
