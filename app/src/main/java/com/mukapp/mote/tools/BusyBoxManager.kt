@@ -7,6 +7,7 @@ import android.system.OsConstants
 import com.mukapp.mote.util.MoteLog
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 object BusyBoxManager {
     private const val Component = "BusyBox"
@@ -352,16 +353,28 @@ object BusyBoxManager {
         builder.environment().putAll(buildEnvironmentVariables(environment, builder.environment()["PATH"]))
 
         val process = builder.start()
-        val output = process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        // 输出改由独立线程读取：readText 会阻塞到进程关闭 stdout，放在主流程里
+        // 会让挂死进程绕过 waitFor 的超时保护，并把 initLock 一起锁死。
+        val outputRef = AtomicReference("")
+        val outputReader = Thread({
+            runCatching {
+                outputRef.set(process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
+            }
+        }, "busybox-install-output").apply {
+            isDaemon = true
+            start()
+        }
         val finished = process.waitFor(InstallTimeoutSeconds, TimeUnit.SECONDS)
         if (!finished) {
             process.destroyForcibly()
             throw IllegalStateException("busybox --install 超时")
         }
+        // 进程已退出，读线程随管道关闭很快结束；限时等待兜底，超时也不阻塞初始化。
+        outputReader.join(TimeUnit.SECONDS.toMillis(2))
 
         val exitCode = process.exitValue()
         if (exitCode != 0) {
-            throw IllegalStateException("busybox --install 退出码 $exitCode：${output.trim()}")
+            throw IllegalStateException("busybox --install 退出码 $exitCode：${outputRef.get().trim()}")
         }
     }
 
