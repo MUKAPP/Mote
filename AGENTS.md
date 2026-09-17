@@ -79,17 +79,19 @@ app/src/main/java/com/mukapp/mote/
 
 ### 历史存储
 
-- 对话文件：`chat_history/conversations/{conversationId}.json`（`schemaVersion=2`）；索引：`chat_history/index.json`。
-- 写入使用临时文件 + `fsync` + 原子移动。对话 ID 匹配 `^[A-Za-z0-9_-]{1,80}$`。
-- 损坏对话 JSON 隔离到 `corrupted/` 目录。旧版 `history.json` 首次加载时自动迁移。
+- 对话文件：`chat_history/conversations/{conversationId}.json`（`schemaVersion=3`）；当前对话指针：`chat_history/index.json`；轻量摘要索引：`chat_history/summaries.json`（衍生数据，损坏或与目录不一致时自动删除并全量扫描重建）。
+- 附件 base64 外置到 `chat_history/blobs/{conversationId}/{attachmentId}.b64`，对话 JSON 中以 `base64Ref` 引用；加载时回填 `base64Data`，内存模型不感知外置。旧版 v2 内联文件可直接读取，保存时自然升级为 v3。
+- 写入使用临时文件 + `fsync` + 原子移动；对话保存先写 blob 再写 JSON，最后清理不再引用的 blob。对话 ID 匹配 `^[A-Za-z0-9_-]{1,80}$`。
+- 删除对话时删除对应 blob 子目录；孤儿 blob 目录每进程扫描清理一次（被隔离对话的 blob 保留以便恢复）。
+- 损坏对话 JSON 隔离到 `corrupted/` 目录（`index.json`、`summaries.json` 豁免）。旧版 `history.json` 首次加载时自动迁移。
 - 历史文件同时保存 `uiMessages`、`conversationMessages` 和 `contextSummaries`；旧版 `isContextSummary` 加载时迁移为独立摘要。
 
 ### 其他
 
 - 工具结果写入历史时保留完整内容；加入 API 请求前由 `limitToolResultsForContext()` 截断到单条最多 24000 字符。
 - `assistantParts` 按顺序保存 `markdown`/`thinking`/`tool` 片段；`AssistantToolPart.isLoading` 仅运行时使用。
-- `streamChatWithRetries()` 每次流式请求最多重试 3 次。
-- 停止生成会清理待确认 Shell 令牌、停止前台 Shell 并取消协程。
+- `streamChatWithRetries()` 每次流式请求最多重试 3 次；`streamChat()` 内部的 `include_usage` 降级重试仅在尚未发出任何 delta 时触发。
+- 停止生成会清理待确认工具令牌、停止前台 Shell 并取消协程；工具执行经 `runInterruptible` 派发，取消时中断执行线程。
 
 ## AI 工具
 
@@ -97,8 +99,8 @@ app/src/main/java/com/mukapp/mote/
 
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
-| `read_file` | 读取文本文件（别名 `read_local_file`，默认前 200 行，最多 400 行） | `path`, `first_lines` / `start_line`+`end_line` |
-| `list_path` | 列出目录或文件信息（默认 100 项，最多 200 项） | `path`, `limit` |
+| `read_file` | 读取文本文件（别名 `read_local_file`，默认前 200 行，最多 400 行）；读取应用私有数据目录需用户确认（`files/shell` 豁免） | `path`, `first_lines` / `start_line`+`end_line`, `confirmation_id` |
+| `list_path` | 列出目录或文件信息（默认 100 项，最多 200 项）；查看应用私有数据目录需用户确认（`files/shell` 豁免） | `path`, `limit`, `confirmation_id` |
 | `get_current_time` | 获取设备当前本地时间、时区和 UTC 偏移量 | 无（仅需 `description`） |
 | `fetch_url` | HTTP(S) 获取网页内容（`max_chars` 默认 20000，最大 100000） | `url`, `output_format`, `max_chars` |
 | `fetch_webview` | 隐藏 WebView 渲染后提取内容（仅 `fetch_url` 无法获得动态内容时用） | `url`, `output_format`, `max_chars`, `timeout_seconds`, `settle_ms` |
@@ -108,7 +110,7 @@ app/src/main/java/com/mukapp/mote/
 | `shell_stop` | 停止后台进程 | `id` |
 | `wait` | 等待后继续工具循环（`1..3600` 秒） | `seconds` |
 
-- `confirmation_id` 只能由应用在用户确认高风险 Shell 后写入，模型不能自行构造。
+- `confirmation_id` 只能由应用在用户确认高风险 Shell 或敏感路径读取后写入，模型不能自行构造。
 
 ## Shell 与 BusyBox
 
@@ -120,8 +122,8 @@ app/src/main/java/com/mukapp/mote/
 ## Shell 高风险确认
 
 - `ShellRiskDetector.detect(command)` 静态检测破坏性命令。命中时返回 `needs_confirmation=true`，不执行。
-- `ChatViewModel` 通过 `shellConfirmation` 驱动确认条；确认后消费一次性令牌重试。
-- 令牌有效期 10 分钟，必须匹配原始 `command`/`work_dir`/`background`。
+- `ChatViewModel` 通过 `toolConfirmation` 驱动确认条；确认后消费一次性令牌重试。`read_file`/`list_path` 访问应用私有数据目录时走同一确认管道（`confirmation_type=sensitive_path`）。
+- 令牌有效期 10 分钟；Shell 令牌必须匹配原始 `command`/`work_dir`/`background`，敏感路径令牌必须匹配工具名与规范化路径。
 - 用户取消、停止生成、切换/新建/删除对话时丢弃待确认令牌。
 - **修改风险检测规则时必须同步更新 `ShellRiskDetectorTest`。**
 

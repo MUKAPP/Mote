@@ -112,8 +112,8 @@ Mote 会根据设置和模型能力向 AI 暴露工具：
 
 | 工具 | 用途 |
 | --- | --- |
-| `read_file` | 读取文本文件内容。 |
-| `list_path` | 列出目录或文件信息。 |
+| `read_file` | 读取文本文件内容。读取应用私有数据目录需用户确认。 |
+| `list_path` | 列出目录或文件信息。查看应用私有数据目录需用户确认。 |
 | `get_current_time` | 获取设备当前本地时间、时区和 UTC 偏移量。 |
 | `fetch_url` | 获取 HTTP(S) 网页内容。 |
 | `fetch_webview` | 使用隐藏 WebView 渲染动态网页并提取内容。 |
@@ -123,13 +123,14 @@ Mote 会根据设置和模型能力向 AI 暴露工具：
 | `shell_stop` | 停止后台 Shell 进程。 |
 | `wait` | 等待指定秒数后继续工具循环。 |
 
-Shell 工具具备风险检测机制。命中删除、覆盖、权限破坏等高风险命令时，应用会显示确认条，用户确认后才会执行。
+Shell 工具具备风险检测机制。命中删除、覆盖、权限破坏等高风险命令时，应用会显示确认条，用户确认后才会执行。`read_file`/`list_path` 访问应用私有数据目录（如 `shared_prefs`、聊天历史）时同样需要经确认条确认。
 
 ## 数据存储
 
 - API 设置保存在应用私有存储中。
-- 对话文件保存在 `chat_history/conversations/{conversationId}.json`。
-- 历史索引保存在 `chat_history/index.json`。
+- 对话文件保存在 `chat_history/conversations/{conversationId}.json`（`schemaVersion=3`）。
+- 当前对话指针保存在 `chat_history/index.json`；对话列表摘要索引保存在 `chat_history/summaries.json`（损坏时自动重建）。
+- 图片附件的 base64 数据外置到 `chat_history/blobs/{conversationId}/` 目录，对话 JSON 只保存引用；旧版内联格式可直接读取，保存时自动升级。
 - 损坏的对话 JSON 会隔离到 `corrupted/` 目录。
 - 工具结果会完整保存到历史记录中，发送给模型前会按上下文预算截断。
 
