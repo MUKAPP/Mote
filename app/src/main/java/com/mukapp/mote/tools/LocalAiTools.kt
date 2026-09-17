@@ -623,8 +623,13 @@ object LocalAiTools {
         }
 
         return if (target.isDirectory) {
+            // 先物化 isDirectory，避免排序比较器对同一文件反复 stat。
             val children = target.listFiles()
-                ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase(Locale.ROOT) })
+                ?.map { child -> child to child.isDirectory }
+                ?.sortedWith(
+                    compareBy<Pair<File, Boolean>> { !it.second }
+                        .thenBy { it.first.name.lowercase(Locale.ROOT) }
+                )
                 .orEmpty()
 
             val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT)
@@ -647,12 +652,12 @@ object LocalAiTools {
                 put(
                     "entries",
                     JSONArray().apply {
-                        children.take(limit).forEach { child ->
+                        children.take(limit).forEach { (child, isDirectory) ->
                             put(
                                 JSONObject().apply {
                                     put("name", child.name)
-                                    put("type", if (child.isDirectory) "dir" else "file")
-                                    if (child.isFile) {
+                                    put("type", if (isDirectory) "dir" else "file")
+                                    if (!isDirectory && child.isFile) {
                                         put("size", child.length())
                                     }
                                     put("modified", dateFmt.format(Date(child.lastModified())))
