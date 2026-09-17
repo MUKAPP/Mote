@@ -31,7 +31,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 object ChatApiClient {
@@ -618,7 +617,10 @@ object ChatApiClient {
                 }
 
                 override fun onResponse(call: Call, response: Response) {
-                    continuation.resume(response)
+                    // resume 与取消并发时结果值会被丢弃，须在取消回调里关闭 Response，避免连接泄漏。
+                    continuation.resume(response) { _, _, _ ->
+                        response.close()
+                    }
                 }
             })
         }
