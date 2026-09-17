@@ -762,9 +762,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                     val waitSeconds = response.toolCalls.maxOfOrNull { toolCall ->
                         if (toolCall.name == LocalAiTools.WaitToolName) {
+                            // schema 声明 1..3600，但模型参数不可信：超限调用会被工具本身报错拒绝，
+                            // 这里同样不为其等待，避免超大值把工具循环锁死。
                             runCatching {
                                 JSONObject(toolCall.arguments).optInt("seconds", 0)
-                            }.getOrDefault(0)
+                            }.getOrDefault(0).takeIf { it in 1..MaxWaitToolSeconds } ?: 0
                         } else {
                             0
                         }
@@ -2471,6 +2473,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val DefaultConversationTitle = ConversationTitleFormatter.DefaultTitle
         const val MaxToolRounds = 200
+        /** 与 LocalAiTools.scheduleWait 的参数上限保持一致。 */
+        const val MaxWaitToolSeconds = 3600
         const val StreamingPublishIntervalMs = 50L
         const val MaxStreamRetryAttempts = 3
         const val DefaultRecentContextBudget = 16_000
