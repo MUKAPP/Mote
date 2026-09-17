@@ -2288,6 +2288,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         return@withLock ChatHistoryStore.listConversations(appContext)
                     }
                     synchronized(persistenceStateLock) {
+                        // 条目保留到对话删除（markConversationDeleted/clearDeletedConversation 清理）：
+                        // 在途保存任务的 titleSnapshot 可能仍是旧标题，靠它在保存时覆盖为生成标题；
+                        // 同一 mutex 段内写后即清会让读者永远读不到。对话无用户重命名入口，留存无冲突。
                         generatedConversationTitles[conversationIdSnapshot] = normalizedTitle
                     }
                     ChatHistoryStore.updateConversationTitle(
@@ -2295,7 +2298,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         conversationId = conversationIdSnapshot,
                         title = normalizedTitle
                     )
-                    clearGeneratedConversationTitle(conversationIdSnapshot, normalizedTitle)
                     ChatHistoryStore.listConversations(appContext)
                 }
             }.onFailure { error ->
@@ -2390,14 +2392,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         synchronized(persistenceStateLock) {
             if (latestSaveVersions[conversationId] == saveVersion) {
                 latestSaveVersions.remove(conversationId)
-            }
-        }
-    }
-
-    private fun clearGeneratedConversationTitle(conversationId: String, title: String) {
-        synchronized(persistenceStateLock) {
-            if (generatedConversationTitles[conversationId] == title) {
-                generatedConversationTitles.remove(conversationId)
             }
         }
     }
