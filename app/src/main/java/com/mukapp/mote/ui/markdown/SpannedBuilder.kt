@@ -36,15 +36,6 @@ class SpannedBuilder(private val context: Context) {
     /** 共享的代码高亮渲染器，供 MarkdownCodeBlockView 复用，避免重复创建 Prism4j 实例 */
     val sharedCodeSpanRenderer: MarkdownCodeSpanRenderer get() = codeSpanRenderer
 
-    /** 表格可用绘制宽度（像素），由外部设置 */
-    var tableAvailableWidth: Int = 0
-
-    /**
-     * 是否把表格渲染为纯文本（等宽对齐网格）而非 Canvas 绘制的 [TableSpan]。
-     * Canvas 绘制的表格不是真实文本、无法被选择复制；自由复制页开启此项以支持选取。
-     */
-    var tablesAsPlainText: Boolean = false
-
     /**
      * 是否启用「贴近 [MarkdownView] 外观」的整篇富样式（标题配色、引用块竖条、代码块圆角底色、
      * 分割线、列表标记配色等）。仅自由复制页的整篇渲染路径开启；聊天页 [MarkdownView] 不受影响。
@@ -316,68 +307,14 @@ class SpannedBuilder(private val context: Context) {
         }
     }
 
-    /** 表头背景色 */
-    private val tableHeaderBgColor: Int by lazy {
-        blendWithAlpha(
-            resolveThemeColor(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x28
-        )
-    }
-
-    /** 表格数据行交替背景色 */
-    private val tableRowAltBgColor: Int by lazy {
-        blendWithAlpha(
-            resolveThemeColor(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC.toInt()),
-            0x14
-        )
-    }
-
-    /** 表格网格线颜色 */
-    private val tableGridLineColor: Int by lazy {
-        blendWithAlpha(
-            resolveThemeColor(com.google.android.material.R.attr.colorOutlineVariant, 0xFFCAC4D0.toInt()),
-            0x66
-        )
-    }
-
-    /** 表头文字颜色 */
-    private val tableHeaderTextColor: Int by lazy {
-        resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
-    }
-
-    /** 表格正文文字颜色 */
-    private val tableCellTextColor: Int by lazy {
-        resolveThemeColor(com.google.android.material.R.attr.colorOnSurface, 0xFF1C1B1F.toInt())
-    }
-
     @Suppress("UNUSED_PARAMETER")
     private fun appendTable(ssb: SpannableStringBuilder, table: MdBlock.Table, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         val colCount = table.headers.size
         if (colCount == 0) return
 
-        if (tablesAsPlainText) {
-            appendTableAsPlainText(ssb, table, colCount)
-            return
-        }
-
-        val width = if (tableAvailableWidth > 0) tableAvailableWidth else 800
-        val start = ssb.length
-        // 占位符：用单个特殊字符，TableSpan 会完全替换它的绘制
-        ssb.append("\u200B") // zero-width space 作为占位
-        val end = ssb.length
-
-        val span = TableSpan(
-            headers = table.headers,
-            rows = table.rows,
-            alignments = table.alignments,
-            headerBgColor = tableHeaderBgColor,
-            altRowBgColor = tableRowAltBgColor,
-            gridLineColor = tableGridLineColor,
-            headerTextColor = tableHeaderTextColor,
-            cellTextColor = tableCellTextColor,
-            availableWidth = width
-        )
-        ssb.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        // 块级 Spanned 渲染仅自由复制页使用；表格渲染为纯文本网格保证可选取复制；
+        // 聊天页表格由 MarkdownView 的 MarkdownTableView 原生绘制，不经过此处。
+        appendTableAsPlainText(ssb, table, colCount)
     }
 
     /** 把表格渲染为等宽对齐的纯文本网格，保证内容可被选取复制。 */

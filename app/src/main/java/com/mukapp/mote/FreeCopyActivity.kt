@@ -61,9 +61,8 @@ class FreeCopyActivity : AppCompatActivity() {
     }
 
     private fun renderContent(content: String) {
+        // 表格渲染为纯文本网格，确保可选取复制（Canvas 表格无法选择）
         val renderer = StreamingMarkdownRenderer(this)
-        // 自由复制页把表格渲染为纯文本网格，确保可选取复制（Canvas 表格无法选择）
-        renderer.tablesAsPlainText = true
         // 启用贴近聊天页 MarkdownView 的整篇富样式
         renderer.standalone = true
         binding.textContent.text = renderer.renderStatic(content)

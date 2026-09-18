@@ -14,16 +14,6 @@ class StreamingMarkdownRenderer(context: Context) {
         spannedBuilder.parseInlineMath = false
     }
 
-    /** 设置表格绘制的可用宽度（像素） */
-    var tableAvailableWidth: Int
-        get() = spannedBuilder.tableAvailableWidth
-        set(value) { spannedBuilder.tableAvailableWidth = value }
-
-    /** 是否把表格渲染为可选取复制的纯文本网格（而非 Canvas 绘制） */
-    var tablesAsPlainText: Boolean
-        get() = spannedBuilder.tablesAsPlainText
-        set(value) { spannedBuilder.tablesAsPlainText = value }
-
     /** 是否启用贴近 MarkdownView 外观的整篇富样式 */
     var standalone: Boolean
         get() = spannedBuilder.standalone
