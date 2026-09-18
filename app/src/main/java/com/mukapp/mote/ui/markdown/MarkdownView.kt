@@ -225,10 +225,13 @@ class MarkdownView @JvmOverloads constructor(
 
         val canIncremental = renderMode == RenderMode.Markdown
             && lastRenderedLinkDefs == linkDefs
-            && !(lastRenderedIsStreaming && !isStreaming)  // 流式→非流式需要全量重建以启用链接点击
+            && !(lastRenderedIsStreaming && !isStreaming)  // 流式→非流式需要整块刷新以启用链接点击
 
         if (canIncremental) {
             renderBlocksIncrementally(this, blocks, isStreaming, linkDefs)
+        } else if (renderMode == RenderMode.Markdown) {
+            // 流式收尾或 linkDefs 变化：逐块原地刷新，复用既有视图，避免单帧全量重建
+            refreshAllBlockViews(this, lastRenderedBlocks, blocks, isStreaming, linkDefs)
         } else {
             resetRenderedPartState()
             removeAllViews()
@@ -473,6 +476,57 @@ class MarkdownView @JvmOverloads constructor(
     }
 
     /**
+     * 流式→非流式收尾或 linkDefs 变化时的整块刷新。
+     * 此时块列表可能逐块等值，但每个文本块的 spanned 都需按新标志重建：
+     * 未闭合行内结构在两种解析模式下输出不同，且链接点击需要重设 movementMethod。
+     * 文本/代码/表格块复用既有视图原地刷新（代码块高亮有等值短路），
+     * 其余类型（列表/引用/公式等，内部含独立子视图）按索引单独重建，避免整容器移除重建。
+     */
+    private fun refreshAllBlockViews(
+        container: ViewGroup,
+        oldBlocks: List<MdBlock>,
+        newBlocks: List<MdBlock>,
+        isStreaming: Boolean,
+        linkDefs: Map<String, Pair<String, String>>
+    ) {
+        if (container.childCount != oldBlocks.size) {
+            // 视图数量与块列表失配（理论上不发生），退回全量重建
+            container.removeAllViews()
+            newBlocks.forEachIndexed { index, block ->
+                container.addView(
+                    createBlockView(block, isStreaming, linkDefs, nested = false, isLastInContainer = index == newBlocks.lastIndex)
+                )
+            }
+            return
+        }
+        val sharedCount = minOf(oldBlocks.size, newBlocks.size)
+        for (i in 0 until sharedCount) {
+            val updated = tryUpdateBlockViewInPlace(
+                container.getChildAt(i),
+                oldBlocks[i],
+                newBlocks[i],
+                isStreaming,
+                linkDefs
+            )
+            if (!updated) {
+                container.removeViewAt(i)
+                container.addView(
+                    createBlockView(newBlocks[i], isStreaming, linkDefs, nested = false, isLastInContainer = i == newBlocks.lastIndex),
+                    i
+                )
+            }
+        }
+        while (container.childCount > newBlocks.size) {
+            container.removeViewAt(container.childCount - 1)
+        }
+        for (i in sharedCount until newBlocks.size) {
+            container.addView(
+                createBlockView(newBlocks[i], isStreaming, linkDefs, nested = false, isLastInContainer = i == newBlocks.lastIndex)
+            )
+        }
+    }
+
+    /**
      * 廉价快速判等：先比较类型与 offset，只有当 offset 不一致或属于内容易变类型时才回退到完整 equals。
      * 流式追加场景下，前缀 block 的 offset 必然稳定，绝大多数情况下可以以 O(1) 短路命中。
      */
@@ -701,14 +755,21 @@ class MarkdownView @JvmOverloads constructor(
         val newLinkDefs = parseResult.linkDefs
 
         val cached = partBlocksCache[part.id]
-        if (cached == null || cached.linkDefs != newLinkDefs || (cached.isStreaming && !isStreaming)) {
-            // 没有缓存、linkDefs 变化、或从流式切换到非流式——需要全量重建
+        if (cached == null) {
+            // 没有块缓存，只能全量重建
             container.removeAllViews()
             newBlocks.forEachIndexed { index, block ->
                 container.addView(
                     createBlockView(block, isStreaming, newLinkDefs, nested = false, isLastInContainer = index == newBlocks.lastIndex)
                 )
             }
+            partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
+            return true
+        }
+
+        if (cached.linkDefs != newLinkDefs || (cached.isStreaming && !isStreaming)) {
+            // linkDefs 变化或流式收尾：逐块原地刷新，复用既有视图
+            refreshAllBlockViews(container, cached.blocks, newBlocks, isStreaming, newLinkDefs)
             partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
             return true
         }
