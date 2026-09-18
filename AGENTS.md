@@ -146,7 +146,7 @@ app/src/main/java/com/mukapp/mote/
 - 代码高亮：`MarkdownCodeSpanRenderer`，主策略 prism4j，失败后正则回退；流式未闭合代码块暂不高亮（等宽显示），闭合或流式结束后补高亮并缓存。
 - LaTeX 公式：块级支持 `$$...$$` / `\[...\]`，行内支持 `$...$` / `\(...\)`；已闭合公式用 RaTeX 原生渲染，流式未闭合公式保持原文显示。
 - 新增语法高亮语言时同步 `MarkdownGrammarLocator` 和 `ui/markdown/prism/`。
-- `StreamingMarkdownRenderer` 和 `TableSpan` 为旧实现，保留参考。
+- `StreamingMarkdownRenderer` 为旧的纯 TextView 渲染实现，现仅自由复制页（`FreeCopyActivity`）使用，表格渲染为等宽纯文本网格以保证可选取复制。
 
 ## 构建与验证
 
