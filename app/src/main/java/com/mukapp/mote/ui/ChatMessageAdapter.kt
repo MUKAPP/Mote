@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
@@ -146,13 +147,10 @@ class ChatMessageAdapter(
             }
             messages.clear()
             messages.addAll(filteredMessages)
-            when {
-                changedIndices.isEmpty() -> Unit
-                changedIndices.size <= 8 -> changedIndices.forEach {
-                    val isStreamingUpdate = filteredMessages[it].id == streamingMessageId
-                    notifyItemChanged(it, if (isStreamingUpdate) STREAMING_PAYLOAD else null)
-                }
-                else -> notifyDataSetChanged()
+            // 同位仅内容变化：逐项通知只重绑命中项，且不像 notifyDataSetChanged 那样丢弃全部缓存 holder
+            changedIndices.forEach {
+                val isStreamingUpdate = filteredMessages[it].id == streamingMessageId
+                notifyItemChanged(it, if (isStreamingUpdate) STREAMING_PAYLOAD else null)
             }
             return
         }
@@ -188,9 +186,31 @@ class ChatMessageAdapter(
             return
         }
 
+        // 结构变化（中间删除/编辑重排等）：DiffUtil 计算最小更新集，
+        // 避免 notifyDataSetChanged 整列表重绑并丢弃 Markdown 视图树复用机会。
+        // 消息 id 稳定且无跨位置移动场景，关闭 move 检测。
+        val oldStreamingIdForDiff = oldStreamingMessageId
+        val newStreamingIdForDiff = streamingMessageId
+        val diffResult = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldMessages.size
+            override fun getNewListSize(): Int = filteredMessages.size
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val old = oldMessages[oldItemPosition]
+                val new = filteredMessages[newItemPosition]
+                return old.id == new.id && old.role == new.role
+            }
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val old = oldMessages[oldItemPosition]
+                val new = filteredMessages[newItemPosition]
+                return old == new &&
+                    (old.id == oldStreamingIdForDiff) == (new.id == newStreamingIdForDiff)
+            }
+        }, false)
         messages.clear()
         messages.addAll(filteredMessages)
-        notifyDataSetChanged()
+        diffResult.dispatchUpdatesTo(this)
     }
 
     private fun visibleMessagesFrom(newMessages: List<ChatMessage>): List<ChatMessage> {
