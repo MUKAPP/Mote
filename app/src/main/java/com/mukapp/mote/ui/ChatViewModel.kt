@@ -284,19 +284,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         clearPendingToolConfirmation(discardToken = true)
-        val requestVersion = markStateChanged()
-        uiMessagesInternal.clear()
-        conversationMessagesInternal.clear()
-        contextSummariesInternal.clear()
-        clearContextTokenUsageAnchor()
         clearTemporaryReasoningEffort()
-        currentConversationTitle = DefaultConversationTitle
-        val newConversationId = ChatHistoryStore.newConversationId()
-        setCurrentConversationId(newConversationId)
+        val requestVersion = markStateChanged()
+        val newConversationId = resetToNewConversation(requestVersion)
         MoteLog.i(
             logComponent,
             MoteLog.event("已新建对话", "conversationId" to MoteLog.shortId(newConversationId))
         )
+    }
+
+    /** 清空当前内存对话并切到一个全新的空对话。调用方须先完成确认清理并 markStateChanged。 */
+    private fun resetToNewConversation(requestVersion: Long): String {
+        uiMessagesInternal.clear()
+        conversationMessagesInternal.clear()
+        contextSummariesInternal.clear()
+        clearContextTokenUsageAnchor()
+        currentConversationTitle = DefaultConversationTitle
+        val newConversationId = ChatHistoryStore.newConversationId()
+        setCurrentConversationId(newConversationId)
         _draftMessage.value = ""
         _draftAttachments.value = emptyList()
         publishMessagesImmediately()
@@ -305,6 +310,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             expectedStateVersion = requestVersion,
             allowMissingConversation = true
         )
+        return newConversationId
     }
 
     fun clearConversation() {
@@ -372,32 +378,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             MoteLog.event("开始删除当前对话", "conversationId" to MoteLog.shortId(conversationId))
         )
         viewModelScope.launch(Dispatchers.IO) {
-            val deleteResult = runCatching {
-                persistenceMutex.withLock {
-                    ChatHistoryStore.deleteConversation(appContext, conversationId)
-                }
-            }.onFailure { error ->
-                MoteLog.e(logComponent, "删除当前对话失败", error)
-            }
-            if (deleteResult.isFailure) {
-                unmarkConversationDeleted(conversationId)
-                withContext(Dispatchers.Main) {
-                    _userNotice.value =
-                        appContext.getString(R.string.error_delete_conversation_failed)
-                }
-                return@launch
-            }
-            val replacementId = deleteResult.getOrNull()
+            val (replacementId, summaries) = deleteConversationOnDisk(conversationId) ?: return@launch
 
             val replacementState = replacementId?.let { id ->
                 runCatching { ChatHistoryStore.loadConversation(appContext, id) }
                     .onFailure { error -> MoteLog.e(logComponent, "加载替换对话失败", error) }
                     .getOrNull()
             }
-            val summaries = runCatching {
-                ChatHistoryStore.listConversations(appContext)
-            }.getOrDefault(emptyList())
-            clearDeletedConversation(conversationId)
 
             withContext(Dispatchers.Main) {
                 if (stateVersion.get() != requestVersion) {
@@ -409,21 +396,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _draftMessage.value = ""
                     _draftAttachments.value = emptyList()
                 } else {
-                    uiMessagesInternal.clear()
-                    conversationMessagesInternal.clear()
-                    contextSummariesInternal.clear()
-                    clearContextTokenUsageAnchor()
-                    currentConversationTitle = DefaultConversationTitle
-                    val newConversationId = ChatHistoryStore.newConversationId()
-                    setCurrentConversationId(newConversationId)
-                    persistCurrentConversationIdAsync(
-                        conversationId = newConversationId,
-                        expectedStateVersion = requestVersion,
-                        allowMissingConversation = true
-                    )
-                    _draftMessage.value = ""
-                    _draftAttachments.value = emptyList()
-                    publishMessagesImmediately()
+                    resetToNewConversation(requestVersion)
                 }
                 _conversationSummaries.value = summaries
                 MoteLog.i(
@@ -452,25 +425,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             MoteLog.event("开始删除指定对话", "conversationId" to MoteLog.shortId(conversationId))
         )
         viewModelScope.launch(Dispatchers.IO) {
-            val deleteResult = runCatching {
-                persistenceMutex.withLock {
-                    ChatHistoryStore.deleteConversation(appContext, conversationId)
-                }
-            }.onFailure { error ->
-                MoteLog.e(logComponent, "删除指定对话失败", error)
-            }
-            if (deleteResult.isFailure) {
-                unmarkConversationDeleted(conversationId)
-                withContext(Dispatchers.Main) {
-                    _userNotice.value =
-                        appContext.getString(R.string.error_delete_conversation_failed)
-                }
-                return@launch
-            }
-            val summaries = runCatching {
-                ChatHistoryStore.listConversations(appContext)
-            }.getOrDefault(emptyList())
-            clearDeletedConversation(conversationId)
+            val (_, summaries) = deleteConversationOnDisk(conversationId) ?: return@launch
 
             withContext(Dispatchers.Main) {
                 _conversationSummaries.value = summaries
@@ -483,6 +438,35 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+    }
+
+    /**
+     * 删除对话文件并刷新摘要列表，返回（替换对话 ID, 最新摘要列表）。
+     * 失败时回滚删除标记、提示用户并返回 null。只在 IO 线程调用。
+     */
+    private suspend fun deleteConversationOnDisk(
+        conversationId: String
+    ): Pair<String?, List<ConversationSummary>>? {
+        val deleteResult = runCatching {
+            persistenceMutex.withLock {
+                ChatHistoryStore.deleteConversation(appContext, conversationId)
+            }
+        }.onFailure { error ->
+            MoteLog.e(logComponent, "删除对话失败", error)
+        }
+        if (deleteResult.isFailure) {
+            unmarkConversationDeleted(conversationId)
+            withContext(Dispatchers.Main) {
+                _userNotice.value =
+                    appContext.getString(R.string.error_delete_conversation_failed)
+            }
+            return null
+        }
+        val summaries = runCatching {
+            ChatHistoryStore.listConversations(appContext)
+        }.getOrDefault(emptyList())
+        clearDeletedConversation(conversationId)
+        return deleteResult.getOrNull() to summaries
     }
 
     fun sendMessage() {
@@ -563,6 +547,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         activeSendJob = viewModelScope.launch {
             var skipStoppedAssistantContextCommit = false
             var hasCommittedToolContextInCurrentTurn = false
+
+            // 三条收尾路径（正常完成/工具取消/请求失败）共用：写回最终 assistant 消息、
+            // 发布并持久化，首轮对话触发标题生成。
+            fun finalizeAssistantMessage(
+                content: String,
+                parts: List<AssistantPart>,
+                excludeFromConversation: Boolean = false
+            ) {
+                uiMessagesInternal[assistantIndex] = ChatMessage(
+                    id = assistantId,
+                    role = ChatRole.Assistant,
+                    content = content,
+                    assistantParts = parts,
+                    excludeFromConversation = excludeFromConversation
+                )
+                publishMessagesImmediately()
+                persistConversationAsync()
+                if (isFirstUserMessage) {
+                    generateConversationTitleAsync(settings, titleSeed)
+                }
+            }
+
             val result = runCatching {
                 var workingConversation = prepareConversationForSending(settings)
                     .toMutableList()
@@ -575,6 +581,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                 fun commitRawConversationSnapshot() {
                     commitRawConversation(workingRawConversation)
+                }
+
+                /** 正常完成与工具取消共用的收尾：assistant 回复落入原始上下文后统一走 [finalizeAssistantMessage]。 */
+                fun completeAssistantTurn(finalReply: String, conversationContent: String, logEvent: String): String {
+                    workingRawConversation += ChatMessage(
+                        role = ChatRole.Assistant,
+                        content = conversationContent
+                    )
+                    commitRawConversationSnapshot()
+                    finalizeAssistantMessage(finalReply, assistantParts.toList())
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            logEvent,
+                            "conversationId" to MoteLog.shortId(_currentConversationId.value),
+                            "toolRounds" to executedToolRounds,
+                            "assistantContentLength" to finalReply.length,
+                            "assistantParts" to assistantParts.size
+                        )
+                    )
+                    return finalReply
                 }
 
                 repeat(MaxToolRounds) { roundIndex ->
@@ -618,35 +645,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             requestedMessages = workingConversation,
                             usage = response.usage
                         )
-
-                        uiMessagesInternal[assistantIndex] = ChatMessage(
-                            id = assistantId,
-                            role = ChatRole.Assistant,
-                            content = finalReply,
-                            assistantParts = assistantParts.toList()
+                        return@runCatching completeAssistantTurn(
+                            finalReply = finalReply,
+                            conversationContent = finalConversationContent,
+                            logEvent = "本轮回复完成"
                         )
-                        workingRawConversation += ChatMessage(
-                            role = ChatRole.Assistant,
-                            content = finalConversationContent
-                        )
-
-                        commitRawConversationSnapshot()
-                        publishMessagesImmediately()
-                        persistConversationAsync()
-                        MoteLog.i(
-                            logComponent,
-                            MoteLog.event(
-                                "本轮回复完成",
-                                "conversationId" to MoteLog.shortId(_currentConversationId.value),
-                                "toolRounds" to executedToolRounds,
-                                "assistantContentLength" to finalReply.length,
-                                "assistantParts" to assistantParts.size
-                            )
-                        )
-                        if (isFirstUserMessage) {
-                            generateConversationTitleAsync(settings, titleSeed)
-                        }
-                        return@runCatching finalReply
                     }
 
                     updateContextTokenUsageAnchor(
@@ -736,31 +739,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             toolBatch.cancelledNotice ?: "已取消执行高风险 shell 命令。"
                         )
                         val finalContent = currentAssistantContent(assistantParts)
-                        uiMessagesInternal[assistantIndex] = ChatMessage(
-                            id = assistantId,
-                            role = ChatRole.Assistant,
-                            content = finalContent,
-                            assistantParts = assistantParts.toList()
+                        return@runCatching completeAssistantTurn(
+                            finalReply = finalContent,
+                            conversationContent = finalContent,
+                            logEvent = "工具批次取消后结束回复"
                         )
-                        workingRawConversation += ChatMessage(
-                            role = ChatRole.Assistant,
-                            content = finalContent
-                        )
-                        commitRawConversationSnapshot()
-                        publishMessagesImmediately()
-                        persistConversationAsync()
-                        MoteLog.i(
-                            logComponent,
-                            MoteLog.event(
-                                "工具批次取消后结束回复",
-                                "conversationId" to MoteLog.shortId(_currentConversationId.value),
-                                "assistantContentLength" to finalContent.length
-                            )
-                        )
-                        if (isFirstUserMessage) {
-                            generateConversationTitleAsync(settings, titleSeed)
-                        }
-                        return@runCatching finalContent
                     }
 
                     val waitSeconds = response.toolCalls.maxOfOrNull { toolCall ->
@@ -847,18 +830,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     "$currentContent\n\n$failureNotice"
                 }
-                uiMessagesInternal[assistantIndex] = ChatMessage(
-                    id = assistantId,
-                    role = ChatRole.Assistant,
+                finalizeAssistantMessage(
                     content = failureContent,
-                    assistantParts = appendFailureNoticePart(currentParts, failureNotice),
+                    parts = appendFailureNoticePart(currentParts, failureNotice),
                     excludeFromConversation = true
                 )
-                publishMessagesImmediately()
-                persistConversationAsync()
-                if (isFirstUserMessage) {
-                    generateConversationTitleAsync(settings, titleSeed)
-                }
             }
 
             streamingPublishEnabled = false
