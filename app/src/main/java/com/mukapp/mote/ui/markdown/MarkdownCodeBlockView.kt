@@ -62,6 +62,8 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     private var lastRenderedLanguage: String? = null
     /** 上一次成功渲染的代码内容 */
     private var lastRenderedCode: String? = null
+    /** 上一次渲染是否为流式中间快照（未高亮）；闭合瞬间内容不变但需补高亮，必须参与判等 */
+    private var lastRenderedTransient: Boolean = false
 
     private val container = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -141,16 +143,17 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
         addView(container)
     }
 
-    fun setCodeBlock(language: String, code: String) {
+    fun setCodeBlock(language: String, code: String, isTransient: Boolean = false) {
         codeContent = code
         languageView.text = language.ifBlank { "text" }
         // 如果与上次完全一致，直接跳过 prism4j 高亮渲染，避免流式期间重复 tokenize
-        if (lastRenderedLanguage == language && lastRenderedCode == code) {
+        if (lastRenderedLanguage == language && lastRenderedCode == code && lastRenderedTransient == isTransient) {
             return
         }
-        codeView.text = codeSpanRenderer.buildCodeContent(code, language)
+        codeView.text = codeSpanRenderer.buildCodeContent(code, language, isTransient)
         lastRenderedLanguage = language
         lastRenderedCode = code
+        lastRenderedTransient = isTransient
     }
 
     private fun copyCode() {

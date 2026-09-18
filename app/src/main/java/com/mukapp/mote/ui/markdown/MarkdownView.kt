@@ -503,7 +503,11 @@ class MarkdownView @JvmOverloads constructor(
                 true
             }
             oldBlock is MdBlock.CodeBlock && newBlock is MdBlock.CodeBlock && view is MarkdownCodeBlockView -> {
-                view.setCodeBlock(newBlock.language, newBlock.code)
+                view.setCodeBlock(
+                    newBlock.language,
+                    newBlock.code,
+                    isTransient = isStreaming && !newBlock.closed
+                )
                 true
             }
             oldBlock is MdBlock.Table && newBlock is MdBlock.Table && view is HorizontalScrollView -> {
@@ -1082,7 +1086,7 @@ class MarkdownView @JvmOverloads constructor(
     ): View {
         return when (block) {
             is MdBlock.Table -> createTableView(block, isStreaming, linkDefs, nested, isLastInContainer)
-            is MdBlock.CodeBlock -> createCodeBlockView(block, nested, isLastInContainer)
+            is MdBlock.CodeBlock -> createCodeBlockView(block, isStreaming, nested, isLastInContainer)
             is MdBlock.MathBlock -> createMathBlockView(block, nested, isLastInContainer)
             is MdBlock.Blockquote -> createBlockquoteView(block, isStreaming, linkDefs, nested, isLastInContainer)
             is MdBlock.UnorderedList -> createListView(
@@ -1124,13 +1128,18 @@ class MarkdownView @JvmOverloads constructor(
 
     private fun createCodeBlockView(
         codeBlock: MdBlock.CodeBlock,
+        isStreaming: Boolean,
         nested: Boolean,
         isLastInContainer: Boolean
     ): View {
         return MarkdownCodeBlockView(context).apply {
             layoutParams = createBlockLayoutParams(bottomMargin = blockBottomMargin(nested, isLastInContainer))
             setSharedCodeSpanRenderer(codeSpanRenderer)
-            setCodeBlock(codeBlock.language, codeBlock.code)
+            setCodeBlock(
+                codeBlock.language,
+                codeBlock.code,
+                isTransient = isStreaming && !codeBlock.closed
+            )
         }
     }
 

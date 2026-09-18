@@ -169,7 +169,7 @@ class SpannedBuilder(private val context: Context) {
     private fun appendSingleBlock(ssb: SpannableStringBuilder, block: MdBlock, isStreaming: Boolean, linkDefs: Map<String, Pair<String, String>>) {
         when (block) {
             is MdBlock.Heading -> appendHeading(ssb, block, linkDefs)
-            is MdBlock.CodeBlock -> appendCodeBlock(ssb, block)
+            is MdBlock.CodeBlock -> appendCodeBlock(ssb, block, isStreaming)
             is MdBlock.UnorderedList -> appendUnorderedList(ssb, block, isStreaming, linkDefs)
             is MdBlock.OrderedList -> appendOrderedList(ssb, block, isStreaming, linkDefs)
             is MdBlock.TaskList -> appendTaskList(ssb, block, isStreaming, linkDefs)
@@ -199,7 +199,7 @@ class SpannedBuilder(private val context: Context) {
         }
     }
 
-    private fun appendCodeBlock(ssb: SpannableStringBuilder, codeBlock: MdBlock.CodeBlock) {
+    private fun appendCodeBlock(ssb: SpannableStringBuilder, codeBlock: MdBlock.CodeBlock, isStreaming: Boolean) {
         val start = ssb.length
         val langEnd: Int
         if (codeBlock.language.isNotBlank()) {
@@ -210,7 +210,13 @@ class SpannedBuilder(private val context: Context) {
             langEnd = start
         }
         val codeStart = ssb.length
-        ssb.append(codeSpanRenderer.buildCodeContent(codeBlock.code, codeBlock.language))
+        ssb.append(
+            codeSpanRenderer.buildCodeContent(
+                codeBlock.code,
+                codeBlock.language,
+                isTransient = isStreaming && !codeBlock.closed
+            )
+        )
         val end = ssb.length
 
         if (standalone) {

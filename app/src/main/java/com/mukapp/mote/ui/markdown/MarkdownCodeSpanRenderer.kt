@@ -47,8 +47,20 @@ class MarkdownCodeSpanRenderer(
         codeColors.annotationColor
     }
 
-    fun buildCodeContent(code: String, language: String): SpannableStringBuilder {
+    /**
+     * @param isTransient 流式未闭合代码块的中间快照：内容每拍都变，缓存键永不复用、
+     * 高亮结果一次性，因此跳过 prism4j 高亮与全局缓存读写，只保留等宽字体；
+     * 代码块闭合或流式结束后按最终内容正常高亮并缓存。
+     */
+    fun buildCodeContent(code: String, language: String, isTransient: Boolean = false): SpannableStringBuilder {
         val normalizedLanguage = normalizeLanguage(language)
+        if (isTransient) {
+            val transient = SpannableStringBuilder(code)
+            if (transient.isNotEmpty()) {
+                transient.setSpan(TypefaceSpan("monospace"), 0, transient.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            return transient
+        }
         val canUseCache = code.length <= MaxCachedCodeLength
         val cacheKey = if (canUseCache) {
             CodeContentCacheKey(
