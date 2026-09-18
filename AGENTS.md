@@ -95,7 +95,7 @@ app/src/main/java/com/mukapp/mote/
 
 ## AI 工具
 
-工具定义和执行入口在 `LocalAiTools.kt`。所有工具 `description` 必填，schema 均 `additionalProperties=false`。工具调用最多循环 200 轮。
+工具执行入口与分发在 `LocalAiTools.kt`（含 `read_file`/`list_path`/`get_current_time`/`wait` 与敏感路径守卫）；工具定义在 `AiToolDefinitions.kt`，fetch、搜索、Shell 的实现分别在 `UrlFetchTools.kt`、`WebSearchTools.kt`、`ShellTools.kt`，确认令牌注册表在 `ToolConfirmations.kt`。所有工具 `description` 必填，schema 均 `additionalProperties=false`。工具调用最多循环 200 轮。
 
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
@@ -173,7 +173,7 @@ Start-Process -FilePath ".\gradlew.bat" -ArgumentList "connectedAndroidTest", "-
 | `ConversationSummary`/`SavedConversationState`/历史根字段 | 多对话索引、旧历史迁移、侧栏刷新 |
 | `ContextSummary`/上下文压缩/token 估算 | 摘要替换、摘要失效、usage 锚点、历史迁移、`ChatConversationContextHelperTest` |
 | `AssistantPart` 字段 | `ChatHistoryStore`、`MarkdownView.setParts()`、`ChatMessageAdapter`、工具结果展开状态 |
-| 新增 AI 工具 | `LocalAiTools` 定义 + 执行 + `IntermediateStepsHelper.parseToolSummary` |
+| 新增 AI 工具 | `AiToolDefinitions` 定义 + `LocalAiTools` 分发（或对应实现模块）+ `IntermediateStepsHelper.parseToolSummary` |
 | Shell 风险检测 | `ShellRiskDetectorTest`；`confirmation_id` 不暴露为模型可构造输入 |
 | API 请求体 | 保持 OpenAI 兼容；注意 `stream_options.include_usage` 降级和按模型发送 `reasoning_effort`；聊天/标题/压缩各自解析为 `ResolvedModel`（provider baseUrl/apiKey + model + 上下文长度 + 思考强度） |
 | 标题生成 | 保持未选择标题模型时的本地备用标题兼容 |
