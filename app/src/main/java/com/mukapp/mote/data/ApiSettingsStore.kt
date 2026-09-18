@@ -15,10 +15,20 @@ import androidx.core.content.edit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 object ApiSettingsStore {
     private const val PrefName = "mote_api_settings"
+
+    // 内存缓存 + 单线程写队列：load 命中缓存时不重复做 JSON 解析与 Keystore 解密，
+    // save 的序列化/加密不占用调用线程（通常是主线程）。缓存只作用于 Context 级 API，
+    // internal 的 preferences 重载保持同步直连以便 JVM 测试。
+    @Volatile
+    private var cachedSettings: ApiSettings? = null
+    private val persistExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "ApiSettingsWriter")
+    }
 
     // 新版：整体 JSON
     private const val KeySettingsJson = "settings_json"
@@ -36,14 +46,19 @@ object ApiSettingsStore {
     private const val LegacyKeyReasoningEffort = "reasoning_effort"
 
     fun load(context: Context): ApiSettings {
+        cachedSettings?.let { return it }
         val preferences = context.getSharedPreferences(PrefName, Context.MODE_PRIVATE)
         val storedJson = preferences.getString(KeySettingsJson, null)
         val settings = load(preferences, KeystoreSecretCodec)
         // 存量明文密钥升级：解析成功且发现明文密钥时立即以加密形式回写。
         if (!storedJson.isNullOrBlank() && containsPlaintextSecret(storedJson)) {
-            save(preferences, settings, KeystoreSecretCodec)
-            MoteLog.i("Settings", "已将明文密钥升级为加密存储。")
+            persistExecutor.execute {
+                runCatching { save(preferences, settings, KeystoreSecretCodec) }
+                    .onSuccess { MoteLog.i("Settings", "已将明文密钥升级为加密存储。") }
+                    .onFailure { error -> MoteLog.w("Settings", "明文密钥升级保存失败。", error) }
+            }
         }
+        cachedSettings = settings
         return settings
     }
 
@@ -71,7 +86,14 @@ object ApiSettingsStore {
     }
 
     fun save(context: Context, settings: ApiSettings) {
-        save(context.getSharedPreferences(PrefName, Context.MODE_PRIVATE), settings, KeystoreSecretCodec)
+        // 先更新内存缓存保证同进程读到最新值；序列化 + Keystore 加密移到写线程，
+        // 磁盘落盘本就由 SharedPreferences.apply() 异步完成，持久化语义不变。
+        cachedSettings = settings
+        val preferences = context.getSharedPreferences(PrefName, Context.MODE_PRIVATE)
+        persistExecutor.execute {
+            runCatching { save(preferences, settings, KeystoreSecretCodec) }
+                .onFailure { error -> MoteLog.w("Settings", "后台保存 API 设置失败。", error) }
+        }
     }
 
     internal fun save(

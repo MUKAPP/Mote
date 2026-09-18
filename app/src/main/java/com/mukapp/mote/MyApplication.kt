@@ -12,7 +12,8 @@ class MyApplication : Application() {
         super.onCreate()
         MoteLog.i("App", "应用启动")
 
-        // ChatViewModel 在构造函数里同步读取设置，若不预热则会在主线程做首次磁盘 I/O。
+        // ChatViewModel 在构造函数里同步读取设置；预热线程提前完成首次磁盘 I/O + JSON 解析 +
+        // Keystore 解密并填充 ApiSettingsStore 内存缓存，之后主线程读取即为缓存命中。
         // SharedPreferences 内部自带同步，即使 ViewModel 抢先构造也只是等锁，不会读到半份数据。
         Thread(
             {
