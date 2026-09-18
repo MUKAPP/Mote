@@ -1231,6 +1231,7 @@ class MarkdownView @JvmOverloads constructor(
     ): View {
         val tableView = MarkdownTableView(context).apply {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setSharedSpannedBuilder(spannedBuilder)
             setTableData(table.headers, table.rows, table.alignments, linkDefs, isStreaming)
         }
 

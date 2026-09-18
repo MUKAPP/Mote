@@ -75,8 +75,18 @@ class MarkdownTableView @JvmOverloads constructor(
         style = Paint.Style.STROKE
     }
 
-    private val spannedBuilder = SpannedBuilder(context)
+    private var sharedSpannedBuilder: SpannedBuilder? = null
+    private val spannedBuilder: SpannedBuilder
+        get() = sharedSpannedBuilder ?: SpannedBuilder(context).also { sharedSpannedBuilder = it }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+
+    /**
+     * 设置共享的 SpannedBuilder（表格只用其 buildInlineText），
+     * 避免每个表格视图各建一套 InlineParser/Prism4j 实例。
+     */
+    fun setSharedSpannedBuilder(builder: SpannedBuilder) {
+        sharedSpannedBuilder = builder
+    }
 
     private var headers: List<String> = emptyList()
     private var rows: List<List<String>> = emptyList()

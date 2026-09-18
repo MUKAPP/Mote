@@ -73,12 +73,6 @@ class SpannedBuilder(private val context: Context) {
         val depthPx: Float
     )
 
-    private val inlineMathCache = object : LruCache<InlineMathRenderKey, InlineMathRenderResult>(MaxInlineMathCacheBytes) {
-        override fun sizeOf(key: InlineMathRenderKey, value: InlineMathRenderResult): Int {
-            return value.bitmap.byteCount.coerceAtLeast(1)
-        }
-    }
-
     private val codeBlockBgColor: Int by lazy {
         codeColors.blockBackgroundColor
     }
@@ -636,5 +630,13 @@ class SpannedBuilder(private val context: Context) {
 
     companion object {
         private const val MaxInlineMathCacheBytes = 4 * 1024 * 1024
+
+        // 进程级共享：公式原文、字号与颜色都在缓存键里，跨实例/跨主题复用安全；
+        // 位图渲染后只读，可被多个 TextView span 同时引用。LruCache 自身线程安全。
+        private val inlineMathCache = object : LruCache<InlineMathRenderKey, InlineMathRenderResult>(MaxInlineMathCacheBytes) {
+            override fun sizeOf(key: InlineMathRenderKey, value: InlineMathRenderResult): Int {
+                return value.bitmap.byteCount.coerceAtLeast(1)
+            }
+        }
     }
 }
