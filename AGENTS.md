@@ -143,7 +143,7 @@ app/src/main/java/com/mukapp/mote/
 - 入口 `MarkdownView`，将 AST 映射为原生 View 树，支持流式 block 级增量更新。
 - `ChatMessageAdapter` 优先用 `setParts()` 渲染 assistant 片段，无片段时回退 `setMarkdown()`。
 - `MarkdownParseCache` 全局缓存解析结果，历史 Markdown 后台预解析，流式最后片段跳过预解析。
-- 代码高亮：`MarkdownCodeSpanRenderer`，主策略 prism4j，失败后正则回退。
+- 代码高亮：`MarkdownCodeSpanRenderer`，主策略 prism4j，失败后正则回退；流式未闭合代码块暂不高亮（等宽显示），闭合或流式结束后补高亮并缓存。
 - LaTeX 公式：块级支持 `$$...$$` / `\[...\]`，行内支持 `$...$` / `\(...\)`；已闭合公式用 RaTeX 原生渲染，流式未闭合公式保持原文显示。
 - 新增语法高亮语言时同步 `MarkdownGrammarLocator` 和 `ui/markdown/prism/`。
 - `StreamingMarkdownRenderer` 和 `TableSpan` 为旧实现，保留参考。
