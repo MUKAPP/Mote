@@ -150,6 +150,8 @@ class MarkdownView @JvmOverloads constructor(
     private val quoteContentPaddingEnd = 12.dpInt
     private var renderMode: RenderMode = RenderMode.None
     private var lastRenderedPartStates: List<RenderedAssistantPartState> = emptyList()
+    /** parts 模式上一次渲染的 isStreaming；流式→非流式时 markdown part 即使内容未变也需收尾刷新 */
+    private var lastRenderedPartsStreaming: Boolean = false
     private var lastRenderedLinkDefs: Map<String, Pair<String, String>> = emptyMap()
     /** 缓存上一次渲染 Markdown 文本时的 block 列表，用于流式增量更新 */
     private var lastRenderedBlocks: List<MdBlock> = emptyList()
@@ -181,6 +183,33 @@ class MarkdownView @JvmOverloads constructor(
         val isStreaming: Boolean
     )
     private val partBlocksCache = HashMap<String, PartBlocksCache>()
+
+    /**
+     * thinking 卡片的原地更新句柄，挂在卡片根视图 tag 上。
+     * 流式期间 thinking 文本每拍增长，原地只改内容 TextView，
+     * 避免整卡重建（含开销较大的 setTextIsSelectable）。仅同 part id 的更新会复用。
+     */
+    private class ThinkingPartViewHolder(
+        val card: MaterialCardView,
+        val headerView: LinearLayout,
+        val toggleView: ImageView,
+        val contentView: TextView,
+        var renderedText: String,
+        var renderedExpanded: Boolean,
+        var collapsedBottomMargin: Int
+    )
+
+    /** tool 卡片的原地更新句柄，同上挂在根视图 tag 上；detail 懒填充状态一并保存 */
+    private class ToolPartViewHolder(
+        val binding: ItemToolResultBinding,
+        var renderedToolName: String,
+        var renderedArguments: String,
+        var renderedResult: String,
+        var renderedLoading: Boolean,
+        var renderedExpanded: Boolean,
+        var detailPopulated: Boolean,
+        var collapsedBottomMargin: Int
+    )
 
     init {
         orientation = VERTICAL
@@ -284,13 +313,17 @@ class MarkdownView @JvmOverloads constructor(
 
         // setParts 模式下不需要全局 linkDefs 比较；每个 markdown 片段内部的 linkDefs 跟随其文本一同进入缓存
 
+        // 流式→非流式收尾：markdown part 即使内容未变，也需按非流式重建 spanned 并启用链接点击
+        val finalizeMarkdownParts = lastRenderedPartsStreaming && !isStreaming
+
         if (canApplyIncrementalPartUpdate(partStates)) {
             renderPartViewsIncrementally(
                 parts = visibleParts,
                 partStates = partStates,
                 isStreaming = isStreaming,
                 expandedThinkingPartIds = expandedThinkingPartIds,
-                expandedToolPartIds = expandedToolPartIds
+                expandedToolPartIds = expandedToolPartIds,
+                finalizeMarkdownParts = finalizeMarkdownParts
             )
         } else {
             resetRenderedPartState()
@@ -311,6 +344,7 @@ class MarkdownView @JvmOverloads constructor(
 
         renderMode = RenderMode.Parts
         lastRenderedPartStates = partStates
+        lastRenderedPartsStreaming = isStreaming
         lastRenderedLinkDefs = emptyMap()
     }
 
@@ -692,20 +726,32 @@ class MarkdownView @JvmOverloads constructor(
         partStates: List<RenderedAssistantPartState>,
         isStreaming: Boolean,
         expandedThinkingPartIds: MutableSet<String>,
-        expandedToolPartIds: MutableSet<String>
+        expandedToolPartIds: MutableSet<String>,
+        finalizeMarkdownParts: Boolean
     ) {
         val sharedCount = minOf(lastRenderedPartStates.size, partStates.size)
         for (index in 0 until sharedCount) {
-            if (lastRenderedPartStates[index] == partStates[index]) {
+            val part = parts[index]
+            val statesEqual = lastRenderedPartStates[index] == partStates[index]
+            // 流式收尾时 markdown part 不能按等值跳过：需重建 spanned/启用链接点击
+            if (statesEqual && !(finalizeMarkdownParts && part is AssistantMarkdownPart)) {
                 continue
             }
-            val part = parts[index]
-            // 对于 markdown 片段，尝试复用已有容器做 block 级增量更新
-            if (part is AssistantMarkdownPart && part.text.isNotBlank()) {
-                val existingView = getChildAt(index)
-                if (existingView is LinearLayout && updateMarkdownPartInPlace(existingView, part, isStreaming)) {
-                    continue
-                }
+            val existingView = getChildAt(index)
+            val nextCollapsedBottomMargin = intermediatePartBottomMargin(parts.getOrNull(index + 1))
+            // 优先复用既有视图做原地更新，避免整卡重建
+            val updatedInPlace = when (part) {
+                is AssistantMarkdownPart ->
+                    part.text.isNotBlank() &&
+                        existingView is LinearLayout &&
+                        updateMarkdownPartInPlace(existingView, part, isStreaming)
+                is AssistantThinkingPart ->
+                    updateThinkingPartViewInPlace(existingView, part, partStates[index].expanded, nextCollapsedBottomMargin)
+                is AssistantToolPart ->
+                    updateToolPartViewInPlace(existingView, part, partStates[index].expanded, nextCollapsedBottomMargin)
+            }
+            if (updatedInPlace) {
+                continue
             }
             replacePartViewAt(
                 index = index,
@@ -786,6 +832,7 @@ class MarkdownView @JvmOverloads constructor(
         lastRenderedLinkDefs = emptyMap()
         lastRenderedBlocks = emptyList()
         lastRenderedIsStreaming = false
+        lastRenderedPartsStreaming = false
         lastRenderedMarkdownText = null
         partParseCache.clear()
         partBlocksCache.clear()
@@ -947,101 +994,140 @@ class MarkdownView @JvmOverloads constructor(
         }
         val expanded = expandedThinkingPartIds.contains(part.id)
         val collapsedBottomMargin = intermediatePartBottomMargin(nextPart)
-        return MaterialCardView(context).apply thinkingCard@ {
-            var backgroundAnimator: ValueAnimator? = null
-            layoutParams = createBlockLayoutParams(
-                bottomMargin = if (expanded) expandedIntermediateBottomMargin else collapsedBottomMargin
+        val card = MaterialCardView(context)
+        var backgroundAnimator: ValueAnimator? = null
+        card.layoutParams = createBlockLayoutParams(
+            bottomMargin = if (expanded) expandedIntermediateBottomMargin else collapsedBottomMargin
+        )
+        card.radius = 12.dp
+        card.strokeWidth = 0
+        card.cardElevation = 0f
+        card.setCardBackgroundColor(if (expanded) thinkingCardBgColor else Color.TRANSPARENT)
+
+        val toggleView = ImageView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+            contentDescription = context.getString(
+                if (expanded) R.string.action_collapse else R.string.action_expand
             )
-            radius = 12.dp
-            strokeWidth = 0
-            cardElevation = 0f
-            setCardBackgroundColor(if (expanded) thinkingCardBgColor else Color.TRANSPARENT)
-            addView(
-                LinearLayout(context).apply {
-                    orientation = VERTICAL
-                    addView(LinearLayout(context).apply {
-                        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-                        orientation = HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        val selectableAttrs = context.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
-                        foreground = selectableAttrs.getDrawable(0)
-                        selectableAttrs.recycle()
-                        isClickable = true
-                        isFocusable = true
-                        setPadding(
-                            if (expanded) expandedIntermediateHorizontalPadding else compactIntermediateHorizontalPadding,
-                            if (expanded) expandedIntermediateVerticalPadding else compactIntermediateVerticalPadding,
-                            if (expanded) expandedIntermediateHorizontalPadding else compactIntermediateHorizontalPadding,
-                            if (expanded) expandedIntermediateVerticalPadding else compactIntermediateVerticalPadding
-                        )
-
-                        addView(TextView(context).apply {
-                            layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
-                            setText(R.string.label_thinking)
-                            setTextColor(secondaryTextColor)
-                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                            setTypeface(typeface, Typeface.BOLD)
-                        })
-                        addView(ImageView(context).apply {
-                            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
-                            contentDescription = context.getString(
-                                if (expanded) R.string.action_collapse else R.string.action_expand
-                            )
-                            setImageResource(
-                                if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
-                            )
-                        })
-                    })
-                    addView(TextView(context).apply {
-                        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-                            leftMargin = 12.dpInt
-                            rightMargin = 12.dpInt
-                            bottomMargin = 12.dpInt
-                        }
-                        text = part.text
-                        setTextColor(secondaryTextColor)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                        typeface = Typeface.DEFAULT
-                        setLineSpacing(0f, 1.15f)
-                        includeFontPadding = false
-                        setTextIsSelectable(true)
-                        isVisible = expanded
-                    })
-
-                    val headerView = getChildAt(0)
-                    val contentView = getChildAt(1)
-                    val toggleView = (headerView as LinearLayout).getChildAt(1) as ImageView
-                    val toggle = View.OnClickListener {
-                        val nextExpanded = !contentView.isVisible
-                        if (nextExpanded) {
-                            expandedThinkingPartIds.add(part.id)
-                        } else {
-                            expandedThinkingPartIds.remove(part.id)
-                        }
-                        beginIntermediatePartTransition(this@thinkingCard)
-                        applyIntermediatePartLayout(
-                            this@thinkingCard,
-                            headerView,
-                            nextExpanded,
-                            collapsedBottomMargin
-                        )
-                        contentView.isVisible = nextExpanded
-                        toggleView.contentDescription = context.getString(
-                            if (nextExpanded) R.string.action_collapse else R.string.action_expand
-                        )
-                        toggleView.setImageResource(
-                            if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
-                        )
-                        backgroundAnimator = animateCardBackground(
-                            card = this@thinkingCard,
-                            targetColor = if (nextExpanded) thinkingCardBgColor else Color.TRANSPARENT,
-                            runningAnimator = backgroundAnimator
-                        )
-                    }
-                    headerView.setOnClickListener(toggle)
-                }
+            setImageResource(
+                if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
         }
+        val headerView = LinearLayout(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val selectableAttrs = context.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
+            foreground = selectableAttrs.getDrawable(0)
+            selectableAttrs.recycle()
+            isClickable = true
+            isFocusable = true
+            setPadding(
+                if (expanded) expandedIntermediateHorizontalPadding else compactIntermediateHorizontalPadding,
+                if (expanded) expandedIntermediateVerticalPadding else compactIntermediateVerticalPadding,
+                if (expanded) expandedIntermediateHorizontalPadding else compactIntermediateHorizontalPadding,
+                if (expanded) expandedIntermediateVerticalPadding else compactIntermediateVerticalPadding
+            )
+            addView(TextView(context).apply {
+                layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
+                setText(R.string.label_thinking)
+                setTextColor(secondaryTextColor)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(toggleView)
+        }
+        val contentView = TextView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = 12.dpInt
+                rightMargin = 12.dpInt
+                bottomMargin = 12.dpInt
+            }
+            text = part.text
+            setTextColor(secondaryTextColor)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.DEFAULT
+            setLineSpacing(0f, 1.15f)
+            includeFontPadding = false
+            setTextIsSelectable(true)
+            isVisible = expanded
+        }
+        card.addView(
+            LinearLayout(context).apply {
+                orientation = VERTICAL
+                addView(headerView)
+                addView(contentView)
+            }
+        )
+
+        val holder = ThinkingPartViewHolder(
+            card = card,
+            headerView = headerView,
+            toggleView = toggleView,
+            contentView = contentView,
+            renderedText = part.text,
+            renderedExpanded = expanded,
+            collapsedBottomMargin = collapsedBottomMargin
+        )
+        card.tag = holder
+
+        headerView.setOnClickListener {
+            val nextExpanded = !contentView.isVisible
+            if (nextExpanded) {
+                expandedThinkingPartIds.add(part.id)
+            } else {
+                expandedThinkingPartIds.remove(part.id)
+            }
+            beginIntermediatePartTransition(card)
+            applyIntermediatePartLayout(card, headerView, nextExpanded, holder.collapsedBottomMargin)
+            contentView.isVisible = nextExpanded
+            toggleView.contentDescription = context.getString(
+                if (nextExpanded) R.string.action_collapse else R.string.action_expand
+            )
+            toggleView.setImageResource(
+                if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
+            )
+            backgroundAnimator = animateCardBackground(
+                card = card,
+                targetColor = if (nextExpanded) thinkingCardBgColor else Color.TRANSPARENT,
+                runningAnimator = backgroundAnimator
+            )
+            holder.renderedExpanded = nextExpanded
+        }
+        return card
+    }
+
+    /**
+     * thinking 卡片原地更新：流式增长只改内容 TextView，展开状态变化时直接套用目标形态
+     * （与重建路径一致，不做动画；用户点击展开仍走 toggle 的动画路径）。
+     * 空文本占位视图或 tag 缺失时返回 false 走重建。
+     */
+    private fun updateThinkingPartViewInPlace(
+        view: View,
+        part: AssistantThinkingPart,
+        expanded: Boolean,
+        collapsedBottomMargin: Int
+    ): Boolean {
+        if (part.text.isBlank()) return false
+        val holder = view.tag as? ThinkingPartViewHolder ?: return false
+        holder.collapsedBottomMargin = collapsedBottomMargin
+        if (holder.renderedText != part.text) {
+            holder.contentView.text = part.text
+            holder.renderedText = part.text
+        }
+        if (holder.renderedExpanded != expanded) {
+            applyIntermediatePartLayout(holder.card, holder.headerView, expanded, collapsedBottomMargin)
+            holder.contentView.isVisible = expanded
+            holder.toggleView.contentDescription = context.getString(
+                if (expanded) R.string.action_collapse else R.string.action_expand
+            )
+            holder.toggleView.setImageResource(
+                if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
+            )
+            holder.card.setCardBackgroundColor(if (expanded) thinkingCardBgColor else Color.TRANSPARENT)
+            holder.renderedExpanded = expanded
+        }
+        return true
     }
 
     private fun createToolPartView(
@@ -1060,31 +1146,22 @@ class MarkdownView @JvmOverloads constructor(
         applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
 
         binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
+        binding.textSummary.text = toolSummaryText(toolPart)
 
-        val summary = IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)
-        binding.textSummary.text = if (toolPart.isLoading) {
-            context.getString(R.string.tool_summary_loading, summary)
-        } else {
-            summary
-        }
-
-        var detailPopulated = false
-        fun populateDetail() {
-            if (detailPopulated) {
-                return
-            }
-            detailPopulated = true
-            binding.textArguments.text = if (toolPart.toolArguments.isBlank()) {
-                ""
-            } else {
-                runCatching { JSONObject(toolPart.toolArguments).toString(2) }.getOrDefault(toolPart.toolArguments)
-            }
-            binding.textResult.text = toolPart.result
-            binding.groupArguments.isVisible = binding.textArguments.text.isNotBlank()
-        }
+        val holder = ToolPartViewHolder(
+            binding = binding,
+            renderedToolName = toolPart.toolName,
+            renderedArguments = toolPart.toolArguments,
+            renderedResult = toolPart.result,
+            renderedLoading = toolPart.isLoading,
+            renderedExpanded = expanded,
+            detailPopulated = false,
+            collapsedBottomMargin = collapsedBottomMargin
+        )
+        binding.root.tag = holder
 
         if (expanded) {
-            populateDetail()
+            populateToolDetail(holder)
         }
         binding.containerDetail.isVisible = expanded
         binding.btnToggleDetail.contentDescription = context.getString(
@@ -1094,16 +1171,16 @@ class MarkdownView @JvmOverloads constructor(
             if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
         )
 
-        val toggle = View.OnClickListener {
+        binding.layoutHeader.setOnClickListener {
             val nextExpanded = !binding.containerDetail.isVisible
             if (nextExpanded) {
-                populateDetail()
+                populateToolDetail(holder)
                 expandedToolPartIds.add(toolPart.id)
             } else {
                 expandedToolPartIds.remove(toolPart.id)
             }
             beginIntermediatePartTransition(binding.root)
-            applyIntermediatePartLayout(binding.root, binding.layoutHeader, nextExpanded, collapsedBottomMargin)
+            applyIntermediatePartLayout(binding.root, binding.layoutHeader, nextExpanded, holder.collapsedBottomMargin)
             binding.containerDetail.isVisible = nextExpanded
             binding.btnToggleDetail.contentDescription = context.getString(
                 if (nextExpanded) R.string.action_collapse else R.string.action_expand
@@ -1116,9 +1193,81 @@ class MarkdownView @JvmOverloads constructor(
                 targetColor = if (nextExpanded) toolCardBgColor else Color.TRANSPARENT,
                 runningAnimator = backgroundAnimator
             )
+            holder.renderedExpanded = nextExpanded
         }
-        binding.layoutHeader.setOnClickListener(toggle)
         return binding.root
+    }
+
+    private fun toolSummaryText(toolPart: AssistantToolPart): String {
+        val summary = IntermediateStepsHelper.parseToolSummary(toolPart.toolName, toolPart.toolArguments)
+        return if (toolPart.isLoading) {
+            context.getString(R.string.tool_summary_loading, summary)
+        } else {
+            summary
+        }
+    }
+
+    /** 从 holder 已记录的参数/结果懒填充 detail 区；已填充过则短路 */
+    private fun populateToolDetail(holder: ToolPartViewHolder) {
+        if (holder.detailPopulated) {
+            return
+        }
+        holder.detailPopulated = true
+        val binding = holder.binding
+        binding.textArguments.text = if (holder.renderedArguments.isBlank()) {
+            ""
+        } else {
+            runCatching { JSONObject(holder.renderedArguments).toString(2) }.getOrDefault(holder.renderedArguments)
+        }
+        binding.textResult.text = holder.renderedResult
+        binding.groupArguments.isVisible = binding.textArguments.text.isNotBlank()
+    }
+
+    /**
+     * tool 卡片原地更新：流式期间参数增长/结果落地/加载态翻转只更新对应文本，
+     * 展开状态变化直接套用目标形态（与重建路径一致，不做动画）。tag 缺失时返回 false 走重建。
+     */
+    private fun updateToolPartViewInPlace(
+        view: View,
+        toolPart: AssistantToolPart,
+        expanded: Boolean,
+        collapsedBottomMargin: Int
+    ): Boolean {
+        val holder = view.tag as? ToolPartViewHolder ?: return false
+        val binding = holder.binding
+        holder.collapsedBottomMargin = collapsedBottomMargin
+        if (holder.renderedToolName != toolPart.toolName) {
+            binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
+        }
+        if (holder.renderedToolName != toolPart.toolName ||
+            holder.renderedArguments != toolPart.toolArguments ||
+            holder.renderedLoading != toolPart.isLoading
+        ) {
+            binding.textSummary.text = toolSummaryText(toolPart)
+        }
+        if (holder.renderedArguments != toolPart.toolArguments || holder.renderedResult != toolPart.result) {
+            holder.detailPopulated = false
+        }
+        holder.renderedToolName = toolPart.toolName
+        holder.renderedArguments = toolPart.toolArguments
+        holder.renderedResult = toolPart.result
+        holder.renderedLoading = toolPart.isLoading
+        if (expanded && !holder.detailPopulated) {
+            populateToolDetail(holder)
+        }
+        if (holder.renderedExpanded != expanded) {
+            applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
+            binding.containerDetail.isVisible = expanded
+            binding.btnToggleDetail.contentDescription = context.getString(
+                if (expanded) R.string.action_collapse else R.string.action_expand
+            )
+            binding.btnToggleDetail.setImageResource(
+                if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
+            )
+            binding.root.setCardBackgroundColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
+            holder.renderedExpanded = expanded
+        }
+        return true
     }
 
     @DrawableRes
