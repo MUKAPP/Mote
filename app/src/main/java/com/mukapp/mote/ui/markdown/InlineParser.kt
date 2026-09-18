@@ -38,7 +38,7 @@ class InlineParser {
             if (inlineMath != null) {
                 appendText(elements, text, textStart, i)
                 if (inlineMath.closed) {
-                    elements.add(InlineElement.Math(inlineMath.formula, inlineMath.delimiter, display = false))
+                    elements.add(InlineElement.Math(inlineMath.formula, inlineMath.delimiter))
                     i += inlineMath.consumed
                     textStart = i
                     continue

@@ -137,7 +137,7 @@ class MarkdownStreamingParserTest {
         assertEquals(
             listOf(
                 InlineElement.Text("公式 "),
-                InlineElement.Math("E = mc^2", "\\(", display = false),
+                InlineElement.Math("E = mc^2", "\\("),
                 InlineElement.Text(" 完成")
             ),
             elements

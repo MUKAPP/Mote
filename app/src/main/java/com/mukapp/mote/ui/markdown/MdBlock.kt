@@ -88,8 +88,7 @@ sealed class InlineElement {
     data class InlineCode(val content: String) : InlineElement()
     data class Math(
         val formula: String,
-        val delimiter: String,
-        val display: Boolean
+        val delimiter: String
     ) : InlineElement()
     data class Link(val text: String, val url: String, val title: String = "") : InlineElement()
     data class AutoLink(val url: String, val text: String = url) : InlineElement()
