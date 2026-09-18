@@ -2182,10 +2182,8 @@ object LocalAiTools {
             if (!drained) {
                 MoteLog.w(Component, MoteLog.event("shell 输出流未在期限内读完", "id" to id))
             }
-            val stdout: String
-            val stderr: String
-            synchronized(entry.outputBuffer) { stdout = entry.outputBuffer.toString() }
-            synchronized(entry.errorBuffer) { stderr = entry.errorBuffer.toString() }
+            val stdout = entry.snapshotStdout()
+            val stderr = entry.snapshotStderr()
 
             // 前台命令已完成，从进程管理器中清理
             ShellProcessManager.remove(id)
@@ -2209,10 +2207,8 @@ object LocalAiTools {
             }.toString(2)
         }
 
-        val stdoutSoFar: String
-        val stderrSoFar: String
-        synchronized(entry.outputBuffer) { stdoutSoFar = entry.outputBuffer.toString() }
-        synchronized(entry.errorBuffer) { stderrSoFar = entry.errorBuffer.toString() }
+        val stdoutSoFar = entry.snapshotStdout()
+        val stderrSoFar = entry.snapshotStderr()
         MoteLog.i(
             Component,
             MoteLog.event(
