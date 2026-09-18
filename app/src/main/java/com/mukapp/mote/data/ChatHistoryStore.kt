@@ -46,6 +46,15 @@ object ChatHistoryStore {
     private val SafeConversationIdPattern = Regex("^[A-Za-z0-9_-]{1,80}$")
 
     private val summaryCacheLock = Any()
+
+    /**
+     * 对话数据变更互斥锁：串行化 saveConversation / updateConversationTitle /
+     * deleteConversation / clearConversation，避免并发调用方对同一对话文件读-改-写
+     * 交错产生 last-writer-wins（当前 ViewModel 侧已由 persistenceMutex 串行，
+     * 此锁在 store 层收口该约束）。锁序：先本锁，后 summaryCacheLock；
+     * 旧历史迁移持 summaryCacheLock 时直接写文件、不经上述入口，无反向嵌套。
+     */
+    private val conversationMutationLock = Any()
     @Volatile
     private var legacyMigrationChecked: Boolean = false
     @Volatile
@@ -64,61 +73,63 @@ object ChatHistoryStore {
         conversationMessages: List<ChatMessage>,
         contextSummaries: List<ContextSummary> = emptyList()
     ): File {
-        val conversationsDir = ensureConversationsDir(context)
-        val safeConversationId = conversationId.ifBlank { newConversationId() }
-        require(isSafeConversationId(safeConversationId)) { "对话 ID 不合法。" }
-        val historyFile = conversationFile(conversationsDir, safeConversationId)
-        // 优先走内存摘要缓存取 createdAt/title，避免保存前整文件回读（含全部附件 base64）。
-        val metadata = conversationMetadata(safeConversationId, historyFile)
-        val now = System.currentTimeMillis()
-        val createdAt = metadata?.createdAt?.takeIf { it > 0L } ?: now
-        val fallbackTitle = buildFallbackTitle(uiMessages)
-        val existingTitle = metadata?.title.orEmpty()
-        val incomingTitle = title.trim()
-        val savedTitle = when {
-            incomingTitle.isBlank() -> fallbackTitle
-            existingTitle.isNotBlank() && existingTitle != fallbackTitle && incomingTitle == fallbackTitle -> existingTitle
-            else -> incomingTitle
-        }.ifBlank { fallbackTitle }
+        synchronized(conversationMutationLock) {
+            val conversationsDir = ensureConversationsDir(context)
+            val safeConversationId = conversationId.ifBlank { newConversationId() }
+            require(isSafeConversationId(safeConversationId)) { "对话 ID 不合法。" }
+            val historyFile = conversationFile(conversationsDir, safeConversationId)
+            // 优先走内存摘要缓存取 createdAt/title，避免保存前整文件回读（含全部附件 base64）。
+            val metadata = conversationMetadata(safeConversationId, historyFile)
+            val now = System.currentTimeMillis()
+            val createdAt = metadata?.createdAt?.takeIf { it > 0L } ?: now
+            val fallbackTitle = buildFallbackTitle(uiMessages)
+            val existingTitle = metadata?.title.orEmpty()
+            val incomingTitle = title.trim()
+            val savedTitle = when {
+                incomingTitle.isBlank() -> fallbackTitle
+                existingTitle.isNotBlank() && existingTitle != fallbackTitle && incomingTitle == fallbackTitle -> existingTitle
+                else -> incomingTitle
+            }.ifBlank { fallbackTitle }
 
-        val payload = JSONObject().apply {
-            put("schemaVersion", SchemaVersion)
-            put("id", safeConversationId)
-            put("title", savedTitle)
-            put("createdAt", createdAt)
-            put("updatedAt", now)
-            put("baseUrl", settings.resolvedChatModel()?.baseUrl.orEmpty())
-            put("model", settings.resolvedChatModel()?.model.orEmpty())
-            put("uiMessageCount", uiMessages.size)
-            put("conversationMessageCount", conversationMessages.size)
-            put("contextSummaryCount", contextSummaries.size)
-            put("uiMessages", serializeMessages(uiMessages))
-            put("conversationMessages", serializeMessages(conversationMessages))
-            put("contextSummaries", serializeContextSummaries(contextSummaries))
-        }
-        writeConversationPayload(context, safeConversationId, historyFile, payload)
-        if (loadCurrentConversationId(context) == safeConversationId) {
-            saveCurrentConversationId(
-                context = context,
-                conversationId = safeConversationId,
-                allowMissingConversation = false
+            val payload = JSONObject().apply {
+                put("schemaVersion", SchemaVersion)
+                put("id", safeConversationId)
+                put("title", savedTitle)
+                put("createdAt", createdAt)
+                put("updatedAt", now)
+                put("baseUrl", settings.resolvedChatModel()?.baseUrl.orEmpty())
+                put("model", settings.resolvedChatModel()?.model.orEmpty())
+                put("uiMessageCount", uiMessages.size)
+                put("conversationMessageCount", conversationMessages.size)
+                put("contextSummaryCount", contextSummaries.size)
+                put("uiMessages", serializeMessages(uiMessages))
+                put("conversationMessages", serializeMessages(conversationMessages))
+                put("contextSummaries", serializeContextSummaries(contextSummaries))
+            }
+            writeConversationPayload(context, safeConversationId, historyFile, payload)
+            if (loadCurrentConversationId(context) == safeConversationId) {
+                saveCurrentConversationId(
+                    context = context,
+                    conversationId = safeConversationId,
+                    allowMissingConversation = false
+                )
+            }
+            parseConversationSummary(historyFile, payload)?.let { summary ->
+                upsertCachedSummary(context, summary)
+            }
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "已保存对话",
+                    "conversationId" to MoteLog.shortId(safeConversationId),
+                    "uiMessages" to uiMessages.size,
+                    "conversationMessages" to conversationMessages.size,
+                    "contextSummaries" to contextSummaries.size,
+                    "titleLength" to savedTitle.length
+                )
             )
+            return historyFile
         }
-        parseConversationSummary(historyFile, payload)?.let { summary ->
-            upsertCachedSummary(context, summary)
-        }
-        MoteLog.i(
-            Component,
-            MoteLog.event(
-                "已保存对话",
-                "conversationId" to MoteLog.shortId(safeConversationId),
-                "uiMessages" to uiMessages.size,
-                "conversationMessages" to conversationMessages.size,
-                "contextSummaries" to contextSummaries.size,
-                "titleLength" to savedTitle.length
-            )
-        )
-        return historyFile
     }
 
     fun loadCurrentConversation(context: Context): SavedConversationState {
@@ -294,75 +305,81 @@ object ChatHistoryStore {
     }
 
     fun deleteConversation(context: Context, conversationId: String): String? {
-        if (!isSafeConversationId(conversationId)) {
-            return null
-        }
-        val conversationsDir = ensureConversationsDir(context)
-        val file = conversationFile(conversationsDir, conversationId)
-        if (file.exists() && !file.delete()) {
-            throw IllegalStateException("无法删除对话记录文件。")
-        }
-        removeCachedSummary(context, conversationId)
-        val blobDir = conversationBlobDir(context, conversationId)
-        if (blobDir.exists() && !blobDir.deleteRecursively()) {
-            MoteLog.w(
-                Component,
-                MoteLog.event("无法删除对话附件目录", "conversationId" to MoteLog.shortId(conversationId))
-            )
-        }
+        synchronized(conversationMutationLock) {
+            if (!isSafeConversationId(conversationId)) {
+                return null
+            }
+            val conversationsDir = ensureConversationsDir(context)
+            val file = conversationFile(conversationsDir, conversationId)
+            if (file.exists() && !file.delete()) {
+                throw IllegalStateException("无法删除对话记录文件。")
+            }
+            removeCachedSummary(context, conversationId)
+            val blobDir = conversationBlobDir(context, conversationId)
+            if (blobDir.exists() && !blobDir.deleteRecursively()) {
+                MoteLog.w(
+                    Component,
+                    MoteLog.event("无法删除对话附件目录", "conversationId" to MoteLog.shortId(conversationId))
+                )
+            }
 
-        val replacementId = listConversations(context).firstOrNull { it.id != conversationId }?.id
-        val currentId = loadCurrentConversationId(context)
-        if (currentId == conversationId || currentId.isBlank()) {
-            saveCurrentConversationId(context, replacementId.orEmpty())
-        }
-        sweepOrphanBlobDirs(context)
-        MoteLog.i(
-            Component,
-            MoteLog.event(
-                "已删除对话",
-                "conversationId" to MoteLog.shortId(conversationId),
-                "replacementId" to MoteLog.shortId(replacementId)
+            val replacementId = listConversations(context).firstOrNull { it.id != conversationId }?.id
+            val currentId = loadCurrentConversationId(context)
+            if (currentId == conversationId || currentId.isBlank()) {
+                saveCurrentConversationId(context, replacementId.orEmpty())
+            }
+            sweepOrphanBlobDirs(context)
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "已删除对话",
+                    "conversationId" to MoteLog.shortId(conversationId),
+                    "replacementId" to MoteLog.shortId(replacementId)
+                )
             )
-        )
-        return replacementId
+            return replacementId
+        }
     }
 
     fun updateConversationTitle(context: Context, conversationId: String, title: String): Boolean {
-        val normalizedTitle = title.trim().takeIf { it.isNotBlank() } ?: return false
-        if (!isSafeConversationId(conversationId)) {
-            return false
-        }
-        val conversationsDir = ensureConversationsDir(context)
-        val file = conversationFile(conversationsDir, conversationId)
-        val root = readJsonObjectOrNull(file) ?: return false
-        root.put("title", normalizeTitle(normalizedTitle))
-        writeJsonAtomically(file, root)
-        parseConversationSummary(file, root)?.let { summary ->
-            upsertCachedSummary(context, summary)
-        }
-        MoteLog.i(
-            Component,
-            MoteLog.event(
-                "已更新对话标题",
-                "conversationId" to MoteLog.shortId(conversationId),
-                "titleLength" to normalizedTitle.length
+        synchronized(conversationMutationLock) {
+            val normalizedTitle = title.trim().takeIf { it.isNotBlank() } ?: return false
+            if (!isSafeConversationId(conversationId)) {
+                return false
+            }
+            val conversationsDir = ensureConversationsDir(context)
+            val file = conversationFile(conversationsDir, conversationId)
+            val root = readJsonObjectOrNull(file) ?: return false
+            root.put("title", normalizeTitle(normalizedTitle))
+            writeJsonAtomically(file, root)
+            parseConversationSummary(file, root)?.let { summary ->
+                upsertCachedSummary(context, summary)
+            }
+            MoteLog.i(
+                Component,
+                MoteLog.event(
+                    "已更新对话标题",
+                    "conversationId" to MoteLog.shortId(conversationId),
+                    "titleLength" to normalizedTitle.length
+                )
             )
-        )
-        return true
+            return true
+        }
     }
 
     fun clearConversation(context: Context) {
-        val historyDir = File(context.filesDir, DirectoryName)
-        if (!historyDir.exists()) {
+        synchronized(conversationMutationLock) {
+            val historyDir = File(context.filesDir, DirectoryName)
+            if (!historyDir.exists()) {
+                resetCaches()
+                return
+            }
+            if (!historyDir.deleteRecursively()) {
+                throw IllegalStateException("无法删除历史记录目录。")
+            }
             resetCaches()
-            return
+            MoteLog.i(Component, "已清空全部聊天历史。")
         }
-        if (!historyDir.deleteRecursively()) {
-            throw IllegalStateException("无法删除历史记录目录。")
-        }
-        resetCaches()
-        MoteLog.i(Component, "已清空全部聊天历史。")
     }
 
     private fun migrateLegacyConversationIfNeeded(context: Context) {
