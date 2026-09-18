@@ -19,13 +19,16 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class MarkdownParseCache {
 
-    private data class CacheKey(val text: String, val isStreaming: Boolean)
+    /** 同一文本只保留一个解析变体；isStreaming 只影响尾部未闭合结构的解析结果。 */
+    private class CacheEntry(val isStreaming: Boolean, val result: BlockParser.ParseResult)
 
     private val cacheLock = Any()
-    private val cache = object : LruCache<CacheKey, BlockParser.ParseResult>(MaxCacheEntries) {
-        override fun sizeOf(key: CacheKey, value: BlockParser.ParseResult): Int = 1
+    // 按字符数而非条数淘汰：ParseResult 内存占用与文本长度近似成正比，
+    // 按条数上限会让少量超长消息占用不成比例的内存。
+    private val cache = object : LruCache<String, CacheEntry>(MaxCacheChars) {
+        override fun sizeOf(key: String, value: CacheEntry): Int = key.length.coerceAtLeast(1)
     }
-    private val inFlight = ConcurrentHashMap.newKeySet<CacheKey>()
+    private val inFlight = ConcurrentHashMap.newKeySet<String>()
     private val blockParser = BlockParser()
 
     /** 预解析任务的 Job，用于外部取消。仅在主线程访问。 */
@@ -33,11 +36,12 @@ class MarkdownParseCache {
 
     /**
      * 同步查询缓存。
-     * @return 解析结果；缓存未命中时返回 null。
+     * @return 解析结果；缓存未命中或解析变体不匹配时返回 null（写入方会以新变体替换旧条目，
+     * 避免同一文本的流式/非流式两份结果长期共存）。
      */
     fun get(text: String, isStreaming: Boolean): BlockParser.ParseResult? {
-        val key = CacheKey(text, isStreaming)
-        return synchronized(cacheLock) { cache.get(key) }
+        val entry = synchronized(cacheLock) { cache.get(text) } ?: return null
+        return if (entry.isStreaming == isStreaming) entry.result else null
     }
 
     /**
@@ -56,8 +60,8 @@ class MarkdownParseCache {
         batchJob?.cancel()
         val toResolve = entries.asSequence()
             .filter { (text, _) -> text.isNotBlank() }
-            .distinctBy { (text, isStreaming) -> CacheKey(text, isStreaming) }
-            .filterNot { (text, isStreaming) -> contains(CacheKey(text, isStreaming)) }
+            .distinctBy { (text, _) -> text }
+            .filterNot { (text, isStreaming) -> contains(text, isStreaming) }
             .toList()
         if (toResolve.isEmpty()) {
             onAllReady?.invoke()
@@ -65,17 +69,16 @@ class MarkdownParseCache {
         }
         batchJob = scope.launch(Dispatchers.Default) {
             for ((text, isStreaming) in toResolve) {
-                val key = CacheKey(text, isStreaming)
-                if (!inFlight.add(key)) {
+                if (!inFlight.add(text)) {
                     continue
                 }
                 try {
-                    if (!contains(key)) {
+                    if (!contains(text, isStreaming)) {
                         val result = blockParser.parseWithLinkDefs(text, isStreaming)
-                        put(key, result)
+                        put(text, isStreaming, result)
                     }
                 } finally {
-                    inFlight.remove(key)
+                    inFlight.remove(text)
                 }
                 yield()
             }
@@ -95,15 +98,16 @@ class MarkdownParseCache {
         inFlight.clear()
     }
 
-    private fun contains(key: CacheKey): Boolean {
-        return synchronized(cacheLock) { cache.get(key) != null }
+    private fun contains(text: String, isStreaming: Boolean): Boolean {
+        return synchronized(cacheLock) { cache.get(text)?.isStreaming == isStreaming }
     }
 
-    private fun put(key: CacheKey, result: BlockParser.ParseResult) {
-        synchronized(cacheLock) { cache.put(key, result) }
+    private fun put(text: String, isStreaming: Boolean, result: BlockParser.ParseResult) {
+        synchronized(cacheLock) { cache.put(text, CacheEntry(isStreaming, result)) }
     }
 
     private companion object {
-        const val MaxCacheEntries = 160
+        /** 缓存总字符预算；普通消息文本约 1..4K 字符，大致相当于数十到上百条消息。 */
+        const val MaxCacheChars = 400_000
     }
 }
