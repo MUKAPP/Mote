@@ -4,6 +4,21 @@ class InlineParser {
 
     private var linkDefinitions: Map<String, Pair<String, String>> = emptyMap()
 
+    /**
+     * 单次 parse 调用内的闭合扫描失败记忆。
+     * 闭合标记的合法性只取决于其所在位置（regionMatches/isEscaped/isExactMarkerRun 均为位置局部判断），
+     * 因此「从 s 起扫到某边界都找不到闭合」蕴含「从任意 s' ≥ s 起扫到同一边界也找不到」；
+     * 记住失败起点后，同一 marker 的后续扫描可 O(1) 短路，避免大量未闭合标记时全尾重复扫描的 O(n²)。
+     * 仅对当前 text 有效，递归解析子串时各自新建。
+     */
+    private class ScanMemo {
+        /** marker → 已知扫描失败的最小起点（扫描边界为文末） */
+        val markerFailFrom = HashMap<String, Int>()
+        /** 行内 $ 闭合扫描的失败区间：起点 ≥ failFrom 且 ≤ failUntil（扫描停止边界）时必失败 */
+        var dollarFailFrom = Int.MAX_VALUE
+        var dollarFailUntil = -1
+    }
+
     fun parse(
         text: String,
         isStreaming: Boolean = false,
@@ -12,13 +27,14 @@ class InlineParser {
     ): List<InlineElement> {
         if (text.isEmpty()) return emptyList()
         linkDefinitions = linkDefs
+        val memo = ScanMemo()
 
         val elements = mutableListOf<InlineElement>()
         var i = 0
         var textStart = 0
 
         while (i < text.length) {
-            val inlineMath = if (parseMath) matchInlineMathAt(text, i, isStreaming) else null
+            val inlineMath = if (parseMath) matchInlineMathAt(text, i, isStreaming, memo) else null
             if (inlineMath != null) {
                 appendText(elements, text, textStart, i)
                 if (inlineMath.closed) {
@@ -45,7 +61,7 @@ class InlineParser {
             if (text[i] == '`') {
                 val backtickCount = getRunCount(text, i, '`')
                 val marker = "`".repeat(backtickCount)
-                val closePos = findCloseMarker(text, i + backtickCount, marker)
+                val closePos = findCloseMarker(text, i + backtickCount, marker, memo)
                 if (closePos >= 0) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -63,7 +79,7 @@ class InlineParser {
             }
 
             if (i + 2 < text.length && text[i] == '*' && text[i + 1] == '*' && text[i + 2] == '*') {
-                val closePos = findCloseMarker(text, i + 3, "***")
+                val closePos = findCloseMarker(text, i + 3, "***", memo)
                 if (closePos >= 0) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -82,7 +98,7 @@ class InlineParser {
             }
 
             if (i + 1 < text.length && text[i] == '*' && text[i + 1] == '*') {
-                val closePos = findCloseMarker(text, i + 2, "**")
+                val closePos = findCloseMarker(text, i + 2, "**", memo)
                 if (closePos >= 0) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -100,7 +116,7 @@ class InlineParser {
             }
 
             if (text[i] == '~' && i + 1 < text.length && text[i + 1] == '~') {
-                val closePos = findCloseMarker(text, i + 2, "~~")
+                val closePos = findCloseMarker(text, i + 2, "~~", memo)
                 if (closePos >= 0) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -118,7 +134,7 @@ class InlineParser {
             }
 
             if (text[i] == '^') {
-                val closePos = findCloseMarker(text, i + 1, "^")
+                val closePos = findCloseMarker(text, i + 1, "^", memo)
                 if (closePos >= 0) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -136,7 +152,7 @@ class InlineParser {
             }
 
             if (text[i] == '~') {
-                val closePos = findCloseMarker(text, i + 1, "~")
+                val closePos = findCloseMarker(text, i + 1, "~", memo)
                 if (closePos >= 0 && (i + 1 >= text.length || text[i + 1] != '~')) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -154,7 +170,7 @@ class InlineParser {
             }
 
             if (text[i] == '*' && (i == 0 || text[i - 1] != '*') && i + 1 < text.length && text[i + 1] != '*') {
-                val closePos = findCloseMarker(text, i + 1, "*")
+                val closePos = findCloseMarker(text, i + 1, "*", memo)
                 if (closePos >= 0 && (closePos + 1 >= text.length || text[closePos + 1] != '*')) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -172,7 +188,7 @@ class InlineParser {
             }
 
             if (text[i] == '=' && i + 1 < text.length && text[i + 1] == '=') {
-                val closePos = findCloseMarker(text, i + 2, "==")
+                val closePos = findCloseMarker(text, i + 2, "==", memo)
                 if (closePos >= 0) {
                     if (i > textStart) {
                         elements.add(InlineElement.Text(text.substring(textStart, i)))
@@ -251,10 +267,10 @@ class InlineParser {
         return elements
     }
 
-    private fun matchInlineMathAt(text: String, pos: Int, isStreaming: Boolean): InlineMathResult? {
+    private fun matchInlineMathAt(text: String, pos: Int, isStreaming: Boolean, memo: ScanMemo): InlineMathResult? {
         if (pos >= text.length) return null
         if (text.regionMatches(pos, "\\(", 0, 2) && !isEscaped(text, pos)) {
-            val closePos = findCloseDelimiter(text, pos + 2, "\\)")
+            val closePos = findCloseDelimiter(text, pos + 2, "\\)", memo)
             if (closePos >= 0) {
                 val formula = text.substring(pos + 2, closePos)
                 if (formula.isNotBlank()) {
@@ -274,7 +290,7 @@ class InlineParser {
         }
 
         if (text[pos] == '$' && canOpenDollarMath(text, pos)) {
-            val closePos = findDollarMathClose(text, pos + 1)
+            val closePos = findDollarMathClose(text, pos + 1, memo)
             if (closePos >= 0) {
                 val formula = text.substring(pos + 1, closePos)
                 if (formula.isNotBlank()) {
@@ -302,7 +318,9 @@ class InlineParser {
         return contentStart < text.length && text.substring(contentStart).isNotBlank()
     }
 
-    private fun findCloseDelimiter(text: String, searchStart: Int, delimiter: String): Int {
+    private fun findCloseDelimiter(text: String, searchStart: Int, delimiter: String, memo: ScanMemo): Int {
+        val knownFailFrom = memo.markerFailFrom[delimiter]
+        if (knownFailFrom != null && searchStart >= knownFailFrom) return -1
         var index = searchStart
         while (index <= text.length - delimiter.length) {
             if (text.regionMatches(index, delimiter, 0, delimiter.length) && !isEscaped(text, index)) {
@@ -310,6 +328,7 @@ class InlineParser {
             }
             index++
         }
+        memo.markerFailFrom[delimiter] = minOf(searchStart, knownFailFrom ?: Int.MAX_VALUE)
         return -1
     }
 
@@ -320,7 +339,8 @@ class InlineParser {
         return true
     }
 
-    private fun findDollarMathClose(text: String, searchStart: Int): Int {
+    private fun findDollarMathClose(text: String, searchStart: Int, memo: ScanMemo): Int {
+        if (searchStart >= memo.dollarFailFrom && searchStart <= memo.dollarFailUntil) return -1
         var index = searchStart
         while (index < text.length) {
             if (text[index] == '$' && !isEscaped(text, index)) {
@@ -331,11 +351,23 @@ class InlineParser {
                 }
             }
             if (text[index] == '\n' && text.getOrNull(index + 1) == '\n') {
+                recordDollarFail(memo, searchStart, index)
                 return -1
             }
             index++
         }
+        recordDollarFail(memo, searchStart, text.length)
         return -1
+    }
+
+    /** 失败区间与扫描停止边界绑定：同边界取更小起点，跨段落（新边界）整体替换。 */
+    private fun recordDollarFail(memo: ScanMemo, searchStart: Int, boundary: Int) {
+        if (boundary == memo.dollarFailUntil) {
+            memo.dollarFailFrom = minOf(memo.dollarFailFrom, searchStart)
+        } else {
+            memo.dollarFailFrom = searchStart
+            memo.dollarFailUntil = boundary
+        }
     }
 
     private fun matchAutoLinkAt(text: String, pos: Int): String? {
@@ -439,13 +471,12 @@ class InlineParser {
 
     private fun matchRefLinkAt(text: String, pos: Int): LinkMatch? {
         if (text[pos] != '[') return null
-        val rest = text.substring(pos)
-        val match = REF_LINK_REGEX.find(rest) ?: return null
-        if (match.range.first != 0) return null
+        // matchAt 锚定在 pos 原地匹配，避免 substring 复制 + 未锚定 find 全尾扫描
+        val match = REF_LINK_REGEX.matchAt(text, pos) ?: return null
         val linkText = match.groupValues[1]
         val refId = match.groupValues[2].ifBlank { linkText }.lowercase()
         val def = linkDefinitions[refId] ?: return null
-        return LinkMatch(linkText, def.first, def.second, match.range.last + 1)
+        return LinkMatch(linkText, def.first, def.second, match.range.last + 1 - pos)
     }
 
     private fun matchBareAutoLinkAt(text: String, pos: Int): BareAutoLinkMatch? {
@@ -519,7 +550,9 @@ class InlineParser {
         return count
     }
 
-    private fun findCloseMarker(text: String, searchStart: Int, marker: String): Int {
+    private fun findCloseMarker(text: String, searchStart: Int, marker: String, memo: ScanMemo): Int {
+        val knownFailFrom = memo.markerFailFrom[marker]
+        if (knownFailFrom != null && searchStart >= knownFailFrom) return -1
         var i = searchStart
         while (i <= text.length - marker.length) {
             if (text.regionMatches(i, marker, 0, marker.length) && !isEscaped(text, i) && isExactMarkerRun(text, i, marker)) {
@@ -527,6 +560,7 @@ class InlineParser {
             }
             i++
         }
+        memo.markerFailFrom[marker] = minOf(searchStart, knownFailFrom ?: Int.MAX_VALUE)
         return -1
     }
 
