@@ -42,6 +42,7 @@ import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.databinding.ItemToolResultBinding
+import com.mukapp.mote.databinding.ItemToolResultDetailBinding
 import com.mukapp.mote.ui.IntermediateStepsHelper
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
@@ -151,6 +152,8 @@ class MarkdownView @JvmOverloads constructor(
     private val quoteContentPaddingEnd = 12.dpInt
     private var renderMode: RenderMode = RenderMode.None
     private var lastRenderedPartStates: List<RenderedAssistantPartState> = emptyList()
+    /** 点击工具卡时记录实际过渡根，跨身份复用前结束旧布局动画（含离开 RecyclerView 后的重绑）。 */
+    private var toolTransitionSceneRoot: ViewGroup? = null
     /** parts 模式上一次渲染的 isStreaming；流式→非流式时 markdown part 即使内容未变也需收尾刷新 */
     private var lastRenderedPartsStreaming: Boolean = false
     private var lastRenderedLinkDefs: Map<String, Pair<String, String>> = emptyMap()
@@ -200,9 +203,13 @@ class MarkdownView @JvmOverloads constructor(
         var collapsedBottomMargin: Int
     )
 
-    /** tool 卡片的原地更新句柄，同上挂在根视图 tag 上；detail 懒填充状态一并保存 */
+    /** tool 卡片按 slot 复用；当前身份、展开集合及首次展开创建的详情均保存在 holder 中。 */
     private class ToolPartViewHolder(
         val binding: ItemToolResultBinding,
+        var partId: String,
+        var expandedToolPartIds: MutableSet<String>,
+        var detailBinding: ItemToolResultDetailBinding?,
+        var backgroundAnimator: ValueAnimator?,
         var renderedToolName: String,
         var renderedArguments: String,
         var renderedResult: String,
@@ -294,9 +301,11 @@ class MarkdownView @JvmOverloads constructor(
 
         // 收集所有当前可见的 markdown 片段文本，用于淘汰已不再使用的解析缓存
         val activeMarkdownTexts = HashSet<String>()
+        val activeMarkdownPartIds = HashSet<String>()
         visibleParts.forEach { part ->
             if (part is AssistantMarkdownPart && part.text.isNotBlank()) {
                 activeMarkdownTexts.add(part.text)
+                activeMarkdownPartIds.add(part.id)
             }
         }
         // 当 isStreaming 与缓存不一致或文本不再使用时清理对应条目
@@ -307,6 +316,7 @@ class MarkdownView @JvmOverloads constructor(
             }
         }
         cacheKeysToDrop.forEach { partParseCache.remove(it) }
+        partBlocksCache.keys.retainAll(activeMarkdownPartIds)
 
         val partStates = visibleParts.map { part ->
             createRenderedPartState(part, expandedThinkingPartIds, expandedToolPartIds)
@@ -317,7 +327,8 @@ class MarkdownView @JvmOverloads constructor(
         // 流式→非流式收尾：markdown part 即使内容未变，也需按非流式重建 spanned 并启用链接点击
         val finalizeMarkdownParts = lastRenderedPartsStreaming && !isStreaming
 
-        if (canApplyIncrementalPartUpdate(partStates)) {
+        if (canApplyIncrementalPartUpdate()) {
+            endToolTransitionBeforeIdentityReuse(partStates)
             renderPartViewsIncrementally(
                 parts = visibleParts,
                 partStates = partStates,
@@ -705,21 +716,24 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
-    private fun canApplyIncrementalPartUpdate(
-        nextPartStates: List<RenderedAssistantPartState>
-    ): Boolean {
-        if (renderMode != RenderMode.Parts || childCount != lastRenderedPartStates.size) {
-            return false
-        }
+    private fun canApplyIncrementalPartUpdate(): Boolean {
+        return renderMode == RenderMode.Parts && childCount == lastRenderedPartStates.size
+    }
+
+    private fun endToolTransitionBeforeIdentityReuse(nextPartStates: List<RenderedAssistantPartState>) {
+        val sceneRoot = toolTransitionSceneRoot ?: return
         val sharedCount = minOf(lastRenderedPartStates.size, nextPartStates.size)
         for (index in 0 until sharedCount) {
             val previous = lastRenderedPartStates[index]
             val next = nextPartStates[index]
-            if (previous.id != next.id || previous.kind != next.kind) {
-                return false
+            if (previous.kind == AssistantPartKind.Tool && next.kind == AssistantPartKind.Tool &&
+                previous.id != next.id
+            ) {
+                TransitionManager.endTransitions(sceneRoot)
+                toolTransitionSceneRoot = null
+                return
             }
         }
-        return true
     }
 
     private fun renderPartViewsIncrementally(
@@ -733,23 +747,33 @@ class MarkdownView @JvmOverloads constructor(
         val sharedCount = minOf(lastRenderedPartStates.size, partStates.size)
         for (index in 0 until sharedCount) {
             val part = parts[index]
-            val statesEqual = lastRenderedPartStates[index] == partStates[index]
-            // 流式收尾时 markdown part 不能按等值跳过：需重建 spanned/启用链接点击
-            if (statesEqual && !(finalizeMarkdownParts && part is AssistantMarkdownPart)) {
+            val previousState = lastRenderedPartStates[index]
+            val nextState = partStates[index]
+            val statesEqual = previousState == nextState
+            // tool 即使状态等值也要同步当前展开集合、点击后的展开状态及相邻间距。
+            // 流式收尾时 markdown 不能跳过：需重建 spanned/启用链接点击。
+            if (statesEqual && part !is AssistantToolPart &&
+                !(finalizeMarkdownParts && part is AssistantMarkdownPart)
+            ) {
                 continue
             }
             val existingView = getChildAt(index)
             val nextCollapsedBottomMargin = intermediatePartBottomMargin(parts.getOrNull(index + 1))
-            // 优先复用既有视图做原地更新，避免整卡重建
+            // tool 允许同类 slot 跨身份复用；markdown/thinking 的树与缓存仍要求身份一致。
+            val sameIdentity = previousState.id == nextState.id && previousState.kind == nextState.kind
             val updatedInPlace = when (part) {
                 is AssistantMarkdownPart ->
-                    part.text.isNotBlank() &&
+                    sameIdentity && part.text.isNotBlank() &&
                         existingView is LinearLayout &&
                         updateMarkdownPartInPlace(existingView, part, isStreaming)
                 is AssistantThinkingPart ->
-                    updateThinkingPartViewInPlace(existingView, part, partStates[index].expanded, nextCollapsedBottomMargin)
+                    sameIdentity && updateThinkingPartViewInPlace(
+                        existingView, part, nextState.expanded, nextCollapsedBottomMargin
+                    )
                 is AssistantToolPart ->
-                    updateToolPartViewInPlace(existingView, part, partStates[index].expanded, nextCollapsedBottomMargin)
+                    previousState.kind == AssistantPartKind.Tool && updateToolPartViewInPlace(
+                        existingView, part, nextState.expanded, nextCollapsedBottomMargin, expandedToolPartIds
+                    )
             }
             if (updatedInPlace) {
                 continue
@@ -838,6 +862,7 @@ class MarkdownView @JvmOverloads constructor(
         partParseCache.clear()
         partBlocksCache.clear()
         incrementalParseState = null
+        toolTransitionSceneRoot = null
     }
 
     private fun animateCardBackground(
@@ -925,13 +950,14 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
-    private fun beginIntermediatePartTransition(partView: View) {
+    private fun beginIntermediatePartTransition(partView: View): ViewGroup? {
         var ancestor = partView.parent
         while (ancestor is ViewGroup && ancestor !is RecyclerView) {
             ancestor = ancestor.parent
         }
-        val sceneRoot = (ancestor as? RecyclerView) ?: (partView.parent as? ViewGroup) ?: return
+        val sceneRoot = (ancestor as? RecyclerView) ?: (partView.parent as? ViewGroup) ?: return null
         TransitionManager.beginDelayedTransition(sceneRoot, createIntermediatePartTransition())
+        return sceneRoot
     }
 
     private fun createIntermediatePartTransition(): Transition {
@@ -1147,7 +1173,6 @@ class MarkdownView @JvmOverloads constructor(
         binding.root.layoutParams = createBlockLayoutParams(
             bottomMargin = if (expanded) expandedIntermediateBottomMargin else collapsedBottomMargin
         )
-        var backgroundAnimator: ValueAnimator? = null
         binding.root.setCardBackgroundColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
         applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
 
@@ -1156,6 +1181,10 @@ class MarkdownView @JvmOverloads constructor(
 
         val holder = ToolPartViewHolder(
             binding = binding,
+            partId = toolPart.id,
+            expandedToolPartIds = expandedToolPartIds,
+            detailBinding = null,
+            backgroundAnimator = null,
             renderedToolName = toolPart.toolName,
             renderedArguments = toolPart.toolArguments,
             renderedResult = toolPart.result,
@@ -1169,31 +1198,31 @@ class MarkdownView @JvmOverloads constructor(
         if (expanded) {
             populateToolDetail(holder)
         }
-        binding.containerDetail.isVisible = expanded
+        holder.detailBinding?.root?.isVisible = expanded
         applyExpansionStateDescription(binding.layoutHeader, expanded)
         binding.btnToggleDetail.setImageResource(
             if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
         )
 
         binding.layoutHeader.setOnClickListener {
-            val nextExpanded = !binding.containerDetail.isVisible
+            val nextExpanded = !holder.renderedExpanded
             if (nextExpanded) {
                 populateToolDetail(holder)
-                expandedToolPartIds.add(toolPart.id)
+                holder.expandedToolPartIds.add(holder.partId)
             } else {
-                expandedToolPartIds.remove(toolPart.id)
+                holder.expandedToolPartIds.remove(holder.partId)
             }
-            beginIntermediatePartTransition(binding.root)
+            toolTransitionSceneRoot = beginIntermediatePartTransition(binding.root)
             applyIntermediatePartLayout(binding.root, binding.layoutHeader, nextExpanded, holder.collapsedBottomMargin)
-            binding.containerDetail.isVisible = nextExpanded
+            holder.detailBinding?.root?.isVisible = nextExpanded
             applyExpansionStateDescription(binding.layoutHeader, nextExpanded)
             binding.btnToggleDetail.setImageResource(
                 if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
-            backgroundAnimator = animateCardBackground(
+            holder.backgroundAnimator = animateCardBackground(
                 card = binding.root,
                 targetColor = if (nextExpanded) toolCardBgColor else Color.TRANSPARENT,
-                runningAnimator = backgroundAnimator
+                runningAnimator = holder.backgroundAnimator
             )
             holder.renderedExpanded = nextExpanded
         }
@@ -1209,13 +1238,14 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
-    /** 从 holder 已记录的参数/结果懒填充 detail 区；已填充过则短路 */
+    /** 首次展开才创建详情视图；参数/结果变化后，下次展开重新填充预览。 */
     private fun populateToolDetail(holder: ToolPartViewHolder) {
         if (holder.detailPopulated) {
             return
         }
-        holder.detailPopulated = true
-        val binding = holder.binding
+        val binding = holder.detailBinding ?: ItemToolResultDetailBinding.bind(
+            holder.binding.stubToolDetail.inflate()
+        ).also { holder.detailBinding = it }
         val argumentsPreview = ToolDetailFormatter.arguments(holder.renderedArguments)
         val resultPreview = ToolDetailFormatter.result(holder.renderedResult)
         binding.textArguments.text = if (argumentsPreview.isTruncated) {
@@ -1242,20 +1272,25 @@ class MarkdownView @JvmOverloads constructor(
                 plainText = true
             )
         }
+        holder.detailPopulated = true
     }
 
     /**
      * tool 卡片原地更新：流式期间参数增长/结果落地/加载态翻转只更新对应文本，
-     * 展开状态变化直接套用目标形态（与重建路径一致，不做动画）。tag 缺失时返回 false 走重建。
+     * 跨身份重绑或展开状态变化直接复位目标形态并取消旧背景动画。tag 缺失时返回 false 走重建。
      */
     private fun updateToolPartViewInPlace(
         view: View,
         toolPart: AssistantToolPart,
         expanded: Boolean,
-        collapsedBottomMargin: Int
+        collapsedBottomMargin: Int,
+        expandedToolPartIds: MutableSet<String>
     ): Boolean {
         val holder = view.tag as? ToolPartViewHolder ?: return false
         val binding = holder.binding
+        val identityChanged = holder.partId != toolPart.id
+        holder.partId = toolPart.id
+        holder.expandedToolPartIds = expandedToolPartIds
         holder.collapsedBottomMargin = collapsedBottomMargin
         if (holder.renderedToolName != toolPart.toolName) {
             binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
@@ -1276,9 +1311,11 @@ class MarkdownView @JvmOverloads constructor(
         if (expanded && !holder.detailPopulated) {
             populateToolDetail(holder)
         }
-        if (holder.renderedExpanded != expanded) {
+        if (identityChanged || holder.renderedExpanded != expanded) {
+            holder.backgroundAnimator?.cancel()
+            holder.backgroundAnimator = null
             applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
-            binding.containerDetail.isVisible = expanded
+            holder.detailBinding?.root?.isVisible = expanded
             applyExpansionStateDescription(binding.layoutHeader, expanded)
             binding.btnToggleDetail.setImageResource(
                 if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
