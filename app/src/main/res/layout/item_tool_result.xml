@@ -50,7 +50,7 @@
                 android:id="@+id/btn_toggle_detail"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:contentDescription="@string/action_expand"
+                android:importantForAccessibility="no"
                 android:src="@drawable/ic_chevron_right" />
         </LinearLayout>
 
@@ -108,6 +108,17 @@
                 android:fontFamily="monospace"
                 android:textAppearance="?attr/textAppearanceBodySmall"
                 android:textIsSelectable="true" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_view_full"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:minWidth="0dp"
+                android:text="@string/action_view_full"
+                android:visibility="gone"
+                tools:visibility="visible" />
         </LinearLayout>
     </LinearLayout>
 

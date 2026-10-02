@@ -26,6 +26,9 @@
     <string name="action_retry">重试</string>
     <string name="action_expand">展开</string>
     <string name="action_collapse">收起</string>
+    <string name="state_expanded">已展开</string>
+    <string name="state_collapsed">已收起</string>
+    <string name="action_view_full">查看全部</string>
     <string name="action_scroll_to_bottom">回到底部</string>
     <string name="action_confirm">确认</string>
     <string name="action_cancel">取消</string>
@@ -50,6 +53,7 @@
     <string name="tool_summary_loading">正在执行：%1$s</string>
     <string name="label_parameters">参数：</string>
     <string name="label_result">结果：</string>
+    <string name="tool_detail_truncated">\n\n…（已截断，完整内容 %1$d 字符）</string>
     <string name="empty_title">欢迎使用 Mote</string>
     <string name="empty_subtitle_configured">开始与 AI 对话吧</string>
     <string name="empty_subtitle_unconfigured">请先在设置页配置 API 地址和模型</string>

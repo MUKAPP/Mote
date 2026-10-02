@@ -26,6 +26,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.DrawableRes
+import androidx.core.view.ViewCompat
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import androidx.transition.ChangeBounds
@@ -34,6 +35,7 @@ import androidx.transition.TransitionManager
 import androidx.transition.TransitionSet
 import androidx.transition.TransitionValues
 import com.google.android.material.card.MaterialCardView
+import com.mukapp.mote.FreeCopyActivity
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
@@ -44,7 +46,6 @@ import com.mukapp.mote.ui.IntermediateStepsHelper
 import com.mukapp.mote.util.dp
 import com.mukapp.mote.util.dpInt
 import io.ratex.RaTeXView
-import org.json.JSONObject
 import kotlin.math.roundToInt
 
 class MarkdownView @JvmOverloads constructor(
@@ -1006,9 +1007,7 @@ class MarkdownView @JvmOverloads constructor(
 
         val toggleView = ImageView(context).apply {
             layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
-            contentDescription = context.getString(
-                if (expanded) R.string.action_collapse else R.string.action_expand
-            )
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
             setImageResource(
                 if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
@@ -1070,6 +1069,7 @@ class MarkdownView @JvmOverloads constructor(
             collapsedBottomMargin = collapsedBottomMargin
         )
         card.tag = holder
+        applyExpansionStateDescription(headerView, expanded)
 
         headerView.setOnClickListener {
             val nextExpanded = !contentView.isVisible
@@ -1081,9 +1081,7 @@ class MarkdownView @JvmOverloads constructor(
             beginIntermediatePartTransition(card)
             applyIntermediatePartLayout(card, headerView, nextExpanded, holder.collapsedBottomMargin)
             contentView.isVisible = nextExpanded
-            toggleView.contentDescription = context.getString(
-                if (nextExpanded) R.string.action_collapse else R.string.action_expand
-            )
+            applyExpansionStateDescription(headerView, nextExpanded)
             toggleView.setImageResource(
                 if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
@@ -1118,9 +1116,7 @@ class MarkdownView @JvmOverloads constructor(
         if (holder.renderedExpanded != expanded) {
             applyIntermediatePartLayout(holder.card, holder.headerView, expanded, collapsedBottomMargin)
             holder.contentView.isVisible = expanded
-            holder.toggleView.contentDescription = context.getString(
-                if (expanded) R.string.action_collapse else R.string.action_expand
-            )
+            applyExpansionStateDescription(holder.headerView, expanded)
             holder.toggleView.setImageResource(
                 if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
@@ -1128,6 +1124,16 @@ class MarkdownView @JvmOverloads constructor(
             holder.renderedExpanded = expanded
         }
         return true
+    }
+
+    /**
+     * 展开态语义挂在可点击的 header 上：chevron 图标不可点击，读屏无法从它读到状态。
+     */
+    private fun applyExpansionStateDescription(header: View, expanded: Boolean) {
+        ViewCompat.setStateDescription(
+            header,
+            context.getString(if (expanded) R.string.state_expanded else R.string.state_collapsed)
+        )
     }
 
     private fun createToolPartView(
@@ -1164,9 +1170,7 @@ class MarkdownView @JvmOverloads constructor(
             populateToolDetail(holder)
         }
         binding.containerDetail.isVisible = expanded
-        binding.btnToggleDetail.contentDescription = context.getString(
-            if (expanded) R.string.action_collapse else R.string.action_expand
-        )
+        applyExpansionStateDescription(binding.layoutHeader, expanded)
         binding.btnToggleDetail.setImageResource(
             if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
         )
@@ -1182,9 +1186,7 @@ class MarkdownView @JvmOverloads constructor(
             beginIntermediatePartTransition(binding.root)
             applyIntermediatePartLayout(binding.root, binding.layoutHeader, nextExpanded, holder.collapsedBottomMargin)
             binding.containerDetail.isVisible = nextExpanded
-            binding.btnToggleDetail.contentDescription = context.getString(
-                if (nextExpanded) R.string.action_collapse else R.string.action_expand
-            )
+            applyExpansionStateDescription(binding.layoutHeader, nextExpanded)
             binding.btnToggleDetail.setImageResource(
                 if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
@@ -1214,13 +1216,32 @@ class MarkdownView @JvmOverloads constructor(
         }
         holder.detailPopulated = true
         val binding = holder.binding
-        binding.textArguments.text = if (holder.renderedArguments.isBlank()) {
-            ""
+        val argumentsPreview = ToolDetailFormatter.arguments(holder.renderedArguments)
+        val resultPreview = ToolDetailFormatter.result(holder.renderedResult)
+        binding.textArguments.text = if (argumentsPreview.isTruncated) {
+            argumentsPreview.text + context.getString(R.string.tool_detail_truncated, argumentsPreview.totalChars)
         } else {
-            runCatching { JSONObject(holder.renderedArguments).toString(2) }.getOrDefault(holder.renderedArguments)
+            argumentsPreview.text
         }
-        binding.textResult.text = holder.renderedResult
+        binding.textResult.text = if (resultPreview.isTruncated) {
+            resultPreview.text + context.getString(R.string.tool_detail_truncated, resultPreview.totalChars)
+        } else {
+            resultPreview.text
+        }
         binding.groupArguments.isVisible = binding.textArguments.text.isNotBlank()
+        binding.btnViewFull.isVisible = argumentsPreview.isTruncated || resultPreview.isTruncated
+        binding.btnViewFull.setOnClickListener {
+            FreeCopyActivity.start(
+                context = context,
+                content = ToolDetailFormatter.fullText(
+                    arguments = holder.renderedArguments,
+                    result = holder.renderedResult,
+                    parametersLabel = context.getString(R.string.label_parameters),
+                    resultLabel = context.getString(R.string.label_result)
+                ),
+                plainText = true
+            )
+        }
     }
 
     /**
@@ -1258,9 +1279,7 @@ class MarkdownView @JvmOverloads constructor(
         if (holder.renderedExpanded != expanded) {
             applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
             binding.containerDetail.isVisible = expanded
-            binding.btnToggleDetail.contentDescription = context.getString(
-                if (expanded) R.string.action_collapse else R.string.action_expand
-            )
+            applyExpansionStateDescription(binding.layoutHeader, expanded)
             binding.btnToggleDetail.setImageResource(
                 if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
