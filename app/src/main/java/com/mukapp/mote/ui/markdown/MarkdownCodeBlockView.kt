@@ -3,6 +3,7 @@ package com.mukapp.mote.ui.markdown
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
@@ -159,6 +160,9 @@ class MarkdownCodeBlockView @JvmOverloads constructor(
     private fun copyCode() {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
         clipboard.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), codeContent))
-        Toast.makeText(context, context.getString(R.string.action_copy), Toast.LENGTH_SHORT).show()
+        // Android 13+ 系统自带剪贴板确认气泡，无需再弹 Toast。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            Toast.makeText(context, context.getString(R.string.copy_done), Toast.LENGTH_SHORT).show()
+        }
     }
 }

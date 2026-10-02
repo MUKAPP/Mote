@@ -38,6 +38,8 @@
 
         <!-- Dialog -->
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.Mote.MaterialAlertDialog</item>
+        <!-- 底部弹出面板（与日间一致，缺失会让暗色下的模型选择面板丢掉圆角与背景色） -->
+        <item name="bottomSheetDialogTheme">@style/ThemeOverlay.Mote.BottomSheetDialog</item>
 
         <!-- 圆角弹出菜单 -->
         <item name="popupMenuStyle">@style/Widget.Mote.PopupMenu</item>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 用户长消息右下角展开/收起按钮底色：不透明悬浮底色，叠在气泡上仍可辨识 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/mote_popup_background" />
+</shape>

@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.SystemClock
@@ -1525,7 +1526,10 @@ class ChatFragment : Fragment() {
                 copyText
             )
         )
-        Toast.makeText(requireContext(), getString(R.string.action_copy), Toast.LENGTH_SHORT).show()
+        // Android 13+ 系统自带剪贴板确认气泡，无需再弹 Toast。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            Toast.makeText(requireContext(), getString(R.string.copy_done), Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** 打开自由复制页：用旧的「仅 TextView」Markdown 渲染展示内容，便于用户自由选取复制。 */
@@ -1535,10 +1539,7 @@ class ChatFragment : Fragment() {
         } else {
             buildAssistantCopyText(message)
         }
-        startActivity(
-            Intent(requireContext(), com.mukapp.mote.FreeCopyActivity::class.java)
-                .putExtra(com.mukapp.mote.FreeCopyActivity.EXTRA_CONTENT, content)
-        )
+        com.mukapp.mote.FreeCopyActivity.start(requireContext(), content)
     }
 
     private fun buildAssistantCopyText(message: ChatMessage): String {

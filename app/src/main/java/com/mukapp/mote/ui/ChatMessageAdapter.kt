@@ -478,6 +478,9 @@ class ChatMessageAdapter(
             // 保留视图树让 ViewHolder 复用时可以走增量更新路径，避免从零重建
             holder.stopAnimations()
         }
+        if (holder is UserViewHolder) {
+            holder.clearToggleTouchDelegate()
+        }
         super.onViewRecycled(holder)
     }
 
@@ -486,11 +489,72 @@ class ChatMessageAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
         /** 已渲染的附件签名；未变化时跳过整段 removeAllViews + 重新 inflate。 */
         private var boundAttachmentSignature: String? = null
+        private val toggleTouchDelegateRunnable = object : Runnable {
+            override fun run() {
+                val message = currentMessageOrNull()
+                if (message == null || !isCollapsible(message) || !binding.btnToggleExpand.isVisible) {
+                    binding.cardMessage.touchDelegate = null
+                    return
+                }
+                // 展开/折叠会改变按钮位置，等待请求中的布局后再读取真实命中区域。
+                if (binding.cardMessage.isLayoutRequested) {
+                    binding.cardMessage.postOnAnimation(this)
+                    return
+                }
+                val target = Rect().also(binding.btnToggleExpand::getHitRect)
+                val minimumSize = MIN_TOUCH_TARGET_DP.dpInt
+                target.inset(
+                    -((minimumSize - target.width()).coerceAtLeast(0) / 2),
+                    -((minimumSize - target.height()).coerceAtLeast(0) / 2)
+                )
+                if (target.left < 0) target.offset(-target.left, 0)
+                if (target.right > binding.cardMessage.width) {
+                    target.offset(binding.cardMessage.width - target.right, 0)
+                }
+                if (target.top < 0) target.offset(0, -target.top)
+                if (target.bottom > binding.cardMessage.height) {
+                    target.offset(0, binding.cardMessage.height - target.bottom)
+                }
+                binding.cardMessage.touchDelegate = TouchDelegate(target, binding.btnToggleExpand)
+            }
+        }
 
         init {
-            // 长按卡片任意位置在手指处弹出菜单（复制/展开/编辑/删除）
+            // 长按卡片任意位置在手指处弹出菜单（复制/编辑/删除）
             binding.cardMessage.setOnContentLongPressListener { x, y ->
                 showUserPopupWindowMenu(x, y)
+            }
+            // 折叠开关是气泡右下角的常驻按钮，无障碍服务可直接聚焦点击。
+            binding.btnToggleExpand.setOnClickListener {
+                val message = currentMessageOrNull() ?: return@setOnClickListener
+                toggleUserExpansion(message)
+            }
+            installMessageAccessibilityActions(binding.cardMessage) { userAccessibilityActions() }
+        }
+
+        /** 与长按菜单同源的操作集合，供无障碍自定义操作使用。 */
+        private fun userAccessibilityActions(): List<MessageAccessibilityAction> {
+            val message = currentMessageOrNull() ?: return emptyList()
+            val position = currentPositionOrNull() ?: return emptyList()
+            val lastIndex = messages.lastIndex
+            val canRetryLastTurn = !isSending &&
+                position == lastIndex - 1 &&
+                messages.getOrNull(lastIndex)?.role == ChatRole.Assistant
+            return buildList {
+                add(MessageAccessibilityAction(R.id.a11y_action_copy, R.string.action_copy) {
+                    onCopyMessage(message)
+                })
+                add(MessageAccessibilityAction(R.id.a11y_action_edit, R.string.action_edit) {
+                    onEditMessage(position)
+                })
+                add(MessageAccessibilityAction(R.id.a11y_action_delete, R.string.action_delete) {
+                    onDeleteMessage(position)
+                })
+                if (canRetryLastTurn) {
+                    add(MessageAccessibilityAction(R.id.a11y_action_retry, R.string.action_retry) {
+                        onRetryMessage(lastIndex)
+                    })
+                }
             }
         }
 
@@ -505,14 +569,6 @@ class ChatMessageAdapter(
 
             val popupItems = buildList {
                 add(MotePopupWindowItem(MENU_COPY, R.string.action_copy, R.drawable.ic_content_copy))
-                if (isCollapsible(message)) {
-                    val expanded = expandedUserMessageIds.contains(message.id)
-                    add(MotePopupWindowItem(
-                        MENU_TOGGLE_EXPAND,
-                        if (expanded) R.string.action_collapse else R.string.action_expand,
-                        if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
-                    ))
-                }
                 add(MotePopupWindowItem(MENU_EDIT, R.string.action_edit, R.drawable.ic_edit))
                 add(MotePopupWindowItem(MENU_DELETE, R.string.action_delete, R.drawable.ic_delete))
                 if (canRetryLastTurn) {
@@ -522,7 +578,6 @@ class ChatMessageAdapter(
             MotePopupWindowMenu.showAtTouch(binding.cardMessage, touchX, touchY, popupItems) { itemId ->
                 when (itemId) {
                     MENU_COPY -> onCopyMessage(message)
-                    MENU_TOGGLE_EXPAND -> toggleUserExpansion(message)
                     MENU_EDIT -> onEditMessage(position)
                     MENU_DELETE -> onDeleteMessage(position)
                     MENU_RETRY -> onRetryMessage(lastIndex)
@@ -534,11 +589,31 @@ class ChatMessageAdapter(
             val expanded = expandedUserMessageIds.contains(message.id)
             if (expanded) {
                 expandedUserMessageIds.remove(message.id)
-                binding.textContent.maxLines = COLLAPSED_MAX_LINES
             } else {
                 expandedUserMessageIds.add(message.id)
-                binding.textContent.maxLines = Int.MAX_VALUE
             }
+            applyExpansionState(message, expanded = !expanded)
+            updateToggleTouchDelegate()
+        }
+
+        /** 同步折叠态行数、正文/附件避让与开关按钮语义。 */
+        private fun applyExpansionState(message: ChatMessage, expanded: Boolean) {
+            binding.textContent.maxLines = if (expanded) Int.MAX_VALUE else COLLAPSED_MAX_LINES
+            val reserveToggleSpace = binding.btnToggleExpand.isVisible &&
+                (expanded || message.attachments.isNotEmpty())
+            binding.containerContent.updatePadding(
+                bottom = if (reserveToggleSpace) {
+                    TOGGLE_CONTENT_BOTTOM_PADDING_DP.dpInt
+                } else {
+                    DEFAULT_CONTENT_BOTTOM_PADDING_DP.dpInt
+                }
+            )
+            binding.btnToggleExpand.setImageResource(
+                if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more
+            )
+            binding.btnToggleExpand.contentDescription = itemView.context.getString(
+                if (expanded) R.string.action_collapse else R.string.action_expand
+            )
         }
 
         fun bind(message: ChatMessage, position: Int) {
@@ -560,13 +635,26 @@ class ChatMessageAdapter(
                 binding.scrollAttachments.isVisible = false
             }
 
-            // 折叠态由长按菜单切换；收起时配合 ellipsize 显示省略号
-            val isExpanded = expandedUserMessageIds.contains(message.id)
-            binding.textContent.maxLines = if (isCollapsible(message) && !isExpanded) {
-                COLLAPSED_MAX_LINES
-            } else {
-                Int.MAX_VALUE
+            // 无附件折叠态允许覆盖省略号；附件与展开正文始终避让完整触控区。
+            val collapsible = isCollapsible(message)
+            binding.btnToggleExpand.isVisible = collapsible
+            applyExpansionState(message, expanded = !collapsible || expandedUserMessageIds.contains(message.id))
+            updateToggleTouchDelegate()
+        }
+
+        /** 保持 28dp 视觉尺寸，把父卡片内的实际点击区域扩展到至少 48dp。 */
+        private fun updateToggleTouchDelegate() {
+            binding.cardMessage.removeCallbacks(toggleTouchDelegateRunnable)
+            binding.cardMessage.touchDelegate = null
+            if (!binding.btnToggleExpand.isVisible) {
+                return
             }
+            binding.cardMessage.post(toggleTouchDelegateRunnable)
+        }
+
+        fun clearToggleTouchDelegate() {
+            binding.cardMessage.removeCallbacks(toggleTouchDelegateRunnable)
+            binding.cardMessage.touchDelegate = null
         }
 
         private fun rebindAttachments(message: ChatMessage) {
@@ -600,6 +688,10 @@ class ChatMessageAdapter(
         private fun isCollapsible(message: ChatMessage): Boolean {
             if (message.content.isBlank()) {
                 return false
+            }
+            // 无换行的长文本同样需要折叠，否则会撑满整屏。
+            if (message.content.length > COLLAPSED_MAX_CHARS) {
+                return true
             }
             val lineCount = message.content.count { it == '\n' } + 1
             return lineCount > COLLAPSED_MAX_LINES
@@ -700,7 +792,6 @@ class ChatMessageAdapter(
         const val MENU_DELETE = 2
         const val MENU_RETRY = 3
         const val MENU_COPY = 4
-        const val MENU_TOGGLE_EXPAND = 5
         const val MENU_FREE_COPY = 6
 
         /** 优先把 UUID 形式的消息 ID 映射为稳定 long，非 UUID 时回退 FNV 风格折叠，避免 hashCode 截断碰撞。 */

@@ -17,6 +17,7 @@
     <string name="action_add_file">添加文件</string>
     <string name="action_remove_attachment">移除附件</string>
     <string name="action_copy">复制</string>
+    <string name="copy_done">已复制</string>
     <string name="action_free_copy">自由复制</string>
     <string name="title_free_copy">自由复制</string>
     <string name="action_edit">编辑</string>
@@ -33,7 +34,7 @@
     <string name="action_scroll_to_bottom">回到底部</string>
     <string name="action_confirm">确认</string>
     <string name="action_cancel">取消</string>
-    <string name="hint_message_input">输入消息...</string>
+    <string name="hint_message_input">输入消息…</string>
     <string name="attachment_error_image_read_failed">无法读取图片内容。</string>
     <string name="attachment_error_file_read_failed">无法读取文件内容。</string>
     <string name="attachment_notice_file_truncated">文件内容过长，已截断后发送。</string>
@@ -48,7 +49,7 @@
     <string name="hint_tavily_api_key">tvly-...</string>
     <string name="hint_anysearch_api_key">as-...</string>
     <string name="label_ai">AI</string>
-    <string name="status_generating">正在生成...</string>
+    <string name="status_generating">正在生成…</string>
     <string name="status_generation_stopped">已停止生成。</string>
     <string name="label_thinking">思考过程</string>
     <string name="tool_summary_loading">正在执行：%1$s</string>
