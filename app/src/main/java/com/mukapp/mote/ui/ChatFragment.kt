@@ -294,12 +294,7 @@ class ChatFragment : Fragment() {
                     R.string.dialog_delete_message
                 ) { viewModel.deleteMessage(index) }
             },
-            onRetryMessage = { index ->
-                showConfirmationDialog(
-                    R.string.dialog_retry_title,
-                    R.string.dialog_retry_message
-                ) { viewModel.retryMessage(index) }
-            }
+            onRetryMessage = { index -> viewModel.retryMessage(index) }
         )
         adapter.parseCache = parseCache
 
@@ -333,6 +328,7 @@ class ChatFragment : Fragment() {
         binding.recyclerMessages.recycledViewPool.apply {
             setMaxRecycledViews(0, 10) // Assistant 类型
             setMaxRecycledViews(1, 6)  // User 类型
+            setMaxRecycledViews(2, 4)  // 系统提示条
         }
         // RecyclerView 大小由父布局约束，不随数据条数变化
         binding.recyclerMessages.setHasFixedSize(true)

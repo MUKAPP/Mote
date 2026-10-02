@@ -25,6 +25,7 @@ import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ResolvedModel
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.data.model.TokenUsage
+import com.mukapp.mote.data.model.UiNoticeKinds
 import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.data.model.resolve
 import com.mukapp.mote.data.model.resolvedCompressionModel
@@ -189,6 +190,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     // 冷启动历史加载状态：加载完成前 sendMessage 会被挂起，完成后自动重放。均只在主线程访问。
     private var historyLoaded = false
     private var pendingSendAfterHistoryLoad = false
+
+    /** 本轮发送过程中新产生的上下文摘要 id；收尾时落成一条行内提示条。只在主线程访问。 */
+    private val pendingCompressionNoticeSummaryIds = mutableListOf<String>()
 
     init {
         loadHistory()
@@ -646,6 +650,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val assistantIndex = uiMessagesInternal.lastIndex
         stopGenerationRequested = false
         streamingPublishEnabled = true
+        pendingCompressionNoticeSummaryIds.clear()
         _isSending.value = true
         publishMessagesImmediately()
 
@@ -654,19 +659,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var hasCommittedToolContextInCurrentTurn = false
 
             // 三条收尾路径（正常完成/工具取消/请求失败）共用：写回最终 assistant 消息、
-            // 发布并持久化，首轮对话触发标题生成。
+            // 补上本轮压缩提示条、发布并持久化，首轮对话触发标题生成。
             fun finalizeAssistantMessage(
                 content: String,
                 parts: List<AssistantPart>,
-                excludeFromConversation: Boolean = false
+                excludeFromConversation: Boolean = false,
+                errorNotice: String? = null
             ) {
                 uiMessagesInternal[assistantIndex] = ChatMessage(
                     id = assistantId,
                     role = ChatRole.Assistant,
                     content = content,
                     assistantParts = parts,
-                    excludeFromConversation = excludeFromConversation
+                    excludeFromConversation = excludeFromConversation,
+                    errorNotice = errorNotice
                 )
+                flushPendingCompressionNotice(userMessage.id, assistantId)
                 publishMessagesImmediately()
                 persistConversationAsync()
                 if (isFirstUserMessage) {
@@ -903,6 +911,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         handleStoppedGeneration(
                             assistantIndex = assistantIndex,
                             assistantId = assistantId,
+                            userMessageId = userMessage.id,
                             includeAssistantInConversation = !skipStoppedAssistantContextCommit &&
                                     !hasCommittedToolContextInCurrentTurn
                         )
@@ -923,22 +932,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ?: "请检查 API 设置、网络连接，或确认接口是否兼容 OpenAI Chat Completions。"
                 flushStreamingPublish()
                 val currentMessage = uiMessagesInternal.getOrNull(assistantIndex)
-                val currentContent = currentMessage?.content.orEmpty()
-                val currentParts = currentMessage?.assistantParts ?: emptyList()
-                val failureNotice = if (currentContent.isBlank()) {
-                    "请求失败：$message"
-                } else {
-                    "[处理失败：$message]"
-                }
-                val failureContent = if (currentContent.isBlank()) {
-                    failureNotice
-                } else {
-                    "$currentContent\n\n$failureNotice"
-                }
+                // 错误说明走 errorNotice 字段单独渲染成错误条，不混入正文与复制内容。
                 finalizeAssistantMessage(
-                    content = failureContent,
-                    parts = appendFailureNoticePart(currentParts, failureNotice),
-                    excludeFromConversation = true
+                    content = currentMessage?.content.orEmpty(),
+                    parts = currentMessage?.assistantParts ?: emptyList(),
+                    excludeFromConversation = true,
+                    errorNotice = message
                 )
             }
 
@@ -1191,6 +1190,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         contextSummariesInternal.clear()
         contextSummariesInternal.addAll(historyState.contextSummaries)
+        pruneOrphanUiNotices()
         clearContextTokenUsageAnchor()
         currentConversationTitle = historyState.title.ifBlank { DefaultConversationTitle }
         setCurrentConversationId(
@@ -1309,6 +1309,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleStoppedGeneration(
         assistantIndex: Int,
         assistantId: String,
+        userMessageId: String,
         includeAssistantInConversation: Boolean
     ) {
         // 停止时最后一个节拍窗口内的 delta 还留在 builder 里，不先冲刷会丢掉尾部文字。
@@ -1353,8 +1354,58 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             clearContextTokenUsageAnchor()
         }
+        flushPendingCompressionNotice(userMessageId, assistantId)
         publishMessagesImmediately()
         persistConversationAsync()
+    }
+
+    /**
+     * 把本轮压缩产生的摘要落成一条行内提示条，插到本轮用户消息之前。同轮多次压缩只留最新摘要一条。
+     *
+     * 必须在最终 assistant 消息写回之后调用：插入会让捕获的 assistantIndex 与 [StreamingTarget]
+     * 中记录的下标失效，因此这里先关闸并丢弃流式目标，避免迟到节拍按旧下标覆盖到错误的消息。
+     * 只在主线程调用。
+     */
+    private fun flushPendingCompressionNotice(userMessageId: String, assistantId: String) {
+        val summaryId = pendingCompressionNoticeSummaryIds.lastOrNull() ?: return
+        pendingCompressionNoticeSummaryIds.clear()
+        val insertIndex = uiMessagesInternal.indexOfFirst { it.id == userMessageId }
+            .takeIf { it >= 0 }
+            ?: uiMessagesInternal.indexOfFirst { it.id == assistantId }.takeIf { it >= 0 }
+            ?: return
+
+        streamingPublishEnabled = false
+        cancelPendingStreamingPublish()
+        synchronized(streamingLock) { streamingTarget = null }
+
+        uiMessagesInternal.add(
+            insertIndex,
+            ChatMessage(
+                role = ChatRole.System,
+                content = appContext.getString(R.string.notice_context_compressed),
+                excludeFromConversation = true,
+                uiNoticeKind = UiNoticeKinds.ContextCompressed,
+                uiNoticeRefId = summaryId
+            )
+        )
+        MoteLog.d(
+            logComponent,
+            MoteLog.event("已插入上下文压缩提示条", "insertIndex" to insertIndex)
+        )
+    }
+
+    /**
+     * 清理关联摘要已不存在的提示条（摘要因删除/编辑/重试失效，或历史文件残留孤儿条目）。
+     * 只在主线程调用，返回是否有移除。
+     */
+    private fun pruneOrphanUiNotices(): Boolean {
+        if (uiMessagesInternal.none { it.uiNoticeKind != null }) {
+            return false
+        }
+        val summaryIds = contextSummariesInternal.mapTo(mutableSetOf()) { it.id }
+        return uiMessagesInternal.removeAll { message ->
+            message.uiNoticeKind != null && message.uiNoticeRefId !in summaryIds
+        }
     }
 
     private fun appendAssistantThinking(parts: MutableList<AssistantPart>, delta: String) {
@@ -1415,16 +1466,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         appendAssistantMarkdown(parts, delta)
-    }
-
-    private fun appendFailureNoticePart(
-        parts: List<AssistantPart>,
-        failureNotice: String
-    ): List<AssistantPart> {
-        if (parts.isEmpty()) {
-            return emptyList()
-        }
-        return parts + AssistantMarkdownPart(text = failureNotice)
     }
 
     private fun replaceLoadingToolParts(
@@ -1954,6 +1995,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         contextSummariesInternal.clear()
         contextSummariesInternal.addAll(filteredSummaries)
+        pruneOrphanUiNotices()
         clearContextTokenUsageAnchor()
         MoteLog.d(
             logComponent,
@@ -2056,6 +2098,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         if (summary != null) {
             appendContextSummary(summary)
+            pendingCompressionNoticeSummaryIds += summary.id
             MoteLog.i(
                 logComponent,
                 MoteLog.event(

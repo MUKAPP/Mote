@@ -1,11 +1,19 @@
 package com.mukapp.mote.ui
 
 import android.content.res.ColorStateList
+import android.graphics.Rect
+import android.os.Bundle
+import android.view.TouchDelegate
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
+import androidx.core.view.AccessibilityDelegateCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
+import androidx.core.view.updatePadding
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.R
@@ -21,6 +29,7 @@ import com.mukapp.mote.databinding.ItemAttachmentFileBinding
 import com.mukapp.mote.databinding.ItemAttachmentImageBinding
 import com.mukapp.mote.databinding.ItemChatMessageBinding
 import com.mukapp.mote.databinding.ItemChatMessageUserBinding
+import com.mukapp.mote.databinding.ItemChatNoticeBinding
 import com.mukapp.mote.ui.markdown.MarkdownParseCache
 import com.mukapp.mote.util.AttachmentThumbnailLoader
 import com.mukapp.mote.util.dpInt
@@ -58,22 +67,25 @@ class ChatMessageAdapter(
     }
 
     override fun getItemViewType(position: Int): Int {
-        return if (messages[position].role == ChatRole.User) {
-            ViewTypeUser
-        } else {
-            ViewTypeAssistant
+        val message = messages[position]
+        return when {
+            message.uiNoticeKind != null -> ViewTypeNotice
+            message.role == ChatRole.User -> ViewTypeUser
+            else -> ViewTypeAssistant
         }
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
         val inflater = LayoutInflater.from(parent.context)
-        return if (viewType == ViewTypeUser) {
-            UserViewHolder(ItemChatMessageUserBinding.inflate(inflater, parent, false))
-        } else {
-            val binding = ItemChatMessageBinding.inflate(inflater, parent, false)
-            // 注入全局解析缓存，让 MarkdownView 在绑定时优先使用预解析结果
-            binding.markdownContent.setGlobalParseCache(parseCache)
-            AssistantViewHolder(binding)
+        return when (viewType) {
+            ViewTypeNotice -> NoticeViewHolder(ItemChatNoticeBinding.inflate(inflater, parent, false))
+            ViewTypeUser -> UserViewHolder(ItemChatMessageUserBinding.inflate(inflater, parent, false))
+            else -> {
+                val binding = ItemChatMessageBinding.inflate(inflater, parent, false)
+                // 注入全局解析缓存，让 MarkdownView 在绑定时优先使用预解析结果
+                binding.markdownContent.setGlobalParseCache(parseCache)
+                AssistantViewHolder(binding)
+            }
         }
     }
 
@@ -102,6 +114,7 @@ class ChatMessageAdapter(
         when (holder) {
             is UserViewHolder -> holder.bind(messages[position], position)
             is AssistantViewHolder -> holder.bind(messages[position], position)
+            is NoticeViewHolder -> holder.bind(messages[position])
         }
     }
 
@@ -278,6 +291,44 @@ class ChatMessageAdapter(
             // 这两处文案是常量，没必要每次 bind 都过一遍 getString + setText。
             binding.textAiLabel.setText(R.string.label_ai)
             binding.textStatus.setText(R.string.status_generating)
+            binding.btnErrorRetry.setOnClickListener {
+                currentPositionOrNull()?.let(onRetryMessage)
+            }
+            // 长按手势不会被无障碍服务发现，这里把同一组操作暴露为自定义无障碍操作。
+            installMessageAccessibilityActions(binding.cardMessage) { assistantAccessibilityActions() }
+        }
+
+        /** 与长按菜单同源的操作集合，供无障碍自定义操作使用。 */
+        private fun assistantAccessibilityActions(): List<MessageAccessibilityAction> {
+            val message = currentMessageOrNull() ?: return emptyList()
+            val position = currentPositionOrNull() ?: return emptyList()
+            val isLastAiMessage = position == messages.lastIndex
+            val sourceUserPosition = (position - 1).takeIf { candidate ->
+                messages.getOrNull(candidate)?.role == ChatRole.User
+            }
+            return buildList {
+                if (hasCopyableContent(message)) {
+                    add(MessageAccessibilityAction(R.id.a11y_action_copy, R.string.action_copy) {
+                        onCopyMessage(message)
+                    })
+                    add(MessageAccessibilityAction(R.id.a11y_action_free_copy, R.string.action_free_copy) {
+                        onFreeCopyMessage(message)
+                    })
+                }
+                sourceUserPosition?.let { userPosition ->
+                    add(MessageAccessibilityAction(R.id.a11y_action_edit, R.string.action_edit) {
+                        onEditMessage(userPosition)
+                    })
+                    add(MessageAccessibilityAction(R.id.a11y_action_delete, R.string.action_delete) {
+                        onDeleteMessage(userPosition)
+                    })
+                }
+                if (isLastAiMessage && !isSending) {
+                    add(MessageAccessibilityAction(R.id.a11y_action_retry, R.string.action_retry) {
+                        onRetryMessage(position)
+                    })
+                }
+            }
         }
 
         private fun showAssistantPopupWindowMenu(touchX: Int, touchY: Int) {
@@ -336,6 +387,7 @@ class ChatMessageAdapter(
             binding.textStatus.isVisible = showGeneratingStatus
             binding.typingIndicator.isVisible = isStreamingMessage
             binding.typingIndicator.setAnimating(isStreamingMessage)
+            bindErrorNotice(message, position)
             binding.markdownContent.isVisible = hasParts || hasContent
             if (hasParts) {
                 binding.markdownContent.setParts(
@@ -349,6 +401,17 @@ class ChatMessageAdapter(
             } else {
                 binding.markdownContent.clearMarkdown()
             }
+        }
+
+        /** 失败说明渲染成独立错误条；重试入口只在末条且空闲时给出。 */
+        private fun bindErrorNotice(message: ChatMessage, position: Int) {
+            val errorNotice = message.errorNotice
+            binding.layoutErrorNotice.isVisible = errorNotice != null
+            if (errorNotice == null) {
+                return
+            }
+            binding.textErrorNotice.text = errorNotice
+            binding.btnErrorRetry.isVisible = position == messages.lastIndex && !isSending
         }
 
         /** 流式更新精简路径：只更新 MarkdownView 内容和实时状态 */
@@ -553,6 +616,58 @@ class ChatMessageAdapter(
         }
     }
 
+    private inner class NoticeViewHolder(
+        private val binding: ItemChatNoticeBinding
+    ) : RecyclerView.ViewHolder(binding.root) {
+        fun bind(message: ChatMessage) {
+            binding.textNotice.text = message.content
+        }
+    }
+
+    /** 消息卡片的一项无障碍操作：标题取自与长按菜单相同的文案资源。 */
+    private class MessageAccessibilityAction(
+        val id: Int,
+        val labelRes: Int,
+        val run: () -> Unit
+    )
+
+    /**
+     * 把消息操作暴露为无障碍自定义操作。卡片的 clickable 只用于绘制波纹，没有点击行为，
+     * 因此同时移除 ACTION_CLICK，避免读屏播报"双击即可激活"。
+     */
+    private fun installMessageAccessibilityActions(
+        card: View,
+        actionsProvider: () -> List<MessageAccessibilityAction>
+    ) {
+        ViewCompat.setAccessibilityDelegate(card, object : AccessibilityDelegateCompat() {
+            override fun onInitializeAccessibilityNodeInfo(
+                host: View,
+                info: AccessibilityNodeInfoCompat
+            ) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                info.removeAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK)
+                info.isClickable = false
+                actionsProvider().forEach { action ->
+                    info.addAction(
+                        AccessibilityNodeInfoCompat.AccessibilityActionCompat(
+                            action.id,
+                            host.context.getString(action.labelRes)
+                        )
+                    )
+                }
+            }
+
+            override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                val matched = actionsProvider().firstOrNull { it.id == action }
+                if (matched != null) {
+                    matched.run()
+                    return true
+                }
+                return super.performAccessibilityAction(host, action, args)
+            }
+        })
+    }
+
     private fun hasCopyableMarkdownParts(message: ChatMessage): Boolean {
         return message.assistantParts.any { part ->
             part is AssistantMarkdownPart && part.text.isNotBlank()
@@ -566,8 +681,15 @@ class ChatMessageAdapter(
     private companion object {
         const val ViewTypeAssistant = 0
         const val ViewTypeUser = 1
+        const val ViewTypeNotice = 2
         const val STREAMING_PAYLOAD = "streaming"
         const val COLLAPSED_MAX_LINES = 10
+
+        /** 无换行长文本的折叠阈值（字符数）。 */
+        const val COLLAPSED_MAX_CHARS = 600
+        const val DEFAULT_CONTENT_BOTTOM_PADDING_DP = 16
+        const val TOGGLE_CONTENT_BOTTOM_PADDING_DP = 48
+        const val MIN_TOUCH_TARGET_DP = 48
         const val BulkInsertNotifyThreshold = 40
 
         /** stableItemIds 超过该条目数才做一次清理，避免每次 submit 都遍历。 */

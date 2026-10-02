@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 聊天内容（消息卡片、输入栏、确认条）在宽屏下的最大宽度，超出后居中留白 -->
+    <dimen name="mote_content_max_width">700dp</dimen>
+</resources>

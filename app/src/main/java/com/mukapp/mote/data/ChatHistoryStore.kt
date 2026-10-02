@@ -1109,6 +1109,9 @@ object ChatHistoryStore {
                         if (message.assistantParts.isNotEmpty()) {
                             put("assistantParts", serializeAssistantParts(message.assistantParts))
                         }
+                        message.errorNotice?.let { put("errorNotice", it) }
+                        message.uiNoticeKind?.let { put("uiNoticeKind", it) }
+                        message.uiNoticeRefId?.let { put("uiNoticeRefId", it) }
                     }
                 )
             }
@@ -1217,7 +1220,10 @@ object ChatHistoryStore {
                         attachments = deserializeAttachments(item.optJSONArray("attachments")),
                         excludeFromConversation = item.optBoolean("excludeFromConversation", false),
                         isContextSummary = item.optBoolean("isContextSummary", false),
-                        contextSummarySourceIds = deserializeStringList(item.optJSONArray("contextSummarySourceIds"))
+                        contextSummarySourceIds = deserializeStringList(item.optJSONArray("contextSummarySourceIds")),
+                        errorNotice = item.optString("errorNotice").takeIf { it.isNotBlank() },
+                        uiNoticeKind = item.optString("uiNoticeKind").takeIf { it.isNotBlank() },
+                        uiNoticeRefId = item.optString("uiNoticeRefId").takeIf { it.isNotBlank() }
                     )
                 )
             }

@@ -55,6 +55,7 @@
     <string name="label_parameters">参数：</string>
     <string name="label_result">结果：</string>
     <string name="tool_detail_truncated">\n\n…（已截断，完整内容 %1$d 字符）</string>
+    <string name="notice_context_compressed">已压缩较早的对话内容</string>
     <string name="empty_title">欢迎使用 Mote</string>
     <string name="empty_subtitle_configured">开始与 AI 对话吧</string>
     <string name="empty_subtitle_unconfigured">请先在设置页配置 API 地址和模型</string>
@@ -188,8 +189,6 @@
     <string name="dialog_edit_message">编辑将删除此消息及之后的所有消息，并将内容填入输入框。</string>
     <string name="dialog_delete_title">删除消息</string>
     <string name="dialog_delete_message">将删除此用户消息及对应的 AI 回复。</string>
-    <string name="dialog_retry_title">重新生成</string>
-    <string name="dialog_retry_message">将删除最后一条 AI 回复并重新生成。</string>
     <string name="dialog_delete_conversation_title">删除对话</string>
     <string name="dialog_delete_conversation_message">将删除当前对话的历史记录文件。</string>
     <string name="dialog_delete_specific_conversation_message">将删除对话「%1$s」的历史记录文件。</string>

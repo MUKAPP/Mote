@@ -1,18 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
     android:paddingHorizontal="16dp"
     android:paddingVertical="8dp">
 
     <com.mukapp.mote.ui.MessageCardView
         android:id="@+id/card_message"
         style="@style/Widget.Mote.MessageCard.Assistant"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintWidth_max="@dimen/mote_content_max_width">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -39,6 +42,47 @@
                 android:textAppearance="?attr/textAppearanceBodyLarge"
                 android:textColor="?attr/colorOnSurface" />
 
+            <LinearLayout
+                android:id="@+id/layout_error_notice"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="16dp"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone"
+                tools:visibility="visible">
+
+                <ImageView
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginEnd="8dp"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_warning"
+                    app:tint="?attr/colorError" />
+
+                <TextView
+                    android:id="@+id/text_error_notice"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?attr/colorError"
+                    tools:text="请检查 API 设置、网络连接。" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_error_retry"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:minWidth="0dp"
+                    android:text="@string/action_retry"
+                    app:icon="@drawable/ic_refresh"
+                    app:iconGravity="textStart"
+                    app:iconSize="18dp" />
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/text_status"
                 android:layout_width="wrap_content"
@@ -62,4 +106,4 @@
         </LinearLayout>
     </com.mukapp.mote.ui.MessageCardView>
 
-</LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

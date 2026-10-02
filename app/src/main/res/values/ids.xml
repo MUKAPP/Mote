@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 消息卡片的无障碍自定义操作：与长按菜单项一一对应 -->
+    <item name="a11y_action_copy" type="id" />
+    <item name="a11y_action_free_copy" type="id" />
+    <item name="a11y_action_edit" type="id" />
+    <item name="a11y_action_delete" type="id" />
+    <item name="a11y_action_retry" type="id" />
+</resources>

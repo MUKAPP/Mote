@@ -44,8 +44,19 @@ data class ChatMessage(
     val attachments: List<ChatAttachment> = emptyList(),
     val excludeFromConversation: Boolean = false,
     val isContextSummary: Boolean = false,
-    val contextSummarySourceIds: List<String> = emptyList()
+    val contextSummarySourceIds: List<String> = emptyList(),
+    /** assistant 消息的失败说明；非空时 UI 渲染错误条（不混入正文与复制内容）。 */
+    val errorNotice: String? = null,
+    /** 仅 UI 展示的提示条类型（如 [UiNoticeKinds.ContextCompressed]），非空时该消息不参与常规气泡渲染。 */
+    val uiNoticeKind: String? = null,
+    /** 提示条关联的 [ContextSummary.id]，摘要失效时据此清理提示条。 */
+    val uiNoticeRefId: String? = null
 )
+
+/** [ChatMessage.uiNoticeKind] 的取值。 */
+object UiNoticeKinds {
+    const val ContextCompressed = "context_compressed"
+}
 
 data class ContextSummary(
     val id: String = UUID.randomUUID().toString(),
