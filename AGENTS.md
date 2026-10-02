@@ -61,9 +61,10 @@ app/src/main/java/com/mukapp/mote/
 
 ### 消息体系（三套数据）
 
-- `uiMessagesInternal` — 面向展示。
+- `uiMessagesInternal` — 面向展示。其中 `uiNoticeKind` 非空的 System 消息是纯 UI 提示条（如上下文压缩），`excludeFromConversation=true` 且不入 `conversationMessagesInternal`；关联摘要失效时由 `pruneOrphanUiNotices()` 清理。
 - `conversationMessagesInternal` — 原始 API 上下文（不含 System；工具链路完成后保留 assistant toolCalls + Tool 消息）。
 - `contextSummariesInternal` — 独立保存的上下文压缩摘要。
+- 请求失败的说明写入 assistant 消息的 `errorNotice` 字段（UI 渲染错误条），不混入正文、`assistantParts` 与复制内容。
 
 ### 上下文压缩
 
@@ -82,13 +83,13 @@ app/src/main/java/com/mukapp/mote/
 - 对话文件：`chat_history/conversations/{conversationId}.json`（`schemaVersion=3`）；当前对话指针：`chat_history/index.json`；轻量摘要索引：`chat_history/summaries.json`（衍生数据，损坏或与目录不一致时自动删除并全量扫描重建）。
 - 附件 base64 外置到 `chat_history/blobs/{conversationId}/{attachmentId}.b64`，对话 JSON 中以 `base64Ref` 引用；加载时回填 `base64Data`，内存模型不感知外置。旧版 v2 内联文件可直接读取，保存时自然升级为 v3。
 - 写入使用临时文件 + `fsync` + 原子移动；对话保存先写 blob 再写 JSON，最后清理不再引用的 blob。对话 ID 匹配 `^[A-Za-z0-9_-]{1,80}$`。
-- 删除对话时删除对应 blob 子目录；孤儿 blob 目录每进程扫描清理一次（被隔离对话的 blob 保留以便恢复）。
+- 删除以对话 JSON unlink 成功/确认不存在为提交点；`ConversationDeletionResult` 返回替代 ID 与 `cleanupFailed`，提交后清理失败不再报告未删除。删除专用索引读取拒绝损坏/非普通文件，读取失败不覆盖索引。删除对应 blob 子目录；孤儿 blob 目录每进程扫描清理一次（被隔离对话的 blob 保留以便恢复）。
 - 损坏对话 JSON 隔离到 `corrupted/` 目录（`index.json`、`summaries.json` 豁免）。旧版 `history.json` 首次加载时自动迁移。
 - 历史文件同时保存 `uiMessages`、`conversationMessages` 和 `contextSummaries`；旧版 `isContextSummary` 加载时迁移为独立摘要。
 
 ### 其他
 
-- 工具结果写入历史时保留完整内容；加入 API 请求前由 `limitToolResultsForContext()` 截断到单条最多 24000 字符。
+- 工具结果写入历史时保留完整内容；加入 API 请求前由 `limitToolResultsForContext()` 截断到单条最多 24000 字符。`ToolDetailFormatter` 将参数/结果各按 5000 字符预览，仅原参数不超 5000 时尝试 JSON 美化；「查看全部」以原始参数/结果跳转 `FreeCopyActivity` 纯文本模式，不经 JSON 往返。
 - `assistantParts` 按顺序保存 `markdown`/`thinking`/`tool` 片段；`AssistantToolPart.isLoading` 仅运行时使用。
 - `streamChatWithRetries()` 每次流式请求最多重试 3 次；`streamChat()` 内部的 `include_usage` 降级重试仅在尚未发出任何 delta 时触发。
 - 停止生成会清理待确认工具令牌、停止前台 Shell 并取消协程；工具执行经 `runInterruptible` 派发，取消时中断执行线程。
@@ -117,7 +118,7 @@ app/src/main/java/com/mukapp/mote/
 - BusyBox 以 `jniLibs/<abi>/libbusybox.so` 打包（arm64-v8a / armeabi-v7a / x86 / x86_64），启动时初始化 applet 软链接到 `filesDir/shell/bin`。
 - AI 临时目录优先使用外部存储 `Android/data/<包名>/files/ai_tmp`，不可用时回退 `filesDir/shell/tmp`。
 - Shell 执行时注入 `PATH`（`filesDir/shell/bin` → `filesDir/shell` → 继承）、`BUSYBOX`、`MOTE_SHELL_DIR`、`MOTE_AI_TMPDIR`、`TMPDIR`；未传 `work_dir` 默认在 AI 临时目录执行。
-- 后台进程由 `ShellProcessManager` 管理，最多保留 20 个；stdout/stderr 各最多 65536 字符。
+- 后台进程由 `ShellProcessManager` 管理，最多保留 20 个；stdout/stderr 用独立 `ShellOutputBuffer` 按 4096 字符块读取、固定容量各 65536 个 UTF-16 字符，保留原始换行并支持无换行实时快照。
 
 ## Shell 高风险确认
 
@@ -146,7 +147,7 @@ app/src/main/java/com/mukapp/mote/
 - 代码高亮：`MarkdownCodeSpanRenderer`，主策略 prism4j，失败后正则回退；流式未闭合代码块暂不高亮（等宽显示），闭合或流式结束后补高亮并缓存。
 - LaTeX 公式：块级支持 `$$...$$` / `\[...\]`，行内支持 `$...$` / `\(...\)`；已闭合公式用 RaTeX 原生渲染，流式未闭合公式保持原文显示。
 - 新增语法高亮语言时同步 `MarkdownGrammarLocator` 和 `ui/markdown/prism/`。
-- `StreamingMarkdownRenderer` 为旧的纯 TextView 渲染实现，现仅自由复制页（`FreeCopyActivity`）使用，表格渲染为等宽纯文本网格以保证可选取复制。
+- `StreamingMarkdownRenderer` 为旧的纯 TextView 渲染实现，现仅自由复制页（`FreeCopyActivity`）使用，表格渲染为等宽纯文本网格以保证可选取复制。该页面在 Main 调用 `prepareForBackgroundRendering()` 捕获 standalone 样式，独占实例在 Default 完成解析/span/预计算后才回 Main 绑定；页面销毁取消绑定，排版异常日志后回退完整原文。
 
 ## 构建与验证
 
@@ -176,7 +177,8 @@ Start-Process -FilePath ".\gradlew.bat" -ArgumentList "connectedAndroidTest", "-
 | 新增 AI 工具 | `AiToolDefinitions` 定义 + `LocalAiTools` 分发（或对应实现模块）+ `IntermediateStepsHelper.parseToolSummary` |
 | Shell 风险检测 | `ShellRiskDetectorTest`；`confirmation_id` 不暴露为模型可构造输入 |
 | API 请求体 | 保持 OpenAI 兼容；注意 `stream_options.include_usage` 降级和按模型发送 `reasoning_effort`；聊天/标题/压缩各自解析为 `ResolvedModel`（provider baseUrl/apiKey + model + 上下文长度 + 思考强度） |
-| 标题生成 | 保持未选择标题模型时的本地备用标题兼容 |
+| 标题生成 | 保持未选择标题模型时的本地备用标题兼容；用户重命名保护由 `ConversationPersistenceState.isUserRenamed()` 管理，仅落盘成功的手动标题阻止模型标题覆盖 |
+| 消息列表视图类型 | `ChatMessageAdapter` 的 assistant/user/notice 三类视图与 `ChatFragment` 的 `recycledViewPool` 上限一并更新 |
 | 外部存储权限 | `Utils.kt` + `SettingsActivity.kt` |
 | Markdown 渲染/RecyclerView 绑定/LaTeX 公式 | `MarkdownParseCache`、`MarkdownView`、`ChatMessageAdapter`、`ChatFragment.preparseVisibleMessages()`、公式分隔符流式解析与 RaTeX 渲染兼容 |
 | 图标更新 | Material Symbols Rounded，命名 `ic_{name}.xml`（不加 `_24px`） |
