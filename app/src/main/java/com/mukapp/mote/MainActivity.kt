@@ -25,6 +25,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.mukapp.mote.databinding.ActivityMainBinding
+import com.mukapp.mote.databinding.DialogRenameConversationBinding
+import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.findProvider
 import com.mukapp.mote.data.model.resolve
 import com.mukapp.mote.data.model.resolvedChatModel
@@ -32,6 +34,8 @@ import com.mukapp.mote.ui.ChatFragment
 import com.mukapp.mote.ui.ChatViewModel
 import com.mukapp.mote.ui.ConversationSummaryAdapter
 import com.mukapp.mote.ui.ModelPickerBottomSheet
+import com.mukapp.mote.ui.MotePopupWindowItem
+import com.mukapp.mote.ui.MotePopupWindowMenu
 import com.mukapp.mote.util.dpInt
 import eightbitlab.com.blurview.BlurTarget
 import kotlin.math.min
@@ -186,8 +190,8 @@ class MainActivity : AppCompatActivity() {
                 viewModel.switchConversation(summary.id)
                 binding.drawerLayout.closeDrawer(GravityCompat.START)
             },
-            onConversationLongClick = { summary ->
-                showDeleteConversationDialog(summary.id, summary.title)
+            onConversationLongClick = { view, summary ->
+                showConversationMenu(view, summary)
             }
         )
         binding.recyclerConversations.adapter = conversationAdapter
@@ -211,11 +215,13 @@ class MainActivity : AppCompatActivity() {
                 viewModel.conversationSummaries.value.orEmpty(),
                 latestConversationId
             )
+            renderToolbarTitle()
         }
         viewModel.conversationSummaries.observe(this) { summaries ->
             conversationAdapter.submitItems(summaries, latestConversationId)
             binding.textHistoryEmpty.isVisible = summaries.isEmpty()
             binding.recyclerConversations.isVisible = summaries.isNotEmpty()
+            renderToolbarTitle()
         }
         viewModel.isSending.observe(this) { sending ->
             binding.toolbar.menu.findItem(R.id.action_delete_conversation)?.isEnabled = !sending
@@ -224,9 +230,27 @@ class MainActivity : AppCompatActivity() {
             if (message.isNullOrBlank()) {
                 return@observe
             }
-            Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+            showUserNotice(message)
             viewModel.clearUserNotice()
         }
+    }
+
+    /** 顶栏显示当前对话标题；尚无标题（新对话/未加载）时回退应用名。 */
+    private fun renderToolbarTitle() {
+        val title = viewModel.conversationSummaries.value
+            ?.firstOrNull { it.id == latestConversationId }
+            ?.title
+            ?.takeIf { it.isNotBlank() }
+        binding.textToolbarTitle.text = title ?: getString(R.string.title_chat)
+    }
+
+    /** 提示锚定在悬浮输入栏上方，避免盖住输入区。 */
+    private fun showUserNotice(message: String) {
+        val snackbar = Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT)
+        findViewById<View>(R.id.card_input)
+            ?.takeIf { it.isShown }
+            ?.let { snackbar.anchorView = it }
+        snackbar.show()
     }
 
     private fun observeModelSelector() {
@@ -234,6 +258,37 @@ class MainActivity : AppCompatActivity() {
         viewModel.temporaryReasoningEffort.observe(this) { renderModelSelector() }
     }
 
+
+    /** 长按对话列表项：重命名 / 删除 */
+    private fun showConversationMenu(anchor: View, summary: ConversationSummary) {
+        val items = listOf(
+            MotePopupWindowItem(MenuRenameConversation, R.string.action_rename, R.drawable.ic_edit),
+            MotePopupWindowItem(MenuDeleteConversation, R.string.action_delete, R.drawable.ic_delete)
+        )
+        MotePopupWindowMenu.showAnchored(anchor, items) { itemId ->
+            when (itemId) {
+                MenuRenameConversation -> showRenameConversationDialog(summary)
+                MenuDeleteConversation -> showDeleteConversationDialog(summary.id, summary.title)
+            }
+        }
+    }
+
+    private fun showRenameConversationDialog(summary: ConversationSummary) {
+        val dialogBinding = DialogRenameConversationBinding.inflate(layoutInflater)
+        dialogBinding.editConversationTitle.setText(summary.title)
+        dialogBinding.editConversationTitle.setSelection(summary.title.length)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.dialog_rename_conversation_title)
+            .setView(dialogBinding.root)
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.action_save) { _, _ ->
+                viewModel.renameConversation(
+                    summary.id,
+                    dialogBinding.editConversationTitle.text?.toString().orEmpty()
+                )
+            }
+            .show()
+    }
 
     /** 删除当前对话（工具栏菜单触发） */
     private fun showDeleteConversationDialog() {
@@ -327,5 +382,9 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val ChatTag = "chat_fragment"
         const val DrawerBackCancelDurationMs = 120L
+
+        // 对话列表长按菜单项 ID
+        const val MenuRenameConversation = 1
+        const val MenuDeleteConversation = 2
     }
 }

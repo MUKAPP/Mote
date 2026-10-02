@@ -20,6 +20,7 @@
     <string name="action_free_copy">自由复制</string>
     <string name="title_free_copy">自由复制</string>
     <string name="action_edit">编辑</string>
+    <string name="action_rename">重命名</string>
     <string name="action_delete">删除</string>
     <string name="action_clear">清除</string>
     <string name="action_delete_conversation">删除对话</string>
@@ -192,7 +193,11 @@
     <string name="dialog_delete_conversation_title">删除对话</string>
     <string name="dialog_delete_conversation_message">将删除当前对话的历史记录文件。</string>
     <string name="dialog_delete_specific_conversation_message">将删除对话「%1$s」的历史记录文件。</string>
+    <string name="dialog_rename_conversation_title">重命名对话</string>
+    <string name="rename_conversation_label">对话标题</string>
     <string name="error_delete_conversation_failed">删除对话失败，请稍后重试。</string>
+    <string name="notice_delete_cleanup_incomplete">对话已删除，部分历史数据清理未完成。</string>
+    <string name="error_rename_conversation_failed">重命名失败，请稍后重试。</string>
     <string name="shell_confirmation_title">确认执行高风险 Shell 命令</string>
     <string name="shell_confirmation_risk">风险：%1$s</string>
     <string name="shell_confirmation_description">AI 说明：%1$s</string>

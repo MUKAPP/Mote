@@ -53,8 +53,12 @@
                     android:paddingVertical="4dp">
 
                     <TextView
+                        android:id="@+id/text_toolbar_title"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:maxWidth="220dp"
+                        android:singleLine="true"
                         android:text="@string/title_chat"
                         android:textAppearance="?attr/textAppearanceTitleMedium"
                         android:textSize="18sp"
@@ -73,7 +77,7 @@
                             android:ellipsize="end"
                             android:maxLines="1"
                             android:maxWidth="200dp"
-                            android:layout_marginLeft="16dp"
+                            android:layout_marginStart="16dp"
                             android:text="@string/model_selector_unset"
                             android:textAppearance="?attr/textAppearanceBodySmall"
                             android:textColor="?attr/colorOnSurfaceVariant" />

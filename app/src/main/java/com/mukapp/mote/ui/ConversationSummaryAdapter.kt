@@ -2,6 +2,7 @@ package com.mukapp.mote.ui
 
 import android.text.format.DateUtils
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
@@ -12,7 +13,7 @@ import java.util.UUID
 
 class ConversationSummaryAdapter(
     private val onConversationClick: (ConversationSummary) -> Unit,
-    private val onConversationLongClick: ((ConversationSummary) -> Unit)? = null
+    private val onConversationLongClick: ((view: View, summary: ConversationSummary) -> Unit)? = null
 ) : RecyclerView.Adapter<ConversationSummaryAdapter.ViewHolder>() {
     private val items = mutableListOf<ConversationSummary>()
     private var currentConversationId: String = ""
@@ -74,9 +75,9 @@ class ConversationSummaryAdapter(
             binding.root.setOnClickListener {
                 currentItemOrNull()?.let(onConversationClick)
             }
-            binding.root.setOnLongClickListener {
+            binding.root.setOnLongClickListener { view ->
                 val item = currentItemOrNull() ?: return@setOnLongClickListener false
-                onConversationLongClick?.invoke(item)
+                onConversationLongClick?.invoke(view, item)
                 onConversationLongClick != null
             }
         }

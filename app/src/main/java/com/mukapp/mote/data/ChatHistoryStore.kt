@@ -17,16 +17,20 @@ import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.data.model.resolvedChatModel
 import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.toChatRoleOrNull
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 
 object ChatHistoryStore {
@@ -304,29 +308,54 @@ object ChatHistoryStore {
         )
     }
 
-    fun deleteConversation(context: Context, conversationId: String): String? {
+    data class ConversationDeletionResult(val replacementId: String?, val cleanupFailed: Boolean)
+
+    fun deleteConversation(context: Context, conversationId: String): ConversationDeletionResult {
         synchronized(conversationMutationLock) {
-            if (!isSafeConversationId(conversationId)) {
-                return null
-            }
+            require(isSafeConversationId(conversationId)) { "对话 ID 不合法。" }
             val conversationsDir = ensureConversationsDir(context)
             val file = conversationFile(conversationsDir, conversationId)
-            if (file.exists() && !file.delete()) {
-                throw IllegalStateException("无法删除对话记录文件。")
-            }
-            removeCachedSummary(context, conversationId)
             val blobDir = conversationBlobDir(context, conversationId)
-            if (blobDir.exists() && !blobDir.deleteRecursively()) {
-                MoteLog.w(
-                    Component,
-                    MoteLog.event("无法删除对话附件目录", "conversationId" to MoteLog.shortId(conversationId))
-                )
+
+            // unlink 成功或确认文件不存在即提交；此后的清理失败不能再报告为未删除。
+            Files.deleteIfExists(file.toPath())
+            var cleanupFailed = false
+            fun recordCleanupFailure(message: String, error: Exception) {
+                if (error is CancellationException) throw error
+                cleanupFailed = true
+                MoteLog.w(Component, message, error)
             }
 
-            val replacementId = listConversations(context).firstOrNull { it.id != conversationId }?.id
-            val currentId = loadCurrentConversationId(context)
-            if (currentId == conversationId || currentId.isBlank()) {
-                saveCurrentConversationId(context, replacementId.orEmpty())
+            try {
+                removeCachedSummary(context, conversationId)
+            } catch (error: Exception) {
+                recordCleanupFailure("删除后的摘要缓存清理失败", error)
+            }
+            try {
+                if (blobDir.exists() && !blobDir.deleteRecursively()) {
+                    throw IOException("无法删除对话附件目录。")
+                }
+            } catch (error: Exception) {
+                recordCleanupFailure("删除后的附件清理失败", error)
+            }
+            val replacementId = try {
+                listConversations(context).firstOrNull { it.id != conversationId }?.id
+            } catch (error: Exception) {
+                recordCleanupFailure("删除后的替代对话读取失败", error)
+                null
+            }
+            val currentId = try {
+                loadCurrentConversationIdForDeletion(context)
+            } catch (error: Exception) {
+                recordCleanupFailure("删除后的当前对话索引读取失败", error)
+                null
+            }
+            if (currentId != null && (currentId == conversationId || currentId.isBlank())) {
+                try {
+                    saveCurrentConversationId(context, replacementId.orEmpty())
+                } catch (error: Exception) {
+                    recordCleanupFailure("删除后的当前对话索引更新失败", error)
+                }
             }
             sweepOrphanBlobDirs(context)
             MoteLog.i(
@@ -334,10 +363,11 @@ object ChatHistoryStore {
                 MoteLog.event(
                     "已删除对话",
                     "conversationId" to MoteLog.shortId(conversationId),
-                    "replacementId" to MoteLog.shortId(replacementId)
+                    "replacementId" to MoteLog.shortId(replacementId),
+                    "cleanupFailed" to cleanupFailed
                 )
             )
-            return replacementId
+            return ConversationDeletionResult(replacementId, cleanupFailed)
         }
     }
 
@@ -815,6 +845,21 @@ object ChatHistoryStore {
         }.onFailure { error ->
             MoteLog.w(Component, "清理孤儿附件目录失败。", error)
         }
+    }
+
+    private fun loadCurrentConversationIdForDeletion(context: Context): String {
+        val indexFile = File(ensureHistoryDir(context), IndexFileName)
+        val attributes = try {
+            Files.readAttributes(indexFile.toPath(), BasicFileAttributes::class.java)
+        } catch (_: NoSuchFileException) {
+            return ""
+        }
+        if (!attributes.isRegularFile) throw IOException("当前对话索引不是普通文件。")
+        val currentId = JSONObject(indexFile.readText(Charsets.UTF_8))
+            .optString("currentConversationId").orEmpty()
+        if (currentId.isBlank()) return ""
+        check(isSafeConversationId(currentId)) { "当前对话 ID 不合法。" }
+        return currentId
     }
 
     private fun loadCurrentConversationId(context: Context): String {

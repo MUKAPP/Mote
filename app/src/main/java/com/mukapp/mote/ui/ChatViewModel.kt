@@ -165,11 +165,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     // IO 操作先获取 persistenceMutex；内存标记只在很短的同步块内读取或修改。
     private val persistenceMutex = Mutex()
-    private val persistenceStateLock = Any()
-    private val latestSaveVersions = mutableMapOf<String, Long>()
-    private val deletedConversationIds = mutableSetOf<String>()
-    private val generatedConversationTitles = mutableMapOf<String, String>()
-    private var nextSaveVersion: Long = 0L
+    private val persistenceState = ConversationPersistenceState()
 
     // 流式阶段用 StringBuilder 累积文本：delta 只做 append + 打脏标记，
     // 由 50ms 的发布节拍统一物化回 parts，避免每个 delta 都做 O(n) 的字符串复制。
@@ -318,42 +314,40 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun switchConversation(conversationId: String) {
-        if (_isSending.value == true || conversationId.isBlank() || conversationId == _currentConversationId.value) {
-            return
-        }
+        val currentVersion = stateVersion.get()
+        if (_isSending.value == true || conversationId.isBlank() || conversationId == _currentConversationId.value ||
+            !persistenceState.canApplySwitch(conversationId, currentVersion, currentVersion)
+        ) return
 
         clearPendingToolConfirmation(discardToken = true)
         clearTemporaryReasoningEffort()
         val requestVersion = markStateChanged()
-        MoteLog.i(
-            logComponent,
-            MoteLog.event("开始切换对话", "conversationId" to MoteLog.shortId(conversationId))
-        )
         viewModelScope.launch(Dispatchers.IO) {
-            val historyState = runCatching {
-                ChatHistoryStore.loadConversation(appContext, conversationId)
-            }.onFailure { error ->
+            val historyState = try {
+                persistenceMutex.withLock {
+                    if (!persistenceState.canApplySwitch(conversationId, requestVersion, stateVersion.get())) {
+                        return@withLock null
+                    }
+                    val loaded = ChatHistoryStore.loadConversation(appContext, conversationId)
+                    loaded.takeIf {
+                        persistenceState.canApplySwitch(conversationId, requestVersion, stateVersion.get())
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "加载指定对话失败", error)
-            }.getOrNull() ?: return@launch
+                null
+            } ?: return@launch
 
             withContext(Dispatchers.Main) {
-                if (stateVersion.get() != requestVersion) {
+                if (!persistenceState.canApplySwitch(conversationId, requestVersion, stateVersion.get())) {
                     return@withContext
                 }
                 applyConversationState(historyState)
                 _draftMessage.value = ""
                 _draftAttachments.value = emptyList()
                 persistCurrentConversationIdAsync(conversationId, requestVersion)
-                MoteLog.i(
-                    logComponent,
-                    MoteLog.event(
-                        "已切换对话",
-                        "conversationId" to MoteLog.shortId(conversationId),
-                        "uiMessages" to historyState.uiMessages.size,
-                        "conversationMessages" to historyState.conversationMessages.size,
-                        "contextSummaries" to historyState.contextSummaries.size
-                    )
-                )
+                MoteLog.i(logComponent, MoteLog.event("已切换对话", "conversationId" to MoteLog.shortId(conversationId)))
             }
         }
     }
@@ -371,34 +365,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        if (!persistenceState.beginDelete(conversationId)) return
+        val summariesSnapshot = _conversationSummaries.value.orEmpty().toList()
         val requestVersion = markStateChanged()
-        markConversationDeleted(conversationId)
         MoteLog.i(
             logComponent,
             MoteLog.event("开始删除当前对话", "conversationId" to MoteLog.shortId(conversationId))
         )
         viewModelScope.launch(Dispatchers.IO) {
-            val (replacementId, summaries) = deleteConversationOnDisk(conversationId) ?: return@launch
-
+            val deleted = deleteConversationOnDisk(conversationId, summariesSnapshot) ?: return@launch
+            val replacementId = deleted.replacementId
             val replacementState = replacementId?.let { id ->
-                runCatching { ChatHistoryStore.loadConversation(appContext, id) }
-                    .onFailure { error -> MoteLog.e(logComponent, "加载替换对话失败", error) }
-                    .getOrNull()
+                try {
+                    persistenceMutex.withLock {
+                        if (persistenceState.isBlocked(id)) null else ChatHistoryStore.loadConversation(appContext, id)
+                    }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    MoteLog.e(logComponent, "加载替换对话失败", error)
+                    null
+                }
             }
 
             withContext(Dispatchers.Main) {
-                if (stateVersion.get() != requestVersion) {
-                    _conversationSummaries.value = summaries
-                    return@withContext
+                publishConversationSummaries(deleted.summaries)
+                if (deleted.cleanupFailed) {
+                    _userNotice.value = appContext.getString(R.string.notice_delete_cleanup_incomplete)
                 }
-                if (replacementState != null) {
+                if (stateVersion.get() != requestVersion) return@withContext
+                if (replacementState != null && !persistenceState.isBlocked(replacementState.conversationId)) {
                     applyConversationState(replacementState)
                     _draftMessage.value = ""
                     _draftAttachments.value = emptyList()
+                    persistCurrentConversationIdAsync(replacementState.conversationId, requestVersion)
                 } else {
                     resetToNewConversation(requestVersion)
                 }
-                _conversationSummaries.value = summaries
                 MoteLog.i(
                     logComponent,
                     MoteLog.event(
@@ -406,6 +408,73 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "conversationId" to MoteLog.shortId(conversationId),
                         "replacementId" to MoteLog.shortId(replacementId)
                     )
+                )
+            }
+        }
+    }
+
+    /** 用户手动重命名对话；空标题忽略，同一对话连续重命名以最后一次请求为准。 */
+    fun renameConversation(conversationId: String, rawTitle: String) {
+        if (conversationId.isBlank() || persistenceState.isBlocked(conversationId)) return
+        val title = ConversationTitleFormatter.normalizeUserTitle(rawTitle)
+        if (title.isBlank()) return
+        val renameVersion = persistenceState.registerRename(conversationId)
+
+        MoteLog.i(
+            logComponent,
+            MoteLog.event(
+                "开始重命名对话",
+                "conversationId" to MoteLog.shortId(conversationId),
+                "titleLength" to title.length
+            )
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            var updated = false
+            val summaries = try {
+                persistenceMutex.withLock {
+                    if (!persistenceState.isLatestRename(conversationId, renameVersion)) {
+                        return@withLock null
+                    }
+                    updated = ChatHistoryStore.updateConversationTitle(
+                        context = appContext,
+                        conversationId = conversationId,
+                        title = title
+                    )
+                    if (!updated) return@withLock null
+                    persistenceState.recordUserTitle(conversationId, title)
+                    // 标题已提交；摘要刷新失败不改变真实写入结果。
+                    try {
+                        ChatHistoryStore.listConversations(appContext)
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        MoteLog.e(logComponent, "重命名后的对话列表刷新失败", error)
+                        null
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                MoteLog.e(logComponent, "重命名对话失败", error)
+                null
+            }
+
+            withContext(Dispatchers.Main) {
+                when (persistenceState.finishRename(conversationId, renameVersion, updated)) {
+                    RenameCompletion.Ignored -> return@withContext
+                    RenameCompletion.Failed -> {
+                        _userNotice.value = appContext.getString(R.string.error_rename_conversation_failed)
+                        return@withContext
+                    }
+                    RenameCompletion.Updated -> Unit
+                }
+                if (_currentConversationId.value == conversationId) {
+                    currentConversationTitle = title
+                }
+                publishConversationSummaries(summaries ?: _conversationSummaries.value.orEmpty().map { summary ->
+                    if (summary.id == conversationId) summary.copy(title = title) else summary
+                })
+                MoteLog.i(
+                    logComponent,
+                    MoteLog.event("已重命名对话", "conversationId" to MoteLog.shortId(conversationId))
                 )
             }
         }
@@ -419,16 +488,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        markConversationDeleted(conversationId)
+        if (!persistenceState.beginDelete(conversationId)) return
+        val summariesSnapshot = _conversationSummaries.value.orEmpty().toList()
         MoteLog.i(
             logComponent,
             MoteLog.event("开始删除指定对话", "conversationId" to MoteLog.shortId(conversationId))
         )
         viewModelScope.launch(Dispatchers.IO) {
-            val (_, summaries) = deleteConversationOnDisk(conversationId) ?: return@launch
+            val deleted = deleteConversationOnDisk(conversationId, summariesSnapshot) ?: return@launch
 
             withContext(Dispatchers.Main) {
-                _conversationSummaries.value = summaries
+                publishConversationSummaries(deleted.summaries)
+                if (deleted.cleanupFailed) {
+                    _userNotice.value = appContext.getString(R.string.notice_delete_cleanup_incomplete)
+                }
                 MoteLog.i(
                     logComponent,
                     MoteLog.event(
@@ -440,36 +513,68 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * 删除对话文件并刷新摘要列表，返回（替换对话 ID, 最新摘要列表）。
-     * 失败时回滚删除标记、提示用户并返回 null。只在 IO 线程调用。
-     */
+    private data class DeletedConversation(
+        val replacementId: String?,
+        val summaries: List<ConversationSummary>,
+        val cleanupFailed: Boolean
+    )
+
+    /** Store 提交点与内存完成/回滚处于同一持久化互斥段。只在 IO 线程调用。 */
     private suspend fun deleteConversationOnDisk(
-        conversationId: String
-    ): Pair<String?, List<ConversationSummary>>? {
-        val deleteResult = runCatching {
+        conversationId: String,
+        summariesSnapshot: List<ConversationSummary>
+    ): DeletedConversation? {
+        val deleteResult = try {
             persistenceMutex.withLock {
-                ChatHistoryStore.deleteConversation(appContext, conversationId)
+                try {
+                    ChatHistoryStore.deleteConversation(appContext, conversationId).also {
+                        persistenceState.completeDelete(conversationId)
+                    }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    persistenceState.rollbackDelete(conversationId)
+                    throw error
+                }
             }
-        }.onFailure { error ->
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
             MoteLog.e(logComponent, "删除对话失败", error)
-        }
-        if (deleteResult.isFailure) {
-            unmarkConversationDeleted(conversationId)
+            val refreshed = try {
+                persistenceMutex.withLock { ChatHistoryStore.listConversations(appContext) }
+            } catch (refreshError: Exception) {
+                if (refreshError is CancellationException) throw refreshError
+                MoteLog.e(logComponent, "删除失败后的对话列表刷新失败", refreshError)
+                null
+            }
             withContext(Dispatchers.Main) {
-                _userNotice.value =
-                    appContext.getString(R.string.error_delete_conversation_failed)
+                val summaries = refreshed ?: _conversationSummaries.value.orEmpty().map { summary ->
+                    if (summary.id == conversationId) {
+                        summary.copy(title = persistenceState.effectiveTitle(conversationId, summary.title))
+                    } else summary
+                }
+                publishConversationSummaries(summaries)
+                if (_currentConversationId.value == conversationId) {
+                    currentConversationTitle = persistenceState.effectiveTitle(conversationId, currentConversationTitle)
+                }
+                _userNotice.value = appContext.getString(R.string.error_delete_conversation_failed)
             }
             return null
         }
-        val summaries = runCatching {
-            ChatHistoryStore.listConversations(appContext)
-        }.getOrDefault(emptyList())
-        clearDeletedConversation(conversationId)
-        return deleteResult.getOrNull() to summaries
+        var cleanupFailed = deleteResult.cleanupFailed
+        val summaries = try {
+            persistenceMutex.withLock { ChatHistoryStore.listConversations(appContext) }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            MoteLog.e(logComponent, "删除后的对话列表刷新失败", error)
+            cleanupFailed = true
+            summariesSnapshot.filterNot { persistenceState.isDeleted(it.id) }
+        }
+        val replacementId = deleteResult.replacementId ?: summaries.firstOrNull { !persistenceState.isBlocked(it.id) }?.id
+        return DeletedConversation(replacementId, summaries, cleanupFailed)
     }
 
     fun sendMessage() {
+        if (persistenceState.isBlocked(_currentConversationId.value.orEmpty())) return
         val content = _draftMessage.value.orEmpty().trim()
         val attachments = _draftAttachments.value.orEmpty()
         if ((content.isEmpty() && attachments.isEmpty()) || _isSending.value == true) {
@@ -934,6 +1039,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun editMessage(index: Int) {
+        if (persistenceState.isBlocked(_currentConversationId.value.orEmpty())) return
         if (_isSending.value == true || index !in uiMessagesInternal.indices) {
             return
         }
@@ -969,6 +1075,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteMessage(index: Int) {
+        if (persistenceState.isBlocked(_currentConversationId.value.orEmpty())) return
         if (_isSending.value == true || index !in uiMessagesInternal.indices) {
             return
         }
@@ -994,6 +1101,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryMessage(index: Int) {
+        if (persistenceState.isBlocked(_currentConversationId.value.orEmpty())) return
         if (_isSending.value == true || index !in uiMessagesInternal.indices) {
             return
         }
@@ -1049,7 +1157,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.Main) {
                 if (stateVersion.get() == loadVersion) {
                     applyConversationState(historyState)
-                    _conversationSummaries.value = summaries
+                    publishConversationSummaries(summaries)
                     MoteLog.i(
                         logComponent,
                         MoteLog.event(
@@ -2133,7 +2241,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val uiSnapshot = uiMessagesInternal.toList()
         val conversationSnapshot = conversationMessagesInternal.toList()
         val contextSummarySnapshot = contextSummariesInternal.toList()
-        val saveVersion = registerSaveSnapshot(conversationIdSnapshot)
+        val saveVersion = persistenceState.registerSave(conversationIdSnapshot)
         MoteLog.d(
             logComponent,
             MoteLog.event(
@@ -2149,7 +2257,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 persistenceMutex.withLock {
-                    if (shouldSkipSave(conversationIdSnapshot, saveVersion)) {
+                    if (persistenceState.shouldSkipSave(conversationIdSnapshot, saveVersion)) {
                         MoteLog.d(
                             logComponent,
                             MoteLog.event(
@@ -2160,9 +2268,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         return@runCatching ChatHistoryStore.listConversations(appContext)
                     }
-                    val effectiveTitle = synchronized(persistenceStateLock) {
-                        generatedConversationTitles[conversationIdSnapshot] ?: titleSnapshot
-                    }
+                    val effectiveTitle = persistenceState.effectiveTitle(conversationIdSnapshot, titleSnapshot)
                     ChatHistoryStore.saveConversation(
                         context = appContext,
                         settings = settingsSnapshot,
@@ -2175,10 +2281,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ChatHistoryStore.listConversations(appContext)
                 }
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "保存聊天记录失败", error)
-                clearSaveSnapshot(conversationIdSnapshot, saveVersion)
+                persistenceState.finishSave(conversationIdSnapshot, saveVersion)
             }.onSuccess { summaries ->
-                clearSaveSnapshot(conversationIdSnapshot, saveVersion)
+                persistenceState.finishSave(conversationIdSnapshot, saveVersion)
                 MoteLog.d(
                     logComponent,
                     MoteLog.event(
@@ -2188,7 +2295,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
                 withContext(Dispatchers.Main) {
-                    _conversationSummaries.value = summaries
+                    publishConversationSummaries(summaries)
                 }
             }
         }
@@ -2228,6 +2335,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val generatedTitle = runCatching {
                 ChatApiClient.generateConversationTitle(titleModel, firstUserMessage)
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "生成对话标题失败", error)
             }.getOrNull()
 
@@ -2236,37 +2344,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ?.takeIf { it.isNotBlank() }
             val usedFallbackTitle = modelTitle == null
             val normalizedTitle = modelTitle ?: buildFallbackTitle(firstUserMessage)
-            val summaries = runCatching {
+            var updated = false
+            val summaries = try {
                 persistenceMutex.withLock {
-                    val deleted = synchronized(persistenceStateLock) {
-                        conversationIdSnapshot in deletedConversationIds
+                    if (persistenceState.shouldSkipGeneratedTitle(conversationIdSnapshot)) {
+                        return@withLock null
                     }
-                    if (deleted) {
-                        MoteLog.d(
-                            logComponent,
-                            MoteLog.event(
-                                "跳过保存标题：对话已删除",
-                                "conversationId" to MoteLog.shortId(conversationIdSnapshot)
-                            )
-                        )
-                        return@withLock ChatHistoryStore.listConversations(appContext)
-                    }
-                    synchronized(persistenceStateLock) {
-                        // 条目保留到对话删除（markConversationDeleted/clearDeletedConversation 清理）：
-                        // 在途保存任务的 titleSnapshot 可能仍是旧标题，靠它在保存时覆盖为生成标题；
-                        // 同一 mutex 段内写后即清会让读者永远读不到。对话无用户重命名入口，留存无冲突。
-                        generatedConversationTitles[conversationIdSnapshot] = normalizedTitle
-                    }
-                    ChatHistoryStore.updateConversationTitle(
+                    updated = ChatHistoryStore.updateConversationTitle(
                         context = appContext,
                         conversationId = conversationIdSnapshot,
                         title = normalizedTitle
                     )
-                    ChatHistoryStore.listConversations(appContext)
+                    if (!updated) return@withLock null
+                    // 只有落盘成功的标题才覆盖在途保存快照。
+                    persistenceState.recordGeneratedTitle(conversationIdSnapshot, normalizedTitle)
+                    try {
+                        ChatHistoryStore.listConversations(appContext)
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        MoteLog.e(logComponent, "更新标题后的对话列表刷新失败", error)
+                        null
+                    }
                 }
-            }.onFailure { error ->
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "保存对话标题失败", error)
-            }.getOrDefault(emptyList())
+                null
+            }
 
             MoteLog.i(
                 logComponent,
@@ -2280,10 +2384,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
 
             withContext(Dispatchers.Main) {
+                if (!updated || persistenceState.isBlocked(conversationIdSnapshot) ||
+                    persistenceState.isUserRenamed(conversationIdSnapshot)
+                ) return@withContext
                 if (_currentConversationId.value == conversationIdSnapshot) {
                     currentConversationTitle = normalizedTitle
                 }
-                _conversationSummaries.value = summaries
+                publishConversationSummaries(summaries ?: _conversationSummaries.value.orEmpty().map { summary ->
+                    if (summary.id == conversationIdSnapshot) summary.copy(title = normalizedTitle) else summary
+                })
             }
         }
     }
@@ -2293,13 +2402,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val summaries = runCatching {
                 ChatHistoryStore.listConversations(appContext)
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "刷新对话列表失败", error)
             }.getOrDefault(emptyList())
 
             MoteLog.d(logComponent, MoteLog.event("对话列表刷新完成", "summaries" to summaries.size))
 
             withContext(Dispatchers.Main) {
-                _conversationSummaries.value = summaries
+                publishConversationSummaries(summaries)
             }
         }
     }
@@ -2310,54 +2420,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun setCurrentConversationId(conversationId: String) {
         _currentConversationId.value = conversationId
-        synchronized(persistenceStateLock) {
-            deletedConversationIds.remove(conversationId)
-        }
     }
 
-    private fun markConversationDeleted(conversationId: String) {
-        synchronized(persistenceStateLock) {
-            deletedConversationIds += conversationId
-            latestSaveVersions.remove(conversationId)
-            generatedConversationTitles.remove(conversationId)
-        }
-    }
-
-    private fun unmarkConversationDeleted(conversationId: String) {
-        synchronized(persistenceStateLock) {
-            deletedConversationIds.remove(conversationId)
-        }
-    }
-
-    private fun clearDeletedConversation(conversationId: String) {
-        synchronized(persistenceStateLock) {
-            deletedConversationIds.remove(conversationId)
-            latestSaveVersions.remove(conversationId)
-            generatedConversationTitles.remove(conversationId)
-        }
-    }
-
-    private fun registerSaveSnapshot(conversationId: String): Long {
-        synchronized(persistenceStateLock) {
-            nextSaveVersion += 1
-            latestSaveVersions[conversationId] = nextSaveVersion
-            return nextSaveVersion
-        }
-    }
-
-    private fun shouldSkipSave(conversationId: String, saveVersion: Long): Boolean {
-        synchronized(persistenceStateLock) {
-            return conversationId in deletedConversationIds ||
-                    latestSaveVersions[conversationId] != saveVersion
-        }
-    }
-
-    private fun clearSaveSnapshot(conversationId: String, saveVersion: Long) {
-        synchronized(persistenceStateLock) {
-            if (latestSaveVersions[conversationId] == saveVersion) {
-                latestSaveVersions.remove(conversationId)
-            }
-        }
+    private fun publishConversationSummaries(summaries: List<ConversationSummary>) {
+        _conversationSummaries.value = if (summaries.any { persistenceState.isDeleted(it.id) }) {
+            summaries.filterNot { persistenceState.isDeleted(it.id) }
+        } else summaries
     }
 
     private fun persistCurrentConversationIdAsync(
@@ -2372,7 +2440,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 persistenceMutex.withLock {
-                    if (stateVersion.get() != expectedStateVersion) {
+                    if (!persistenceState.canApplySwitch(conversationId, expectedStateVersion, stateVersion.get())) {
                         return@withLock
                     }
                     ChatHistoryStore.saveCurrentConversationId(
@@ -2382,6 +2450,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "保存当前对话索引失败", error)
             }.onSuccess {
                 MoteLog.d(
