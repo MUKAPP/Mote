@@ -19,6 +19,11 @@ class StreamingMarkdownRenderer(context: Context) {
         get() = spannedBuilder.standalone
         set(value) { spannedBuilder.standalone = value }
 
+    /** 在主线程准备独立实例，再把完整解析与 span 构建交给后台任务。 */
+    internal fun prepareForBackgroundRendering() {
+        spannedBuilder.prepareStandaloneRendering()
+    }
+
     fun setMarkdown(text: String): Spanned {
         lastText = text
         val blocks = blockParser.parse(text, isStreaming = true)

@@ -122,6 +122,28 @@ class SpannedBuilder(private val context: Context) {
         ).toInt()
     }
 
+    /** 在主线程捕获整篇渲染所需样式；准备后仅由单个后台任务使用此实例。 */
+    internal fun prepareStandaloneRendering() {
+        standalone = true
+        parseInlineMath = false
+        linkColor
+        bodyTextColor
+        secondaryTextColor
+        outlineVariantColor
+        primaryColor
+        highlightBgColor
+        quoteBackgroundColor
+        quoteStripeColor
+        horizontalRuleColor
+        quoteCornerRadiusPx
+        quoteStripeWidthPx
+        quoteContentGapPx
+        codeBlockCornerRadiusPx
+        codeBlockPaddingPx
+        horizontalRuleThicknessPx
+        bulletGapWidth
+    }
+
     fun build(blocks: List<MdBlock>, isStreaming: Boolean = false, linkDefs: Map<String, Pair<String, String>> = emptyMap()): SpannableStringBuilder {
         val ssb = SpannableStringBuilder()
         // standalone（自由复制页）用空行分隔顶层块，贴近 MarkdownView 块间留白
