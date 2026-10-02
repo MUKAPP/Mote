@@ -13,10 +13,9 @@ import java.util.concurrent.atomic.AtomicInteger
 object ShellProcessManager {
     private val processes = ConcurrentHashMap<String, ShellProcess>()
     private const val Component = "ShellProcess"
-    private const val MaxOutputChars = 65536
     private const val MaxProcesses = 20
 
-    // 共享读取线程池：reader 任务阻塞在 readLine 上，进程结束后线程可被后续进程复用，
+    // 共享读取线程池：reader 任务按固定字符块读取，进程结束后线程可被后续进程复用，
     // 避免每个进程各建 2 条一次性裸线程。
     private val readerThreadIndex = AtomicInteger(0)
     private val readerExecutor = Executors.newCachedThreadPool { runnable ->
@@ -28,26 +27,19 @@ object ShellProcessManager {
         val command: String,
         val process: Process,
         val startTimeMs: Long = System.currentTimeMillis(),
-        val outputBuffer: StringBuilder = StringBuilder(),
-        val errorBuffer: StringBuilder = StringBuilder(),
         @Volatile var outputFinished: Boolean = false,
         @Volatile var errorFinished: Boolean = false,
         /** 两条 reader 任务各 countDown 一次；进程退出后等待它读完管道残余再快照。 */
         val streamsDrained: CountDownLatch = CountDownLatch(2)
     ) {
+        internal val outputBuffer = ShellOutputBuffer()
+        internal val errorBuffer = ShellOutputBuffer()
+
         val isComplete: Boolean get() = !process.isAlive && outputFinished && errorFinished
 
-        /** 保留输出的尾部快照，最多 [MaxOutputChars] 字符（缓冲内部允许冗余，见 appendWithTrim）。 */
-        fun snapshotStdout(): String = snapshotTail(outputBuffer)
-        fun snapshotStderr(): String = snapshotTail(errorBuffer)
-
-        private fun snapshotTail(buffer: StringBuilder): String = synchronized(buffer) {
-            if (buffer.length <= MaxOutputChars) {
-                buffer.toString()
-            } else {
-                buffer.substring(buffer.length - MaxOutputChars)
-            }
-        }
+        /** 保留解码后原始输出的尾部快照，最多 65,536 字符。 */
+        fun snapshotStdout(): String = outputBuffer.snapshot()
+        fun snapshotStderr(): String = errorBuffer.snapshot()
     }
 
     fun start(command: String, workDir: String? = null, environment: Map<String, String> = emptyMap()): String {
@@ -225,10 +217,7 @@ object ShellProcessManager {
         readerExecutor.execute {
             try {
                 process.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        appendWithTrim(entry.outputBuffer, line)
-                    }
+                    entry.outputBuffer.readFrom(reader)
                 }
             } catch (error: Exception) {
                 MoteLog.w(Component, MoteLog.event("shell 标准输出读取异常", "id" to id), error)
@@ -242,10 +231,7 @@ object ShellProcessManager {
         readerExecutor.execute {
             try {
                 process.errorStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        appendWithTrim(entry.errorBuffer, line)
-                    }
+                    entry.errorBuffer.readFrom(reader)
                 }
             } catch (error: Exception) {
                 MoteLog.w(Component, MoteLog.event("shell 标准错误读取异常", "id" to id), error)
@@ -257,19 +243,6 @@ object ShellProcessManager {
         }
     }
 
-    /**
-     * 追加一行并按需裁剪。缓冲允许膨胀到 2 倍上限才一次性裁回 [MaxOutputChars]，
-     * 每次裁剪至少移除 MaxOutputChars 字符，均摊每字符 O(1)，避免逐行整段搬移；
-     * 对外快照经 snapshotTail 收口，仍只暴露最后 [MaxOutputChars] 字符。
-     */
-    private fun appendWithTrim(buffer: StringBuilder, line: String?) {
-        synchronized(buffer) {
-            buffer.appendLine(line)
-            if (buffer.length > MaxOutputChars * 2) {
-                buffer.delete(0, buffer.length - MaxOutputChars)
-            }
-        }
-    }
 
     private fun truncateOutput(text: String, maxOutputChars: Int): String {
         if (text.length <= maxOutputChars) {
