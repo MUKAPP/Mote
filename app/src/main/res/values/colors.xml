@@ -3,20 +3,20 @@
     <!-- 主题色 -->
     <color name="mote_primary">#57A2DB</color>
     <color name="mote_on_primary">#FFFFFF</color>
-    <color name="mote_primary_container">#1A57A2DB</color> <!-- Primary 10% -->
+    <color name="mote_primary_container">#2157A2DB</color> <!-- Primary - 0xDE000000 (Alpha 0x21, ~13%) -->
     <color name="mote_on_primary_container">#57A2DB</color>
 
     <!-- 背景与表面 -->
     <color name="mote_background">#FFFFFF</color>
     <color name="mote_surface">#FFFFFF</color>
-    <color name="mote_card">#14000000</color> <!-- Black 8% -->
-    <color name="mote_card_nested">#14000000</color> <!-- Black 8%（叠加在 Card 上约 16%） -->
-    <color name="mote_user_message_card">#2657A2DB</color> <!-- Primary 15% -->
-    <color name="mote_popup_background">#EBEBEB</color> <!-- 不透明弹层/悬浮底色（约等于 Card 叠加在白底上） -->
+    <color name="mote_card">#10000000</color> <!-- Black ~6.3% -->
+    <color name="mote_card_nested">#10000000</color> <!-- Black ~6.3% -->
+    <color name="mote_user_message_card">#2157A2DB</color> <!-- Primary - 0xDE000000 (Alpha 0x21, ~13%) -->
+    <color name="mote_popup_background">@color/mote_background</color> <!-- 长按菜单/悬浮底色跟随底色 -->
 
     <!-- 文字 -->
-    <color name="mote_on_background">#DE000000</color> <!-- Black 87% -->
-    <color name="mote_on_background_secondary">#99000000</color> <!-- Black 60% -->
+    <color name="mote_on_background">#DE000000</color> <!-- Black 87%（在白底上呈现 #212121） -->
+    <color name="mote_on_background_secondary">#BD000000</color> <!-- Black 74%（在白底上呈现 #424242） -->
     <color name="mote_on_background_disabled">#61000000</color> <!-- Black 38% -->
 
     <!-- 分割线与边框 -->
@@ -28,10 +28,10 @@
     <color name="mote_on_error">#FFFFFF</color>
 
     <!-- 输入框背景 -->
-    <color name="mote_input_background">#14000000</color> <!-- Black 8% -->
+    <color name="mote_input_background">#10000000</color> <!-- Black ~6.3% -->
 
     <!-- 按钮透明主题色背景 -->
-    <color name="mote_primary_alpha_15">#2657A2DB</color> <!-- Primary 15% -->
+    <color name="mote_primary_alpha_15">#2157A2DB</color> <!-- Primary - 0xDE000000 (Alpha 0x21, ~13%) -->
 
     <!-- Markdown 代码高亮 -->
     <color name="markdown_code_block_background">#0D000000</color> <!-- Black 5%（叠加在卡片上） -->

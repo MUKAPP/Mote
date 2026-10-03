@@ -3,20 +3,20 @@
     <!-- 主题色 -->
     <color name="mote_primary">#88A8E8</color>
     <color name="mote_on_primary">#0D0E0F</color>
-    <color name="mote_primary_container">#1A88A8E8</color> <!-- Primary 10% -->
+    <color name="mote_primary_container">#2188A8E8</color> <!-- Primary - 0xDE000000 (Alpha 0x21, ~13%) -->
     <color name="mote_on_primary_container">#88A8E8</color>
 
     <!-- 背景与表面 -->
     <color name="mote_background">#0D0E0F</color>
     <color name="mote_surface">#0D0E0F</color>
-    <color name="mote_card">#14FFFFFF</color> <!-- White 8% -->
-    <color name="mote_card_nested">#14FFFFFF</color> <!-- White 8%（叠加在 Card 上约 16%） -->
-    <color name="mote_user_message_card">#2688A8E8</color> <!-- Primary 15% -->
-    <color name="mote_popup_background">#202122</color> <!-- 不透明弹层/悬浮底色（约等于 Card 叠加在深底上） -->
+    <color name="mote_card">#10FFFFFF</color> <!-- White ~6.3% -->
+    <color name="mote_card_nested">#10FFFFFF</color> <!-- White ~6.3% -->
+    <color name="mote_user_message_card">#2188A8E8</color> <!-- Primary - 0xDE000000 (Alpha 0x21, ~13%) -->
+    <color name="mote_popup_background">@color/mote_background</color> <!-- 长按菜单/悬浮底色跟随底色 -->
 
     <!-- 文字 -->
-    <color name="mote_on_background">#DEFFFFFF</color> <!-- White 87% -->
-    <color name="mote_on_background_secondary">#99FFFFFF</color> <!-- White 60% -->
+    <color name="mote_on_background">#DEFFFFFF</color> <!-- White 87%（在深底 #0D0E0F 上呈现 #E0E0E0） -->
+    <color name="mote_on_background_secondary">#99FFFFFF</color> <!-- White 60%（在深底 #0D0E0F 上呈现 #9E9E9E） -->
     <color name="mote_on_background_disabled">#61FFFFFF</color> <!-- White 38% -->
 
     <!-- 分割线与边框 -->
@@ -28,10 +28,10 @@
     <color name="mote_on_error">#0D0E0F</color>
 
     <!-- 输入框背景 -->
-    <color name="mote_input_background">#14FFFFFF</color> <!-- White 8% -->
+    <color name="mote_input_background">#10FFFFFF</color> <!-- White ~6.3% -->
 
     <!-- 按钮透明主题色背景 -->
-    <color name="mote_primary_alpha_15">#2688A8E8</color> <!-- Primary 15% -->
+    <color name="mote_primary_alpha_15">#2188A8E8</color> <!-- Primary - 0xDE000000 (Alpha 0x21, ~13%) -->
 
     <!-- Markdown 代码高亮 -->
     <color name="markdown_code_block_background">#0DFFFFFF</color> <!-- White 5%（叠加在卡片上） -->

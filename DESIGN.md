@@ -20,15 +20,16 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | Primary | `#57A2DB` | 主题色 |
 | On Primary | `#FFFFFF` | 主题色上的前景色 |
 | Background | `#FFFFFF` | 页面底色 |
-| Card | `#14000000` | 一级卡片背景（Black 8%） |
-| Card Nested | `#14000000` | 二级嵌套容器（Black 8%，叠加在 Card 上约 16%） |
-| Input Background | `#1F000000` | 输入框背景（Black 12%） |
-| User Message Card | `#2657A2DB` | 用户消息卡片（Primary 15%） |
-| Primary Container | `#1A57A2DB` | Primary 10%，用于选中态等 |
-| Primary Alpha 15% | `#2657A2DB` | 按钮/Chip 选中态背景 |
-| On Background | `#DE000000` | 主要文字（Black 87%） |
-| On Background Secondary | `#99000000` | 次要文字（Black 60%） |
+| Card | `#10000000` | 一级卡片背景（Black ~6.3%） |
+| Card Nested | `#10000000` | 二级嵌套容器（Black ~6.3%） |
+| Input Background | `#10000000` | 输入框背景（Black ~6.3%） |
+| User Message Card | `#2157A2DB` | 用户消息卡片（Primary - 0xDE000000，约 13%） |
+| Primary Container | `#2157A2DB` | Primary - 0xDE000000，用于选中态等 |
+| Primary Alpha (按钮/Chip) | `#2157A2DB` | 按钮/Chip 选中态背景 |
+| On Background | `#DE000000` | 主要文字（Black 87%，叠加白底呈现 `#212121`） |
+| On Background Secondary | `#BD000000` | 次要文字（Black 74%，叠加白底呈现 `#424242`） |
 | On Background Disabled | `#61000000` | 禁用态文字（Black 38%） |
+| Popup Background | `@color/mote_background` | 长按菜单/悬浮底色跟随底色（`#FFFFFF`） |
 | Divider | `#1F000000` | 分割线（Black 12%） |
 | Error | `#D32F2F` | 错误提示 |
 
@@ -39,15 +40,16 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | Primary | `#88A8E8` | 主题色 |
 | On Primary | `#0D0E0F` | 主题色上的前景色 |
 | Background | `#0D0E0F` | 页面底色 |
-| Card | `#14FFFFFF` | 一级卡片背景（White 8%） |
-| Card Nested | `#14FFFFFF` | 二级嵌套容器（White 8%，叠加在 Card 上约 16%） |
-| Input Background | `#1FFFFFFF` | 输入框背景（White 12%） |
-| User Message Card | `#2688A8E8` | 用户消息卡片（Primary 15%） |
-| Primary Container | `#1A88A8E8` | Primary 10% |
-| Primary Alpha 15% | `#2688A8E8` | 按钮/Chip 选中态背景 |
-| On Background | `#DEFFFFFF` | 主要文字（White 87%） |
-| On Background Secondary | `#99FFFFFF` | 次要文字（White 60%） |
+| Card | `#10FFFFFF` | 一级卡片背景（White ~6.3%） |
+| Card Nested | `#10FFFFFF` | 二级嵌套容器（White ~6.3%） |
+| Input Background | `#10FFFFFF` | 输入框背景（White ~6.3%） |
+| User Message Card | `#2188A8E8` | 用户消息卡片（Primary - 0xDE000000，约 13%） |
+| Primary Container | `#2188A8E8` | Primary - 0xDE000000 |
+| Primary Alpha (按钮/Chip) | `#2188A8E8` | 按钮/Chip 选中态背景 |
+| On Background | `#DEFFFFFF` | 主要文字（White 87%，叠加底色呈现 `#E0E0E0`） |
+| On Background Secondary | `#99FFFFFF` | 次要文字（White 60%，叠加底色呈现 `#9E9E9E`） |
 | On Background Disabled | `#61FFFFFF` | 禁用态文字（White 38%） |
+| Popup Background | `@color/mote_background` | 长按菜单/悬浮底色跟随底色（`#0D0E0F`） |
 | Divider | `#1FFFFFFF` | 分割线（White 12%） |
 | Error | `#EF5350` | 错误提示 |
 
@@ -55,10 +57,10 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 ```
 背景 (Background)                    不透明底色
-├── 卡片层 (Card)                    +8% Black/White
-│   └── 嵌套容器 (Card Nested)       再 +8%（累计约 16%）
-├── 输入框 (Input Background)         +12% Black/White
-└── 用户消息 (User Message Card)      +15% Primary
+├── 卡片层 (Card)                    +6.3% Black/White (#10000000 / #10FFFFFF)
+│   └── 嵌套容器 (Card Nested)       再 +6.3%
+├── 输入框 (Input Background)         +6.3% Black/White
+└── 用户消息 (User Message Card)      Primary - 0xDE000000（约 13%）
 ```
 
 层级通过透明度自然叠加，不超过两层，避免颜色浑浊。
@@ -123,7 +125,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 ### 设置页输入框 (TextInputLayout)
 
 - 样式：Filled，无底部线（`boxStrokeWidth=0dp`）
-- 背景色：`mote_input_background`（Black/White 8%）
+- 背景色：`mote_input_background`（Black/White ~6.3%）
 - 四角统一圆角 12dp
 - 浮动标签 + placeholderText（不在 EditText 上重复设置 hint）
 
@@ -131,8 +133,8 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 | 角色 | 背景 | 特征 |
 |------|------|------|
-| 用户消息 | User Message Card 色（Primary 10%） | 文本 + 附件摘要；长按卡片弹出操作菜单；长消息在气泡右下角显示展开/收起圆形按钮 |
-| AI 消息 | Card 色（Black/White 5%） | "AI" 标签（Primary 色）+ Markdown 渲染；长按卡片弹出操作菜单；请求失败时在正文下方显示错误条 |
+| 用户消息 | User Message Card 色（Primary - 0xDE000000，约 13%） | 文本 + 附件摘要；长按卡片弹出操作菜单；长消息在气泡右下角显示展开/收起圆形按钮 |
+| AI 消息 | Card 色（Black/White ~6.3%） | "AI" 标签（Primary 色）+ Markdown 渲染；长按卡片弹出操作菜单；请求失败时在正文下方显示错误条 |
 | 工具结果 | Card Nested 色 | 可折叠，12dp 圆角，等宽字体显示参数和结果；超长内容截断并提供"查看全部" |
 
 工具卡片使用轻量纵向容器和 12dp 圆角背景，背景颜色按主题解析并逐卡独立更新，不绘制边框或阴影；header 保留原有按压反馈。折叠时不创建详情子树，首次展开后复用详情控件，保持原有字体、内边距和展开/折叠动效。跨消息复用同类工具片段视图时，展开状态按当前片段 ID 恢复，点击与“查看全部”始终使用当前工具内容；复用前结束旧身份的布局过渡，避免旧动画回写新卡片。
@@ -166,7 +168,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 | 类型 | 用途 | 样式 |
 |------|------|------|
 | Filled | 主要操作（发送、确认） | Primary 背景 + On Primary 前景，圆角 20dp |
-| Tonal | 次要强调（新对话、权限设置） | Primary 15% alpha 背景 + Primary 前景 |
+| Tonal | 次要强调（新对话、权限设置） | 透明主题色（Primary - 0xDE000000）背景 + Primary 前景 |
 | Text | 低优先级操作（设置、取消） | 无背景 + Primary 前景 |
 | Icon | 输入栏图标操作（附件、发送） | 无背景 + On Background Secondary 前景 |
 
@@ -180,7 +182,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 ### Chip（思考强度选择等）
 
-- 选中态：Primary 15% alpha 背景 + Primary 文字
+- 选中态：透明主题色（Primary - 0xDE000000）背景 + Primary 文字
 - 未选中态：Card Nested 色背景 + On Background Secondary 文字
 - 无边框，胶囊圆角（18dp），不显示 checked icon
 - `chipSurfaceColor=transparent` 禁用内部 overlay，确保颜色与按钮一致
@@ -206,7 +208,7 @@ MD2 + MD3 混合风格，整体以 Material Design 2 为主基调，选择性保
 
 - 长按消息卡片触发，在手指按下位置弹出（按落点处于左/右半区向左或向右展开），长消息不吸附到卡片底部
 - 仅在长按落点未被上层交互元素（链接、代码复制按钮、工具/思考块、可选文本等）消费时才弹出
-- 圆角 16dp，上下内边距 10dp（配合大圆角），不透明悬浮底色（`mote_popup_background`，约等于 Card 叠加在背景上的不透明等价色），低投影（3dp）
+- 圆角 16dp，上下内边距 10dp（配合大圆角），悬浮底色（`mote_popup_background`，跟随页面底色），低投影（3dp）
 - 菜单项带图标（次要文字色着色，`setForceShowIcon`）：复制 / 编辑 / 删除；AI 消息附加自由复制，AI 末条及其对应用户消息附加重试
 - 重试不弹二次确认（仅重新生成最后一条 AI 回复）；编辑与删除仍需确认
 - 侧栏对话项长按弹出：重命名 / 删除
