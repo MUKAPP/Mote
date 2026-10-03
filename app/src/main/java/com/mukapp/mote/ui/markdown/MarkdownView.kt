@@ -206,6 +206,7 @@ class MarkdownView @JvmOverloads constructor(
     /** tool 卡片按 slot 复用；当前身份、展开集合及首次展开创建的详情均保存在 holder 中。 */
     private class ToolPartViewHolder(
         val binding: ItemToolResultBinding,
+        val background: GradientDrawable,
         var partId: String,
         var expandedToolPartIds: MutableSet<String>,
         var detailBinding: ItemToolResultDetailBinding?,
@@ -886,6 +887,23 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
+    private fun animateToolBackground(holder: ToolPartViewHolder, targetColor: Int): ValueAnimator? {
+        holder.backgroundAnimator?.cancel()
+        val startColor = holder.background.color?.defaultColor ?: Color.TRANSPARENT
+        if (startColor == targetColor) {
+            holder.background.setColor(targetColor)
+            return null
+        }
+        return ValueAnimator.ofObject(ArgbEvaluator(), startColor, targetColor).apply {
+            duration = 200L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                holder.background.setColor(animator.animatedValue as Int)
+            }
+            start()
+        }
+    }
+
     private class ChangePadding : Transition() {
         private companion object {
             const val PaddingLeft = "mote:changePadding:left"
@@ -1173,7 +1191,10 @@ class MarkdownView @JvmOverloads constructor(
         binding.root.layoutParams = createBlockLayoutParams(
             bottomMargin = if (expanded) expandedIntermediateBottomMargin else collapsedBottomMargin
         )
-        binding.root.setCardBackgroundColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
+        val background = (binding.root.background as GradientDrawable).apply {
+            mutate()
+            setColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
+        }
         applyIntermediatePartLayout(binding.root, binding.layoutHeader, expanded, collapsedBottomMargin)
 
         binding.imageToolIcon.setImageResource(toolIconRes(toolPart.toolName))
@@ -1181,6 +1202,7 @@ class MarkdownView @JvmOverloads constructor(
 
         val holder = ToolPartViewHolder(
             binding = binding,
+            background = background,
             partId = toolPart.id,
             expandedToolPartIds = expandedToolPartIds,
             detailBinding = null,
@@ -1219,10 +1241,9 @@ class MarkdownView @JvmOverloads constructor(
             binding.btnToggleDetail.setImageResource(
                 if (nextExpanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
-            holder.backgroundAnimator = animateCardBackground(
-                card = binding.root,
-                targetColor = if (nextExpanded) toolCardBgColor else Color.TRANSPARENT,
-                runningAnimator = holder.backgroundAnimator
+            holder.backgroundAnimator = animateToolBackground(
+                holder,
+                if (nextExpanded) toolCardBgColor else Color.TRANSPARENT
             )
             holder.renderedExpanded = nextExpanded
         }
@@ -1320,7 +1341,7 @@ class MarkdownView @JvmOverloads constructor(
             binding.btnToggleDetail.setImageResource(
                 if (expanded) R.drawable.ic_expand_more else R.drawable.ic_chevron_right
             )
-            binding.root.setCardBackgroundColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
+            holder.background.setColor(if (expanded) toolCardBgColor else Color.TRANSPARENT)
             holder.renderedExpanded = expanded
         }
         return true

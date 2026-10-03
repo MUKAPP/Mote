@@ -1,63 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    style="@style/Widget.Material3.CardView.Filled"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginTop="0dp"
-    app:cardBackgroundColor="@android:color/transparent"
-    app:cardCornerRadius="12dp"
-    app:cardElevation="0dp"
-    app:strokeWidth="0dp">
+    android:background="@drawable/bg_tool_card"
+    android:clipToOutline="true"
+    android:orientation="vertical">
 
     <LinearLayout
+        android:id="@+id/layout_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="0dp"
+        android:paddingVertical="8dp">
 
-        <LinearLayout
-            android:id="@+id/layout_header"
-            android:layout_width="match_parent"
+        <ImageView
+            android:id="@+id/image_tool_icon"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_marginEnd="8dp"
+            android:contentDescription="@null"
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_build" />
+
+        <TextView
+            android:id="@+id/text_summary"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:background="?android:attr/selectableItemBackground"
-            android:clickable="true"
-            android:focusable="true"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="0dp"
-            android:paddingVertical="8dp">
+            android:layout_weight="1"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:textSize="12sp"
+            android:textStyle="bold" />
 
-            <ImageView
-                android:id="@+id/image_tool_icon"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginEnd="8dp"
-                android:contentDescription="@null"
-                android:importantForAccessibility="no"
-                android:src="@drawable/ic_build" />
-
-            <TextView
-                android:id="@+id/text_summary"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:textColor="?attr/colorOnSurfaceVariant"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/btn_toggle_detail"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:importantForAccessibility="no"
-                android:src="@drawable/ic_chevron_right" />
-        </LinearLayout>
-
-        <ViewStub
-            android:id="@+id/stub_tool_detail"
-            android:layout_width="match_parent"
+        <ImageView
+            android:id="@+id/btn_toggle_detail"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout="@layout/item_tool_result_detail" />
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_chevron_right" />
     </LinearLayout>
 
-</com.google.android.material.card.MaterialCardView>
+    <ViewStub
+        android:id="@+id/stub_tool_detail"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout="@layout/item_tool_result_detail" />
+</LinearLayout>
