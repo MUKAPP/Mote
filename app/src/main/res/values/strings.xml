@@ -128,9 +128,9 @@
     <string name="settings_role_chat_hint">首页对话默认使用的模型与推理强度，可在对话页临时切换。</string>
     <string name="settings_role_title_hint">用于自动生成历史对话标题；未选择时使用首条消息作为标题，可单独设置推理强度。</string>
     <string name="settings_role_compression_hint">上下文过长时总结旧消息；未选择时回退到对话模型，可单独设置推理强度。</string>
-    <string name="settings_label_compression_trigger_percent">压缩触发百分比</string>
+    <string name="settings_label_compression_trigger_percent">压缩接管百分比</string>
     <string name="hint_compression_trigger_percent">80</string>
-    <string name="settings_compression_trigger_percent_hint">当历史上下文估算达到对话模型上下文长度的该百分比后自动压缩旧消息；对话模型未填上下文长度时不会自动压缩。填 0 关闭压缩。</string>
+    <string name="settings_compression_trigger_percent_hint">达到该百分比后，在下一次请求时用摘要接管较早的对话，并保留最近的完整对话。后台压缩提前 10 个百分点开始，最低从 1% 开始；摘要未完成时可继续对话，超过模型上下文长度时才等待。对话模型未填上下文长度时不会自动压缩。填 0 关闭压缩。</string>
     <string name="settings_compression_percent_invalid">请输入 0 到 100 之间的整数。</string>
 
     <!-- 提供商编辑页 -->

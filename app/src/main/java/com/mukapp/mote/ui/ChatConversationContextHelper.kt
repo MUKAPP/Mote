@@ -1,5 +1,6 @@
 package com.mukapp.mote.ui
 
+import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantToolPart
 import com.mukapp.mote.data.model.ChatAttachmentType
@@ -7,6 +8,7 @@ import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
 import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.TokenUsage
+import com.mukapp.mote.data.model.resolvedChatModel
 import org.json.JSONObject
 
 internal object ChatConversationContextHelper {
@@ -17,12 +19,33 @@ internal object ChatConversationContextHelper {
         val sourceLabel: String
     )
 
+    data class ContextCompressionThresholds(
+        val startTokens: Int,
+        val applyTokens: Int,
+        val hardLimit: Int
+    )
+
+    data class ContextCompressionPlan(
+        val messagesToCompress: List<ChatMessage>,
+        val recentMessages: List<ChatMessage>,
+        val tokenCount: ContextTokenCount,
+        val maxSummaryTokens: Int,
+        val sourceMessageIds: List<String>
+    )
+
     data class ContextTokenUsageAnchor(
         val messages: List<ChatMessage>,
         val inputTokens: Int
     )
 
     private const val MaxCopiedMetadataStringChars = 2_000
+    private const val DefaultRecentContextBudget = 16_000
+    private const val MinRecentContextBudget = 1_024
+    private const val MaxRecentContextBudget = 32_000
+    private const val MinSummaryTokenBudget = 512
+    private const val MaxSummaryTokenBudget = 8_192
+    private const val RecentContextBudgetRatio = 0.35f
+    private const val SummaryBudgetRatio = 0.12f
     private val LargePayloadKeys = setOf(
         "content",
         "stdout",
@@ -35,6 +58,90 @@ internal object ChatConversationContextHelper {
         "head",
         "tail"
     )
+
+    fun calculateContextCompressionThresholds(settings: ApiSettings): ContextCompressionThresholds? {
+        val contextLength = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 } ?: return null
+        val percent = settings.compressionTriggerPercent
+        if (percent == 0) {
+            return null
+        }
+        return ContextCompressionThresholds(
+            startTokens = (contextLength.toLong() * (percent - 10).coerceAtLeast(1) / 100L)
+                .toInt().coerceAtLeast(1),
+            applyTokens = (contextLength.toLong() * percent / 100L).toInt().coerceAtLeast(1),
+            hardLimit = contextLength
+        )
+    }
+
+    fun buildContextCompressionPlan(
+        settings: ApiSettings,
+        messages: List<ChatMessage>,
+        tokenCount: ContextTokenCount,
+        triggerTokens: Int
+    ): ContextCompressionPlan? {
+        if (messages.size < 2) {
+            return null
+        }
+        if (tokenCount.tokens < triggerTokens) {
+            return null
+        }
+
+        val userIndices = messages.indices.filter { index -> messages[index].role == ChatRole.User }
+        if (userIndices.size < 2) {
+            return null
+        }
+
+        val recentBudget = calculateRecentContextBudget(settings)
+        var splitIndex = userIndices.last()
+        // 从尾部单遍累积估算，避免对每个候选重复扫描整个尾部
+        var tailTokens = 0
+        var prevBoundary = messages.size
+        for (candidate in userIndices.asReversed()) {
+            tailTokens += estimateConversationTokens(messages.subList(candidate, prevBoundary))
+            prevBoundary = candidate
+            if (tailTokens <= recentBudget) {
+                splitIndex = candidate
+            } else {
+                break
+            }
+        }
+        if (splitIndex <= 0) {
+            splitIndex = userIndices.getOrNull(1) ?: return null
+        }
+
+        val messagesToCompress = messages.take(splitIndex)
+        val recentMessages = messages.drop(splitIndex)
+        if (messagesToCompress.isEmpty() || recentMessages.none { it.role == ChatRole.User }) {
+            return null
+        }
+        if (messagesToCompress.all { it.isContextSummary }) {
+            return null
+        }
+
+        return ContextCompressionPlan(
+            messagesToCompress = messagesToCompress,
+            recentMessages = recentMessages,
+            tokenCount = tokenCount,
+            maxSummaryTokens = calculateSummaryTokenBudget(settings),
+            sourceMessageIds = messagesToCompress.map { message -> message.id }
+        )
+    }
+
+    private fun calculateRecentContextBudget(settings: ApiSettings): Int {
+        val referenceLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
+            ?: DefaultRecentContextBudget
+        return (referenceLimit * RecentContextBudgetRatio)
+            .toInt()
+            .coerceIn(MinRecentContextBudget, MaxRecentContextBudget)
+    }
+
+    private fun calculateSummaryTokenBudget(settings: ApiSettings): Int {
+        val referenceLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
+            ?: DefaultRecentContextBudget
+        return (referenceLimit * SummaryBudgetRatio)
+            .toInt()
+            .coerceIn(MinSummaryTokenBudget, MaxSummaryTokenBudget)
+    }
 
     fun filterConversationMessages(messages: List<ChatMessage>): List<ChatMessage> {
         return messages.filter { message ->

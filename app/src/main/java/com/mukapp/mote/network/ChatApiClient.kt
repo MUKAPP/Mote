@@ -31,6 +31,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 object ChatApiClient {
@@ -231,15 +232,15 @@ object ChatApiClient {
             ).toString()
 
             val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = false)
-            val response = executeRequest(request)
+            val response = executeCompressionRequest(request)
 
-            val statusCode = response.code
-            val responseText = response.body?.string() ?: ""
+            val statusCode = response.statusCode
+            val responseText = response.responseText
             MoteLog.i(
                 Component,
                 MoteLog.event("上下文压缩接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
             )
-            if (!response.isSuccessful) {
+            if (statusCode !in 200..299) {
                 MoteLog.w(Component, MoteLog.event("上下文压缩接口返回失败状态", "status" to statusCode))
                 val errorMessage = parseErrorMessage(responseText)
                 throw IllegalStateException(errorMessage.ifBlank { "上下文压缩失败，HTTP $statusCode" })
@@ -613,6 +614,40 @@ object ChatApiClient {
                 }
             }
             .build()
+    }
+
+    private data class CompressionHttpResponse(
+        val statusCode: Int,
+        val responseText: String
+    )
+
+    private suspend fun executeCompressionRequest(request: Request): CompressionHttpResponse {
+        return suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation {
+                call.cancel()
+            }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val bufferedResponse = try {
+                        response.use {
+                            CompressionHttpResponse(
+                                statusCode = it.code,
+                                responseText = it.body?.string().orEmpty()
+                            )
+                        }
+                    } catch (error: Throwable) {
+                        continuation.resumeWithException(error)
+                        return
+                    }
+                    continuation.resume(bufferedResponse)
+                }
+            })
+        }
     }
 
     private suspend fun executeRequest(

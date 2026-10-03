@@ -37,10 +37,15 @@ import com.mukapp.mote.tools.ShellProcessManager
 import com.mukapp.mote.util.MoteLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
@@ -98,19 +103,6 @@ private data class StreamChatAttemptResult(
     val response: ChatCompletionResult,
     val accumulatedReply: String,
     val accumulatedThinking: String
-)
-
-private data class ContextCompressionPlan(
-    val messagesToCompress: List<ChatMessage>,
-    val recentMessages: List<ChatMessage>,
-    val tokenCount: ChatConversationContextHelper.ContextTokenCount,
-    val maxSummaryTokens: Int,
-    val sourceMessageIds: List<String>
-)
-
-private data class ContextCompressionResult(
-    val requestMessages: List<ChatMessage>,
-    val compressed: Boolean
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -187,6 +179,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var streamingPublishEnabled = false
     private var contextTokenUsageAnchor: ChatConversationContextHelper.ContextTokenUsageAnchor? = null
 
+    // 后台压缩只在主线程编排；完成的摘要留在 Deferred 中，发送边界接管前不修改历史。
+    private var softCompactEpoch = 0L
+    private var softCompactTask: SoftCompactTask? = null
+    private var softCompactCheckJob: Job? = null
+    private var failedCompressionSourceIds: List<String>? = null
+
     // 冷启动历史加载状态：加载完成前 sendMessage 会被挂起，完成后自动重放。均只在主线程访问。
     private var historyLoaded = false
     private var pendingSendAfterHistoryLoad = false
@@ -217,9 +215,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reloadSettings() {
-        val previousModel = _savedSettings.value?.resolvedChatModel()
+        val previousSettings = _savedSettings.value
+        val previousModel = previousSettings?.resolvedChatModel()
         val loadedSettings = ApiSettingsStore.load(appContext)
         val loadedModel = loadedSettings.resolvedChatModel()
+        if (previousSettings?.let { compressionProfile(it) } != compressionProfile(loadedSettings)) {
+            invalidateSoftCompact()
+        }
         _savedSettings.value = loadedSettings
         if (previousModel != loadedModel) {
             clearTemporaryReasoningEffort()
@@ -229,6 +231,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveSettings(settings: ApiSettings) {
         ApiSettingsStore.save(appContext, settings)
+        if (_savedSettings.value?.let { compressionProfile(it) } != compressionProfile(settings)) {
+            invalidateSoftCompact()
+        }
         _savedSettings.value = settings
         MoteLog.i(
             logComponent,
@@ -255,6 +260,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         val updated = current.copy(chatModel = ref)
         ApiSettingsStore.save(appContext, updated)
+        if (compressionProfile(current) != compressionProfile(updated)) {
+            invalidateSoftCompact()
+        }
         _savedSettings.value = updated
         clearTemporaryReasoningEffort()
         MoteLog.i(
@@ -295,6 +303,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 清空当前内存对话并切到一个全新的空对话。调用方须先完成确认清理并 markStateChanged。 */
     private fun resetToNewConversation(requestVersion: Long): String {
+        invalidateSoftCompact()
         uiMessagesInternal.clear()
         conversationMessagesInternal.clear()
         contextSummariesInternal.clear()
@@ -323,6 +332,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             !persistenceState.canApplySwitch(conversationId, currentVersion, currentVersion)
         ) return
 
+        invalidateSoftCompact()
         clearPendingToolConfirmation(discardToken = true)
         clearTemporaryReasoningEffort()
         val requestVersion = markStateChanged()
@@ -370,6 +380,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (!persistenceState.beginDelete(conversationId)) return
+        invalidateSoftCompact()
         val summariesSnapshot = _conversationSummaries.value.orEmpty().toList()
         val requestVersion = markStateChanged()
         MoteLog.i(
@@ -952,6 +963,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             activeSendJob = null
             stopGenerationRequested = false
             _isSending.value = false
+            _savedSettings.value?.let { scheduleSoftCompact(it) }
             MoteLog.d(logComponent, "发送任务状态已清理。")
         }
     }
@@ -985,6 +997,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        softCompactCheckJob = null
+        softCompactTask = null
+        failedCompressionSourceIds = null
         streamingPublishEnabled = false
         cancelPendingStreamingPublish()
         // 令牌与后台进程都挂在进程级单例上，不会随 ViewModel 一起回收，必须显式清理。
@@ -1181,6 +1196,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun applyConversationState(historyState: SavedConversationState) {
+        invalidateSoftCompact()
         uiMessagesInternal.clear()
         uiMessagesInternal.addAll(historyState.uiMessages)
         conversationMessagesInternal.clear()
@@ -1975,6 +1991,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun rebuildConversationAfterUiMutation(affectedMessageIds: Set<String>) {
+        invalidateSoftCompact()
         val currentConversation = conversationMessagesInternal.toList()
         val affectedConversationIds = ChatConversationContextHelper.collectConversationTurnMessageIds(
             conversationMessages = currentConversation,
@@ -2012,29 +2029,216 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         settings: ApiSettings,
         rawMessages: List<ChatMessage> = conversationMessagesInternal
     ): List<ChatMessage> {
-        val result = compressConversationForContext(
-            settings = settings,
-            rawMessages = rawMessages
-        )
-        return result.requestMessages
+        softCompactCheckJob?.cancel()
+        softCompactCheckJob = null
+        var prepared = prepareCompressionContext(settings, rawMessages)
+        if (prepared.thresholds == null) {
+            throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
+            return prepared.requestMessages
+        }
+
+        softCompactTask?.let { task ->
+            if (!isSoftCompactTaskUsable(task, settings, prepared.requestMessages)) {
+                discardSoftCompactTask(task)
+                prepared = prepareCompressionContext(settings, rawMessages)
+            }
+        }
+
+        // 最多消费两份结果：旧前缀失败且已超硬限时，只允许再尝试一次推进后的前缀。
+        for (attempt in 0..1) {
+            val thresholds = prepared.thresholds
+            if (thresholds == null) {
+                throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
+                return prepared.requestMessages
+            }
+            val task = softCompactTask ?: prepared.plan
+                ?.takeIf { prepared.tokenCount.tokens >= thresholds.startTokens }
+                ?.let { startSoftCompact(settings, it) }
+            if (prepared.tokenCount.tokens < thresholds.applyTokens || task == null) {
+                // 配置已经变化时，startSoftCompact 不会用本轮旧配置启动新任务。
+                throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
+                return prepared.requestMessages
+            }
+            if (!task.result.isCompleted && prepared.tokenCount.tokens <= thresholds.hardLimit) {
+                return prepared.requestMessages
+            }
+
+            val summary = try {
+                // 已完成结果可立即消费；唯一会等待运行中 HTTP 的情形是原请求超过硬限。
+                task.result.await()
+            } catch (error: CancellationException) {
+                // 前台停止必须沿用停止收尾；仅后台被设置/epoch 变更取消则重新检查请求。
+                currentCoroutineContext().ensureActive()
+                discardSoftCompactTask(task)
+                prepared = prepareCompressionContext(settings, rawMessages)
+                continue
+            }
+
+            // 等待期间的普通追加都从当前 raw 重建，不能拼接启动快照的 recentMessages。
+            prepared = prepareCompressionContext(settings, rawMessages)
+            if (!isSoftCompactTaskUsable(task, settings, prepared.requestMessages)) {
+                discardSoftCompactTask(task)
+                continue
+            }
+            val currentThresholds = prepared.thresholds
+            if (currentThresholds == null || prepared.tokenCount.tokens < currentThresholds.applyTokens) {
+                throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
+                return prepared.requestMessages
+            }
+
+            if (summary != null) {
+                val normalizedSnapshot = prepared.normalizedMessages
+                val summariesSnapshot = contextSummariesInternal.toList()
+                val (candidateMessages, candidateTokenCount) = withContext(Dispatchers.Default) {
+                    val messages = buildLimitedRequestContextMessages(
+                        normalizedSnapshot,
+                        summariesSnapshot + summary
+                    )
+                    messages to ChatConversationContextHelper.resolveConversationTokenCount(
+                        messages = messages,
+                        usageAnchor = null
+                    )
+                }
+                if (!isSoftCompactTaskUsable(task, settings, prepared.requestMessages)) {
+                    discardSoftCompactTask(task)
+                    prepared = prepareCompressionContext(settings, rawMessages)
+                    continue
+                }
+                if (!ChatConversationContextHelper.isOverModelContextLength(
+                        modelContextLength = currentThresholds.hardLimit,
+                        contextTokens = candidateTokenCount.tokens
+                    )
+                ) {
+                    throwIfContextExceedsHardLimitWithoutCompression(settings, candidateTokenCount)
+                    appendContextSummary(summary)
+                    pendingCompressionNoticeSummaryIds += summary.id
+                    clearContextTokenUsageAnchor()
+                    softCompactTask = null
+                    failedCompressionSourceIds = null
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "已压缩聊天上下文",
+                            "source" to task.plan.tokenCount.sourceLabel,
+                            "tokens" to task.plan.tokenCount.tokens,
+                            "compressedMessages" to task.plan.messagesToCompress.size,
+                            "recentMessages" to task.plan.recentMessages.size,
+                            "contextSummaries" to contextSummariesInternal.size
+                        )
+                    )
+                    return candidateMessages
+                }
+            }
+
+            // null 和仍超限的候选均不安装；记住固定前缀，避免工具循环反复请求。
+            discardSoftCompactTask(task)
+            failedCompressionSourceIds = task.plan.sourceMessageIds
+            if (prepared.tokenCount.tokens <= currentThresholds.hardLimit) {
+                if (summary == null) {
+                    MoteLog.w(
+                        logComponent,
+                        MoteLog.event(
+                            "上下文压缩失败，继续使用原始上下文",
+                            "tokens" to prepared.tokenCount.tokens,
+                            "hardLimit" to currentThresholds.hardLimit
+                        )
+                    )
+                    _userNotice.value = "上下文压缩失败，已临时使用原始上下文继续发送。"
+                }
+                return prepared.requestMessages
+            }
+
+            val updatedPlan = prepared.plan
+            if (attempt == 0 && updatedPlan != null &&
+                updatedPlan.sourceMessageIds != task.plan.sourceMessageIds
+            ) {
+                continue
+            }
+            if (summary == null && updatedPlan != null) {
+                throw IllegalStateException("上下文压缩失败，且当前上下文长度已超过模型上下文长度，请调大压缩模型配置或删除部分历史消息后重试。")
+            }
+            // 没有安全切点，或摘要仍不能容纳完整最近轮次，复用现有工具顺序错误。
+            throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
+            return prepared.requestMessages
+        }
+
+        // 连续失效只能重新按当前快照检查，不能无限启动/等待后台任务。
+        throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
+        return prepared.requestMessages
     }
+
+    private fun isSoftCompactTaskUsable(
+        task: SoftCompactTask,
+        settings: ApiSettings,
+        requestMessages: List<ChatMessage>
+    ): Boolean {
+        return softCompactTask === task &&
+            task.conversationId == _currentConversationId.value &&
+            task.epoch == softCompactEpoch &&
+            task.profile == compressionProfile(settings) &&
+            task.profile == _savedSettings.value?.let { compressionProfile(it) } &&
+            !persistenceState.isBlocked(task.conversationId) &&
+            ChatConversationContextHelper.hasMessagePrefix(requestMessages, task.plan.messagesToCompress)
+    }
+
+    private fun discardSoftCompactTask(task: SoftCompactTask) {
+        task.result.cancel()
+        if (softCompactTask === task) {
+            softCompactTask = null
+        }
+    }
+
+    private data class SoftCompactProfile(
+        val chatModel: ResolvedModel,
+        val compressionModel: ResolvedModel,
+        val triggerPercent: Int
+    )
+
+    private data class SoftCompactTask(
+        val conversationId: String,
+        val epoch: Long,
+        val profile: SoftCompactProfile,
+        val plan: ChatConversationContextHelper.ContextCompressionPlan,
+        val result: Deferred<ContextSummary?>
+    )
 
     private data class PreparedCompressionContext(
         val normalizedMessages: List<ChatMessage>,
         val requestMessages: List<ChatMessage>,
         val tokenCount: ChatConversationContextHelper.ContextTokenCount,
-        val plan: ContextCompressionPlan?
+        val thresholds: ChatConversationContextHelper.ContextCompressionThresholds?,
+        val plan: ChatConversationContextHelper.ContextCompressionPlan?
     )
 
-    private suspend fun compressConversationForContext(
+    private fun compressionProfile(settings: ApiSettings): SoftCompactProfile? {
+        if (ChatConversationContextHelper.calculateContextCompressionThresholds(settings) == null) {
+            return null
+        }
+        return SoftCompactProfile(
+            chatModel = settings.resolvedChatModel() ?: return null,
+            compressionModel = settings.resolvedCompressionModel() ?: return null,
+            triggerPercent = settings.compressionTriggerPercent
+        )
+    }
+
+    private fun invalidateSoftCompact() {
+        softCompactEpoch++
+        softCompactCheckJob?.cancel()
+        softCompactCheckJob = null
+        softCompactTask?.result?.cancel()
+        softCompactTask = null
+        failedCompressionSourceIds = null
+    }
+
+    private suspend fun prepareCompressionContext(
         settings: ApiSettings,
         rawMessages: List<ChatMessage>
-    ): ContextCompressionResult {
-        // 主线程先快照，重计算移入 Default；副作用（摘要追加、锚点、通知）回主线程执行
+    ): PreparedCompressionContext {
+        // 主线程只浅快照；附件内容不复制，历史过滤、token 估算与切分放到 Default。
         val rawSnapshot = rawMessages.toList()
         val summariesSnapshot = contextSummariesInternal.toList()
         val anchorSnapshot = contextTokenUsageAnchor
-        val prepared = withContext(Dispatchers.Default) {
+        return withContext(Dispatchers.Default) {
             val normalizedMessages = ChatConversationContextHelper.filterConversationMessages(rawSnapshot)
                 .filterNot { it.isContextSummary }
             val requestMessages = buildLimitedRequestContextMessages(normalizedMessages, summariesSnapshot)
@@ -2042,98 +2246,94 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 messages = requestMessages,
                 usageAnchor = anchorSnapshot
             )
+            val thresholds = ChatConversationContextHelper.calculateContextCompressionThresholds(settings)
             PreparedCompressionContext(
                 normalizedMessages = normalizedMessages,
                 requestMessages = requestMessages,
                 tokenCount = tokenCount,
-                plan = buildContextCompressionPlan(settings, requestMessages, tokenCount)
+                thresholds = thresholds,
+                plan = thresholds?.let {
+                    ChatConversationContextHelper.buildContextCompressionPlan(
+                        settings = settings,
+                        messages = requestMessages,
+                        tokenCount = tokenCount,
+                        triggerTokens = it.startTokens
+                    )
+                }
             )
         }
-        val normalizedMessages = prepared.normalizedMessages
-        val requestMessages = prepared.requestMessages
-        val tokenCount = prepared.tokenCount
-        val plan = prepared.plan
-        if (plan == null) {
-            MoteLog.d(
-                logComponent,
-                MoteLog.event(
-                    "上下文无需压缩",
-                    "messages" to requestMessages.size,
-                    "tokens" to tokenCount.tokens,
-                    "source" to tokenCount.sourceLabel
-                )
-            )
-            throwIfContextExceedsHardLimitWithoutCompression(settings, tokenCount)
-            return ContextCompressionResult(requestMessages = requestMessages, compressed = false)
-        }
-        MoteLog.i(
-            logComponent,
-            MoteLog.event(
-                "开始压缩聊天上下文",
-                "messagesToCompress" to plan.messagesToCompress.size,
-                "recentMessages" to plan.recentMessages.size,
-                "tokens" to plan.tokenCount.tokens,
-                "source" to plan.tokenCount.sourceLabel,
-                "maxSummaryTokens" to plan.maxSummaryTokens
-            )
-        )
-        val summary = try {
-            val compressionModel = settings.resolvedCompressionModel()
-                ?: throw IllegalStateException("未配置可用的压缩模型。")
-            val summary = ChatApiClient.compressConversation(
-                model = compressionModel,
-                messages = plan.messagesToCompress,
-                maxSummaryTokens = plan.maxSummaryTokens
-            )
-            ContextSummary(
-                content = summary,
-                sourceMessageIds = plan.sourceMessageIds.distinct()
-            )
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            MoteLog.e(logComponent, "压缩聊天上下文失败", error)
-            null
-        }
+    }
 
-        if (summary != null) {
-            appendContextSummary(summary)
-            pendingCompressionNoticeSummaryIds += summary.id
-            MoteLog.i(
-                logComponent,
-                MoteLog.event(
-                    "已压缩聊天上下文",
-                    "source" to plan.tokenCount.sourceLabel,
-                    "tokens" to plan.tokenCount.tokens,
-                    "compressedMessages" to plan.messagesToCompress.size,
-                    "recentMessages" to plan.recentMessages.size,
-                    "contextSummaries" to contextSummariesInternal.size
+    private fun startSoftCompact(
+        settings: ApiSettings,
+        plan: ChatConversationContextHelper.ContextCompressionPlan
+    ): SoftCompactTask? {
+        if (!historyLoaded || softCompactTask != null || plan.sourceMessageIds == failedCompressionSourceIds) {
+            return null
+        }
+        val conversationId = _currentConversationId.value?.takeIf { it.isNotBlank() } ?: return null
+        if (persistenceState.isBlocked(conversationId)) {
+            return null
+        }
+        val profile = compressionProfile(settings) ?: return null
+        if (profile != _savedSettings.value?.let { compressionProfile(it) }) {
+            return null
+        }
+        val result = viewModelScope.async(start = CoroutineStart.LAZY) {
+            try {
+                val content = ChatApiClient.compressConversation(
+                    model = profile.compressionModel,
+                    messages = plan.messagesToCompress,
+                    maxSummaryTokens = plan.maxSummaryTokens
                 )
-            )
-            clearContextTokenUsageAnchor()
-            val refreshedRequestMessages = withContext(Dispatchers.Default) {
-                buildLimitedRequestContextMessages(normalizedMessages, summariesSnapshot + summary)
+                ContextSummary(
+                    content = content,
+                    sourceMessageIds = plan.sourceMessageIds.distinct()
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                MoteLog.e(logComponent, "压缩聊天上下文失败", error)
+                null
             }
-            return ContextCompressionResult(
-                requestMessages = refreshedRequestMessages,
-                compressed = true
-            )
         }
+        val task = SoftCompactTask(
+            conversationId = conversationId,
+            epoch = softCompactEpoch,
+            profile = profile,
+            plan = plan,
+            result = result
+        )
+        softCompactTask = task
+        result.start()
+        return task
+    }
 
-        val hardLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
-        if (hardLimit == null || plan.tokenCount.tokens <= hardLimit) {
-            MoteLog.w(
-                logComponent,
-                MoteLog.event(
-                    "上下文压缩失败，继续使用原始上下文",
-                    "tokens" to plan.tokenCount.tokens,
-                    "hardLimit" to hardLimit
-                )
-            )
-            _userNotice.value = "上下文压缩失败，已临时使用原始上下文继续发送。"
-            return ContextCompressionResult(requestMessages = requestMessages, compressed = false)
+    private fun scheduleSoftCompact(settings: ApiSettings) {
+        if (softCompactTask != null) {
+            return
         }
-        throw IllegalStateException("上下文压缩失败，且当前上下文长度已超过模型上下文长度，请调大压缩模型配置或删除部分历史消息后重试。")
+        softCompactCheckJob?.cancel()
+        softCompactCheckJob = null
+        if (!historyLoaded) {
+            return
+        }
+        val conversationId = _currentConversationId.value?.takeIf { it.isNotBlank() } ?: return
+        if (persistenceState.isBlocked(conversationId)) {
+            return
+        }
+        val epoch = softCompactEpoch
+        val profile = compressionProfile(settings) ?: return
+        softCompactCheckJob = viewModelScope.launch {
+            val prepared = prepareCompressionContext(settings, conversationMessagesInternal)
+            if (_currentConversationId.value != conversationId || softCompactEpoch != epoch ||
+                profile != _savedSettings.value?.let { compressionProfile(it) } ||
+                persistenceState.isBlocked(conversationId)
+            ) {
+                return@launch
+            }
+            prepared.plan?.let { startSoftCompact(settings, it) }
+        }
     }
 
     private fun appendContextSummary(newSummary: ContextSummary) {
@@ -2166,59 +2366,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    private fun buildContextCompressionPlan(
-        settings: ApiSettings,
-        messages: List<ChatMessage>,
-        tokenCount: ChatConversationContextHelper.ContextTokenCount = resolveConversationTokenCount(messages)
-    ): ContextCompressionPlan? {
-        val triggerLength = calculateEffectiveCompressionTrigger(settings) ?: return null
-        if (messages.size < 2) {
-            return null
-        }
-        if (tokenCount.tokens < triggerLength) {
-            return null
-        }
-
-        val userIndices = messages.indices.filter { index -> messages[index].role == ChatRole.User }
-        if (userIndices.size < 2) {
-            return null
-        }
-
-        val recentBudget = calculateRecentContextBudget(settings)
-        var splitIndex = userIndices.last()
-        // 从尾部单遍累积估算，避免对每个候选重复扫描整个尾部
-        var tailTokens = 0
-        var prevBoundary = messages.size
-        for (candidate in userIndices.asReversed()) {
-            tailTokens += ChatConversationContextHelper.estimateConversationTokens(
-                messages.subList(candidate, prevBoundary)
-            )
-            prevBoundary = candidate
-            if (tailTokens <= recentBudget) {
-                splitIndex = candidate
-            } else {
-                break
-            }
-        }
-        if (splitIndex <= 0) {
-            splitIndex = userIndices.getOrNull(1) ?: return null
-        }
-
-        val messagesToCompress = messages.take(splitIndex)
-        val recentMessages = messages.drop(splitIndex)
-        if (messagesToCompress.isEmpty() || recentMessages.none { it.role == ChatRole.User }) {
-            return null
-        }
-
-        return ContextCompressionPlan(
-            messagesToCompress = messagesToCompress,
-            recentMessages = recentMessages,
-            tokenCount = tokenCount,
-            maxSummaryTokens = calculateSummaryTokenBudget(settings),
-            sourceMessageIds = messagesToCompress.map { message -> message.id }
-        )
-    }
-
     private fun throwIfContextExceedsHardLimitWithoutCompression(
         settings: ApiSettings,
         tokenCount: ChatConversationContextHelper.ContextTokenCount
@@ -2227,29 +2374,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             modelContextLength = settings.resolvedChatModel()?.contextLength ?: 0,
             contextTokens = tokenCount.tokens
         )
-    }
-
-    /** 触发阈值 = 聊天模型上下文长度 × compressionTriggerPercent%；上下文长度未知则不自动压缩。 */
-    private fun calculateEffectiveCompressionTrigger(settings: ApiSettings): Int? {
-        val contextLength = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 } ?: return null
-        val percent = settings.compressionTriggerPercent.takeIf { it > 0 } ?: return null
-        return (contextLength.toLong() * percent / 100L).toInt().coerceAtLeast(1)
-    }
-
-    private fun calculateRecentContextBudget(settings: ApiSettings): Int {
-        val referenceLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
-            ?: DefaultRecentContextBudget
-        return (referenceLimit * RecentContextBudgetRatio)
-            .toInt()
-            .coerceIn(MinRecentContextBudget, MaxRecentContextBudget)
-    }
-
-    private fun calculateSummaryTokenBudget(settings: ApiSettings): Int {
-        val referenceLimit = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 }
-            ?: DefaultRecentContextBudget
-        return (referenceLimit * SummaryBudgetRatio)
-            .toInt()
-            .coerceIn(MinSummaryTokenBudget, MaxSummaryTokenBudget)
     }
 
     private fun commitRawConversation(workingConversation: List<ChatMessage>) {
@@ -2553,13 +2677,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         const val MaxWaitToolSeconds = 3600
         const val StreamingPublishIntervalMs = 50L
         const val MaxStreamRetryAttempts = 3
-        const val DefaultRecentContextBudget = 16_000
-        const val MinRecentContextBudget = 1_024
-        const val MaxRecentContextBudget = 32_000
-        const val MinSummaryTokenBudget = 512
-        const val MaxSummaryTokenBudget = 8_192
-        const val RecentContextBudgetRatio = 0.35f
-        const val SummaryBudgetRatio = 0.12f
 
         fun buildFallbackTitle(message: String): String {
             return ConversationTitleFormatter.buildFallbackTitle(message)
