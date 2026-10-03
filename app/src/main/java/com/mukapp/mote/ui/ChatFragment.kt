@@ -1,5 +1,6 @@
 package com.mukapp.mote.ui
 
+import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentResolver
@@ -25,6 +26,8 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -102,6 +105,9 @@ class ChatFragment : Fragment() {
     private var lastMarkdownPreparseSignature: String? = null
     private var lastMarkdownPreparseUptime: Long = 0L
     private var lastScrollDy: Int = 0
+    private var scrollToBottomVisible = false
+    private val scrollButtonShowInterpolator = OvershootInterpolator(1f)
+    private val scrollButtonHideInterpolator = DecelerateInterpolator()
 
     private var systemBottomInset = 0
     private var imeBottomInset = 0
@@ -273,6 +279,8 @@ class ChatFragment : Fragment() {
         binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
         binding.recyclerMessages.removeCallbacks(markdownPreparseRunnable)
+        binding.scrollToBottomContent.animate().cancel()
+        scrollToBottomVisible = false
         scrollAfterLayoutPending = false
         binding.recyclerMessages.adapter = null
         _binding = null
@@ -369,18 +377,15 @@ class ChatFragment : Fragment() {
                     lastScrollDy = dy
                 }
                 scheduleMarkdownPreparse(immediate = false)
+                if (userScrolling) {
+                    // 先更新跟随状态，再刷新按钮，包含到达底部的最后一帧。
+                    if (dy < 0) {
+                        followOutput = false
+                    } else if (dy > 0 && !recyclerView.canScrollVertically(1)) {
+                        followOutput = true
+                    }
+                }
                 updateScrollToBottomButton()
-                if (!userScrolling) {
-                    return
-                }
-                // 用户主动上滑时，取消吸附
-                if (dy < 0) {
-                    followOutput = false
-                }
-                // 用户主动下滑且已到底部，恢复吸附
-                if (dy > 0 && !recyclerView.canScrollVertically(1)) {
-                    followOutput = true
-                }
             }
         })
     }
@@ -756,34 +761,38 @@ class ChatFragment : Fragment() {
 
     private fun setScrollToBottomVisible(visible: Boolean) {
         val binding = _binding ?: return
+        // 滚动每帧都会调用；目标不变时不能重启动画，否则结束动作会拖到滚动停止。
+        if (scrollToBottomVisible == visible) return
+        scrollToBottomVisible = visible
         val container = binding.scrollToBottomContainer
         val content = binding.scrollToBottomContent
-        if (visible) {
-            if (container.isVisible && content.alpha == 1f) {
-                return
-            }
-            content.animate().cancel()
-            if (!container.isVisible) {
-                content.alpha = 0f
-                container.isVisible = true
-            }
-            binding.blurScrollToBottom.isClickable = true
-            content.animate().alpha(1f).setDuration(ScrollButtonFadeMs).start()
-        } else {
-            if (!container.isVisible) {
-                return
-            }
-            binding.blurScrollToBottom.isClickable = false
-            content.animate().cancel()
-            content.animate()
-                .alpha(0f)
-                .setDuration(ScrollButtonFadeMs)
-                .withEndAction {
-                    val b = _binding ?: return@withEndAction
-                    b.scrollToBottomContainer.isVisible = false
-                }
-                .start()
+        content.animate().cancel()
+        binding.blurScrollToBottom.isClickable = visible
+        binding.blurScrollToBottom.isFocusable = visible
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            content.scaleX = 1f
+            content.scaleY = 1f
+            container.isVisible = visible
+            return
         }
+        if (visible && !container.isVisible) {
+            content.scaleX = ScrollButtonHiddenScale
+            content.scaleY = ScrollButtonHiddenScale
+            container.isVisible = true
+        }
+        // View 默认以中心为 pivot；反向切换只改目标，从当前缩放值继续。
+        val targetScale = if (visible) 1f else ScrollButtonHiddenScale
+        val animation = content.animate()
+            .scaleX(targetScale)
+            .scaleY(targetScale)
+            .setDuration(if (visible) ScrollButtonShowMs else ScrollButtonHideMs)
+            .setInterpolator(if (visible) scrollButtonShowInterpolator else scrollButtonHideInterpolator)
+        if (visible) {
+            animation.withEndAction(null)
+        } else {
+            animation.withEndAction { container.isVisible = false }
+        }
+        animation.start()
     }
 
     /**
@@ -1623,7 +1632,9 @@ class ChatFragment : Fragment() {
         const val MarkdownPreparseFallbackTailItems = 18
         const val MarkdownPreparseMaxEntries = 32
         const val InitialImmediateScrollThreshold = 20
-        const val ScrollButtonFadeMs = 150L
+        const val ScrollButtonShowMs = 200L
+        const val ScrollButtonHideMs = 150L
+        const val ScrollButtonHiddenScale = 0f
         const val ScrollSpeedFactor = 0.5f
         const val MenuAddImage = 1
         const val MenuAddFile = 2
