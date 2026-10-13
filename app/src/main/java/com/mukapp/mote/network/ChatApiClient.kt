@@ -14,8 +14,10 @@ import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.ToolCallAccumulator
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.util.MoteLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -29,16 +31,35 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.EOFException
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import javax.net.ssl.SSLException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+internal class ChatApiException(
+    message: String,
+    val statusCode: Int? = null,
+    val retryAfterMillis: Long? = null,
+    val hasOutput: Boolean = false,
+    val retryableBeforeOutput: Boolean = false,
+    cause: Throwable? = null
+) : IllegalStateException(message, cause)
 
 object ChatApiClient {
     private const val Component = "Api"
     private const val ERROR_SNIPPET_MAX_LENGTH = 240
     private const val MAX_JSON_CANDIDATE_ATTEMPTS = 24
     private const val MODEL_API_USER_AGENT = "Mote/1.0 (Android; OpenAI-Compatible Client)"
+
+    private class StreamProgress(var hasOutput: Boolean = false)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -278,31 +299,25 @@ object ChatApiClient {
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit = {}
     ): ChatCompletionResult {
-        // 已向回调推送过增量后禁止内部降级重试：流中途失败重发会把两次输出拼接展示并重复计费。
-        var deltaEmitted = false
-        val trackedOnDelta: suspend (String) -> Unit = { delta ->
-            deltaEmitted = true
-            onDelta(delta)
-        }
-        val trackedOnThinkingDelta: suspend (String) -> Unit = { delta ->
-            deltaEmitted = true
-            onThinkingDelta(delta)
-        }
         return try {
             streamChatOnce(
                 model = model,
                 settings = settings,
                 messages = messages,
-                includeUsage = true,
-                onDelta = trackedOnDelta,
-                onThinkingDelta = trackedOnThinkingDelta
+                includeUsage = model.supportsUsage,
+                onDelta = onDelta,
+                onThinkingDelta = onThinkingDelta
             )
-        } catch (error: Throwable) {
+        } catch (error: ChatApiException) {
             currentCoroutineContext().ensureActive()
-            if (deltaEmitted || !shouldRetryWithoutStreamUsage(error)) {
+            if (!model.supportsUsage || error.hasOutput ||
+                (error.statusCode != 400 && error.statusCode != 422) ||
+                (error.retryAfterMillis ?: 0L) > 60_000L || !shouldRetryWithoutStreamUsage(error)
+            ) {
                 throw error
             }
             MoteLog.w(Component, "接口不兼容 stream_options.include_usage，改为不请求 usage 后重试。", error)
+            delay(maxOf(error.retryAfterMillis ?: 0L, 1000L))
             streamChatOnce(
                 model = model,
                 settings = settings,
@@ -353,118 +368,181 @@ object ChatApiClient {
         onDelta: suspend (String) -> Unit,
         onThinkingDelta: suspend (String) -> Unit
     ): ChatCompletionResult {
-        return withContext(Dispatchers.IO) {
-            require(model.baseUrl.isNotBlank()) { "API 地址不能为空。" }
-            require(model.model.isNotBlank()) { "模型不能为空。" }
-            val startMs = System.currentTimeMillis()
-            val toolDefinitions = LocalAiTools.toolDefinitions(settings)
-            MoteLog.i(
-                Component,
-                MoteLog.event(
-                    "开始流式聊天请求",
-                    "baseUrl" to MoteLog.safeUrlOrigin(model.baseUrl),
-                    "messages" to messages.size,
-                    "tools" to toolDefinitions.length(),
-                    "includeUsage" to includeUsage,
-                    "reasoningEffort" to model.reasoningEffortKey,
-                    "reasoningEffortValue" to model.reasoningEffortValue,
-                    "providerType" to model.providerType.storageKey,
-                    "modelLength" to model.model.length
+        val progress = StreamProgress()
+        var statusCode: Int? = null
+        var retryAfterMillis: Long? = null
+        return try {
+            withContext(Dispatchers.IO) {
+                require(model.baseUrl.isNotBlank()) { "API 地址不能为空。" }
+                require(model.model.isNotBlank()) { "模型不能为空。" }
+                val startMs = System.currentTimeMillis()
+                val toolDefinitions = LocalAiTools.toolDefinitions(settings, model)
+                MoteLog.i(
+                    Component,
+                    MoteLog.event(
+                        "开始流式聊天请求",
+                        "baseUrl" to MoteLog.safeUrlOrigin(model.baseUrl),
+                        "messages" to messages.size,
+                        "tools" to toolDefinitions.length(),
+                        "includeUsage" to includeUsage,
+                        "reasoningEffort" to model.reasoningEffortKey,
+                        "reasoningEffortValue" to model.reasoningEffortValue,
+                        "providerType" to model.providerType.storageKey,
+                        "modelLength" to model.model.length
+                    )
                 )
-            )
 
-            val requestBody = JSONObject().apply {
-                put("model", model.model)
-                put("stream", true)
-                if (includeUsage) {
+                val requestBody = JSONObject().apply {
+                    put("model", model.model)
+                    put("stream", true)
+                    if (includeUsage) {
+                        put(
+                            "stream_options",
+                            JSONObject().apply {
+                                put("include_usage", true)
+                            }
+                        )
+                    }
+                    if (toolDefinitions.length() > 0) {
+                        put("tools", toolDefinitions)
+                    }
+                    putReasoningFields(model)
                     put(
-                        "stream_options",
-                        JSONObject().apply {
-                            put("include_usage", true)
+                        "messages",
+                        JSONArray().apply {
+                            messages.forEach { message ->
+                                put(buildApiMessage(message, model.supportsVision))
+                            }
                         }
                     )
-                }
-                put("tools", toolDefinitions)
-                putReasoningFields(model)
-                put(
-                    "messages",
-                    JSONArray().apply {
-                        messages.forEach { message ->
-                            put(buildApiMessage(message))
+                }.toString()
+
+                val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = true)
+                executeRequest(request, streamingClient).use { response ->
+                    statusCode = response.code
+                    retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After"))
+                    MoteLog.i(
+                        Component,
+                        MoteLog.event("聊天接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
+                    )
+                    if (!response.isSuccessful) {
+                        MoteLog.w(Component, MoteLog.event("聊天接口返回失败状态", "status" to statusCode))
+                        val responseText = response.body?.string() ?: ""
+                        val errorMessage = parseErrorMessage(responseText)
+                        throw ChatApiException(
+                            message = errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" },
+                            statusCode = statusCode,
+                            retryAfterMillis = retryAfterMillis,
+                            retryableBeforeOutput = isRetryableStatus(response.code)
+                        )
+                    }
+
+                    val contentType = response.header("Content-Type").orEmpty()
+                    MoteLog.d(
+                        Component,
+                        MoteLog.event("聊天响应内容类型", "contentType" to safeContentType(contentType))
+                    )
+                    if (contentType.contains("text/event-stream", ignoreCase = true)) {
+                        readStreamedReply(response, onDelta, onThinkingDelta, model.supportsTools, progress).also { result ->
+                            MoteLog.i(
+                                Component,
+                                MoteLog.event(
+                                    "流式聊天请求完成",
+                                    "finishReason" to (result.finishReason ?: "未返回"),
+                                    "contentLength" to result.content.length,
+                                    "thinkingLength" to result.thinkingContent.length,
+                                    "toolCalls" to result.toolCalls.size,
+                                    "durationMs" to MoteLog.durationMs(startMs),
+                                    *result.usage.safeLogFields()
+                                )
+                            )
+                        }
+                    } else {
+                        MoteLog.w(
+                            Component,
+                            MoteLog.event("聊天接口返回非 SSE 响应，使用非流式解析", "contentType" to safeContentType(contentType))
+                        )
+                        val responseText = response.body?.string() ?: ""
+                        currentCoroutineContext().ensureActive()
+                        // 部分网关/反代会以 200 + HTML/错误 JSON 返回失败，先当错误响应解析。
+                        // 响应体只做一次 JSON 解析，判错与取结果复用同一 root。
+                        val responseJson = runCatching { JSONObject(responseText.trim()) }.getOrNull()
+                        if (responseJson == null || isErrorPayloadRoot(responseJson)) {
+                            val errorMessage = parseErrorMessage(responseText)
+                            throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
+                        }
+                        val result = parseAssistantReply(responseJson)
+                        if (result.toolCalls.isNotEmpty()) {
+                            progress.hasOutput = true
+                            if (!model.supportsTools) {
+                                throw ChatApiException("当前模型不支持工具调用，但接口返回了工具调用。")
+                            }
+                        }
+                        if (result.thinkingContent.isNotEmpty()) {
+                            progress.hasOutput = true
+                            onThinkingDelta(result.thinkingContent)
+                        }
+                        if (result.content.isNotEmpty()) {
+                            progress.hasOutput = true
+                            onDelta(result.content)
+                        }
+                        result.also {
+                            MoteLog.i(
+                                Component,
+                                MoteLog.event(
+                                    "非流式聊天请求完成",
+                                    "finishReason" to (it.finishReason ?: "未返回"),
+                                    "contentLength" to it.content.length,
+                                    "thinkingLength" to it.thinkingContent.length,
+                                    "toolCalls" to it.toolCalls.size,
+                                    "durationMs" to MoteLog.durationMs(startMs),
+                                    *it.usage.safeLogFields()
+                                )
+                            )
                         }
                     }
-                )
-            }.toString()
-
-            val request = buildRequest(model.baseUrl, model.apiKey, requestBody, isStreaming = true)
-            val response = executeRequest(request, streamingClient)
-
-            val statusCode = response.code
-            MoteLog.i(
-                Component,
-                MoteLog.event("聊天接口已响应", "status" to statusCode, "durationMs" to MoteLog.durationMs(startMs))
-            )
-            if (!response.isSuccessful) {
-                MoteLog.w(Component, MoteLog.event("聊天接口返回失败状态", "status" to statusCode))
-                val responseText = response.body?.string() ?: ""
-                val errorMessage = parseErrorMessage(responseText)
-                throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
-            }
-
-            val contentType = response.header("Content-Type").orEmpty()
-            MoteLog.d(
-                Component,
-                MoteLog.event("聊天响应内容类型", "contentType" to safeContentType(contentType))
-            )
-            if (contentType.contains("text/event-stream", ignoreCase = true)) {
-                readStreamedReply(response, onDelta, onThinkingDelta).also { result ->
-                    MoteLog.i(
-                        Component,
-                        MoteLog.event(
-                            "流式聊天请求完成",
-                            "finishReason" to (result.finishReason ?: "未返回"),
-                            "contentLength" to result.content.length,
-                            "thinkingLength" to result.thinkingContent.length,
-                            "toolCalls" to result.toolCalls.size,
-                            "durationMs" to MoteLog.durationMs(startMs),
-                            *result.usage.safeLogFields()
-                        )
-                    )
-                }
-            } else {
-                MoteLog.w(
-                    Component,
-                    MoteLog.event("聊天接口返回非 SSE 响应，使用非流式解析", "contentType" to safeContentType(contentType))
-                )
-                val responseText = response.body?.string() ?: ""
-                currentCoroutineContext().ensureActive()
-                // 部分网关/反代会以 200 + HTML/错误 JSON 返回失败，先当错误响应解析。
-                // 响应体只做一次 JSON 解析，判错与取结果复用同一 root。
-                val responseJson = runCatching { JSONObject(responseText.trim()) }.getOrNull()
-                if (responseJson == null || isErrorPayloadRoot(responseJson)) {
-                    val errorMessage = parseErrorMessage(responseText)
-                    throw IllegalStateException(errorMessage.ifBlank { "接口请求失败，HTTP $statusCode" })
-                }
-                val result = parseAssistantReply(responseJson)
-                if (result.content.isNotBlank()) {
-                    onDelta(result.content)
-                }
-                result.also {
-                    MoteLog.i(
-                        Component,
-                        MoteLog.event(
-                            "非流式聊天请求完成",
-                            "finishReason" to (it.finishReason ?: "未返回"),
-                            "contentLength" to it.content.length,
-                            "thinkingLength" to it.thinkingContent.length,
-                            "toolCalls" to it.toolCalls.size,
-                            "durationMs" to MoteLog.durationMs(startMs),
-                            *it.usage.safeLogFields()
-                        )
-                    )
                 }
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            currentCoroutineContext().ensureActive()
+            val apiError = error as? ChatApiException
+            val responseStatus = statusCode
+            val retryable = when {
+                error is SSLException -> false
+                apiError != null -> apiError.retryableBeforeOutput
+                responseStatus != null && responseStatus !in 200..299 -> isRetryableStatus(responseStatus)
+                else -> error is SocketTimeoutException || error is ConnectException ||
+                    error is SocketException || error is EOFException || error is UnknownHostException
+            }
+            throw ChatApiException(
+                message = error.message ?: "接口请求失败。",
+                statusCode = apiError?.statusCode ?: responseStatus,
+                retryAfterMillis = apiError?.retryAfterMillis ?: retryAfterMillis,
+                hasOutput = progress.hasOutput || apiError?.hasOutput == true,
+                retryableBeforeOutput = retryable,
+                cause = error
+            )
         }
+    }
+
+    private fun isRetryableStatus(statusCode: Int?): Boolean = when (statusCode) {
+        408, 429, 500, 502, 503, 504 -> true
+        else -> false
+    }
+
+    private fun parseRetryAfterMillis(header: String?): Long? {
+        val value = header?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (value.all { it in '0'..'9' }) {
+            val seconds = value.toLongOrNull() ?: return null
+            return if (seconds <= Long.MAX_VALUE / 1000) seconds * 1000 else null
+        }
+        return runCatching {
+            val retryAt = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME)
+                .toInstant().toEpochMilli()
+            Math.subtractExact(retryAt, System.currentTimeMillis()).coerceAtLeast(0)
+        }.getOrNull()
     }
 
     private fun resolveChatUrl(baseUrl: String): String {
@@ -683,7 +761,10 @@ object ChatApiClient {
         """.trimIndent()
     }
 
-    internal fun buildApiMessage(message: ChatMessage): JSONObject {
+    internal fun buildApiMessage(message: ChatMessage, supportsVision: Boolean = true): JSONObject {
+        require(supportsVision || message.role != ChatRole.User || message.attachments.none {
+            it.type == ChatAttachmentType.Image
+        }) { "当前模型不支持图片输入。" }
         return JSONObject().apply {
             put("role", message.role.apiValue)
             when (message.role) {
@@ -736,8 +817,9 @@ object ChatApiClient {
 
         val textContent = buildUserTextContent(message)
         val imageAttachments = message.attachments.filter { attachment ->
-            attachment.type == ChatAttachmentType.Image && !attachment.base64Data.isNullOrBlank()
+            attachment.type == ChatAttachmentType.Image
         }
+        require(imageAttachments.all { !it.base64Data.isNullOrBlank() }) { "图片附件内容未加载，无法发送。" }
         if (imageAttachments.isEmpty()) {
             return textContent
         }
@@ -903,7 +985,9 @@ object ChatApiClient {
     private suspend fun readStreamedReply(
         response: Response,
         onDelta: suspend (String) -> Unit,
-        onThinkingDelta: suspend (String) -> Unit
+        onThinkingDelta: suspend (String) -> Unit,
+        supportsTools: Boolean,
+        progress: StreamProgress
     ): ChatCompletionResult {
         val coroutineContext = currentCoroutineContext()
         val replyBuilder = StringBuilder()
@@ -926,6 +1010,8 @@ object ChatApiClient {
                             replyBuilder = replyBuilder,
                             thinkingBuilder = thinkingBuilder,
                             toolCalls = toolCalls,
+                            supportsTools = supportsTools,
+                            progress = progress,
                             onFinishReason = { finishReason = it },
                             onUsage = { usage = it },
                             onDelta = onDelta,
@@ -949,17 +1035,27 @@ object ChatApiClient {
 
             if (!streamFinished && eventPayload.isNotEmpty()) {
                 coroutineContext.ensureActive()
-                processStreamEvent(
+                streamFinished = processStreamEvent(
                     payload = eventPayload.toString(),
                     replyBuilder = replyBuilder,
                     thinkingBuilder = thinkingBuilder,
                     toolCalls = toolCalls,
+                    supportsTools = supportsTools,
+                    progress = progress,
                     onFinishReason = { finishReason = it },
                     onUsage = { usage = it },
                     onDelta = onDelta,
                     onThinkingDelta = onThinkingDelta
                 )
             }
+        }
+
+        if (!streamFinished && finishReason.isNullOrBlank()) {
+            throw ChatApiException(
+                message = "流式响应意外结束，请重试。",
+                retryableBeforeOutput = true,
+                cause = EOFException("流式响应未返回 [DONE] 或 finish_reason。")
+            )
         }
 
         val content = replyBuilder.toString()
@@ -983,6 +1079,7 @@ object ChatApiClient {
 
         val finishReasonNotice = buildFinishReasonNotice(finishReason, hasToolCalls = finalizedToolCalls.isNotEmpty())
         if (finishReasonNotice.isNotEmpty() && finalizedToolCalls.isEmpty()) {
+            progress.hasOutput = true
             onDelta(finishReasonNotice)
             replyBuilder.append(finishReasonNotice)
         }
@@ -1015,6 +1112,8 @@ object ChatApiClient {
         replyBuilder: StringBuilder,
         thinkingBuilder: StringBuilder,
         toolCalls: MutableMap<Int, ToolCallAccumulator>,
+        supportsTools: Boolean,
+        progress: StreamProgress,
         onFinishReason: (String) -> Unit,
         onUsage: (TokenUsage) -> Unit,
         onDelta: suspend (String) -> Unit,
@@ -1039,20 +1138,35 @@ object ChatApiClient {
             throw IllegalStateException(parseErrorMessage(errorText.ifBlank { normalizedPayload }))
         }
         parseTokenUsage(responseJson.optJSONObject("usage"))?.let(onUsage)
-        val choices = responseJson.optJSONArray("choices") ?: return false
-        val firstChoice = choices.optJSONObject(0) ?: return false
+        val choices = responseJson.optJSONArray("choices")
+            ?: throw IllegalStateException("接口返回缺少 choices 字段。")
+        if (choices.length() == 0) {
+            // include_usage 的末尾事件只有 usage，choices 按协议为空。
+            if (responseJson.optJSONObject("usage") != null) return false
+            throw IllegalStateException("接口没有返回任何候选结果。")
+        }
+        val firstChoice = choices.optJSONObject(0)
+            ?: throw IllegalStateException("接口返回的候选结果格式无效。")
         val finishReason = firstChoice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" }
         if (finishReason != null) {
             onFinishReason(finishReason)
         }
         val deltaObject = firstChoice.optJSONObject("delta")
+        if (deltaObject == null && !firstChoice.has("text") && finishReason == null) {
+            throw IllegalStateException("流式响应缺少 delta 字段。")
+        }
         val toolCallsArray = deltaObject?.optJSONArray("tool_calls")
-        if (toolCallsArray != null) {
+        if (toolCallsArray != null && toolCallsArray.length() > 0) {
+            progress.hasOutput = true
+            if (!supportsTools) {
+                throw ChatApiException("当前模型不支持工具调用，但接口返回了工具调用。")
+            }
             appendToolCallDeltas(toolCallsArray, toolCalls)
         }
 
         val thinkingDelta = deltaObject?.let { extractMessageContent(it.opt("reasoning_content")) }.orEmpty()
         if (thinkingDelta.isNotEmpty()) {
+            progress.hasOutput = true
             thinkingBuilder.append(thinkingDelta)
             currentCoroutineContext().ensureActive()
             onThinkingDelta(thinkingDelta)
@@ -1065,6 +1179,7 @@ object ChatApiClient {
         }
 
         if (deltaText.isNotEmpty()) {
+            progress.hasOutput = true
             replyBuilder.append(deltaText)
             currentCoroutineContext().ensureActive()
             onDelta(deltaText)
@@ -1508,15 +1623,11 @@ object ChatApiClient {
 
     private fun shouldRetryWithoutStreamUsage(error: Throwable): Boolean {
         val message = error.message.orEmpty().lowercase()
-        if ("stream_options" in message || "include_usage" in message) {
-            return true
-        }
-        // 泛化的参数报错须同时提到 stream，避免其他参数（如 tools）的报错误触发降级重试。
-        val mentionsParameter = "unrecognized parameter" in message ||
-                "unknown parameter" in message ||
-                "unsupported parameter" in message ||
-                "invalid parameter" in message
-        return mentionsParameter && "stream" in message
+        if ("stream_options" !in message && "include_usage" !in message) return false
+        return "unrecognized" in message || "unknown" in message || "unsupported" in message ||
+            "not supported" in message || "not support" in message || "not allowed" in message ||
+            "unexpected" in message || "invalid parameter" in message ||
+            "extra inputs are not permitted" in message || "不支持" in message || "未知参数" in message
     }
 
     private fun buildEmptyResponseMessage(finishReason: String?): String {

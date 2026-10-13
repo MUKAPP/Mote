@@ -14,11 +14,16 @@ import android.webkit.WebViewClient
 import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.optIntOrNull
 import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter
+import okhttp3.ConnectionPool
+import okhttp3.Dns
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.ByteArrayOutputStream
-import java.net.HttpURLConnection
+import java.io.InputStream
+import java.net.Proxy
 import java.net.URL
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
@@ -45,6 +50,35 @@ internal object UrlFetchTools {
     private const val DefaultWebViewSettleMs = 1_000
     private const val MaxWebViewSettleMs = 10_000
     private const val MaxWebViewExtractChars = 1_000_000
+
+    private val localNetworkClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
+        .build()
+
+    private val publicNetworkClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
+        .connectionPool(ConnectionPool())
+        .proxy(Proxy.NO_PROXY)
+        .dns(object : Dns {
+            override fun lookup(hostname: String): List<java.net.InetAddress> {
+                ToolSupport.requirePublicHost(hostname)
+                val addresses = Dns.SYSTEM.lookup(hostname)
+                require(addresses.none(ToolSupport::isLocalAddress)) {
+                    "当前设置不允许抓取本机或局域网地址。"
+                }
+                // 返回本次解析的同一集合，OkHttp 用这些地址直接建立连接。
+                return addresses
+            }
+        })
+        .build()
 
     internal data class WebViewFetchOptions(
         val url: URL,
@@ -79,14 +113,14 @@ internal object UrlFetchTools {
         FlexmarkHtmlConverter.builder().build().convert(html).trim()
     }
 
-    fun fetchUrl(arguments: String): String {
+    fun fetchUrl(arguments: String, allowLocalNetwork: Boolean = true): String {
         val payload = JSONObject(arguments)
         val rawUrl = payload.optString("url").trim()
         require(rawUrl.isNotEmpty()) { "url 不能为空。" }
         val outputFormat = parseFetchOutputFormat(payload)
         val maxChars = parseFetchMaxChars(payload)
         val initialUrl = ToolSupport.normalizeFetchUrl(rawUrl)
-        return fetchUrlWithRedirects(initialUrl = initialUrl, outputFormat = outputFormat, maxChars = maxChars)
+        return fetchUrlWithRedirects(initialUrl, outputFormat, maxChars, allowLocalNetwork)
     }
 
     private fun parseFetchOutputFormat(payload: JSONObject): String {
@@ -107,26 +141,34 @@ internal object UrlFetchTools {
         return maxChars
     }
 
-    private fun fetchUrlWithRedirects(initialUrl: URL, outputFormat: String, maxChars: Int): String {
+    private fun fetchUrlWithRedirects(
+        initialUrl: URL,
+        outputFormat: String,
+        maxChars: Int,
+        allowLocalNetwork: Boolean
+    ): String {
         val startMs = System.currentTimeMillis()
         var currentUrl = initialUrl
         val redirects = JSONArray()
+        val client = if (allowLocalNetwork) localNetworkClient else publicNetworkClient
         repeat(MaxFetchRedirects + 1) { redirectCount ->
             if (Thread.interrupted()) {
                 throw InterruptedException("fetch_url 已被中断。")
             }
-            val connection = (currentUrl.openConnection() as HttpURLConnection)
-            try {
-                connection.instanceFollowRedirects = false
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 30_000
-                connection.setRequestProperty("Accept", buildFetchAcceptHeader(outputFormat))
-                connection.setRequestProperty("User-Agent", "Mote/1.0")
-
-                val statusCode = connection.responseCode
+            val request = Request.Builder()
+                .url(currentUrl.toString())
+                .get()
+                .header("Accept", buildFetchAcceptHeader(outputFormat))
+                .header("User-Agent", "Mote/1.0")
+                .build()
+            if (!allowLocalNetwork) {
+                // 用 OkHttp 规范化后的 host 检查字面量；每次重定向都经过此处。
+                ToolSupport.requirePublicHost(request.url.host)
+            }
+            client.newCall(request).execute().use { response ->
+                val statusCode = response.code
                 if (statusCode in 300..399) {
-                    val location = connection.getHeaderField("Location")
+                    val location = response.header("Location")
                     if (location.isNullOrBlank()) {
                         MoteLog.w(
                             Component,
@@ -179,8 +221,8 @@ internal object UrlFetchTools {
                     return@repeat
                 }
 
-                val contentType = connection.contentType.orEmpty()
-                val responseBody = readHttpResponseBody(connection, statusCode, MaxFetchResponseBytes)
+                val contentType = response.header("Content-Type").orEmpty()
+                val responseBody = readHttpResponseBody(response.body?.byteStream(), MaxFetchResponseBytes)
                 if (statusCode !in 200..299) {
                     MoteLog.w(
                         Component,
@@ -280,8 +322,6 @@ internal object UrlFetchTools {
                     put("redirects", redirects)
                     put("content", if (truncatedContent) formattedContent.take(maxChars) else formattedContent)
                 }.toString(2)
-            } finally {
-                runCatching { connection.disconnect() }
             }
         }
 
@@ -324,7 +364,10 @@ internal object UrlFetchTools {
         )
     }
 
-    fun fetchWebView(context: Context, arguments: String): String {
+    fun fetchWebView(context: Context, arguments: String, allowLocalNetwork: Boolean = true): String {
+        require(allowLocalNetwork) {
+            "仅允许公网抓取时不能使用动态网页抓取，请改用 fetch_url 或在设置中允许局域网抓取。"
+        }
         val options = parseFetchWebViewOptions(arguments)
         MoteLog.i(
             Component,
@@ -483,6 +526,8 @@ internal object UrlFetchTools {
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        webView.settings.allowFileAccess = false
+        webView.settings.allowContentAccess = false
         webView.settings.loadsImagesAutomatically = false
         webView.settings.blockNetworkImage = true
         webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
@@ -649,14 +694,11 @@ internal object UrlFetchTools {
     }
 
     private fun readHttpResponseBody(
-        connection: HttpURLConnection,
-        statusCode: Int,
+        stream: InputStream?,
         maxBytes: Int
     ): HttpResponseBody {
-        val stream = if (statusCode in 200..299) {
-            connection.inputStream
-        } else {
-            connection.errorStream ?: return HttpResponseBody(ByteArray(0), truncated = false)
+        if (stream == null) {
+            return HttpResponseBody(ByteArray(0), truncated = false)
         }
         val output = ByteArrayOutputStream()
         var truncated = false

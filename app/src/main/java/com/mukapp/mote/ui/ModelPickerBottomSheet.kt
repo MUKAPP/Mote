@@ -223,6 +223,11 @@ object ModelPickerBottomSheet {
             R.string.model_reasoning_summary,
             effortKey
         )
-        return "$contextPart · $reasoningPart"
+        return buildString {
+            append(contextPart).append(" · ").append(reasoningPart)
+            if (!model.supportsTools) append(" · ").append(context.getString(R.string.model_without_tools))
+            if (!model.supportsVision) append(" · ").append(context.getString(R.string.model_without_vision))
+            if (!model.supportsUsage) append(" · ").append(context.getString(R.string.model_without_usage))
+        }
     }
 }

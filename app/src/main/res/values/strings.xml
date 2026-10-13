@@ -113,6 +113,21 @@
     <string name="settings_saved">设置已保存</string>
     <string name="settings_number_invalid">请输入 0 到 2147483647 之间的整数。</string>
     <string name="settings_compression_trigger_too_large">压缩长度不能大于模型上下文长度。</string>
+    <string name="nonnegative_integer_required">请输入 0 或正整数</string>
+
+    <!-- 工具权限与存储 -->
+    <string name="settings_tool_permissions_title">工具权限</string>
+    <string name="settings_allow_shell">允许 Shell 执行</string>
+    <string name="settings_allow_file_tools">允许文件工具</string>
+    <string name="settings_allow_network_fetch">允许网页抓取</string>
+    <string name="settings_allow_local_network">允许抓取本机与局域网地址</string>
+    <string name="settings_tool_permissions_hint">Shell 使用应用权限执行，不是隔离沙箱。局域网开关仅限制网页抓取，不限制模型接口、搜索服务或 Shell 网络访问。关闭 Shell 只禁止新建命令，仍可查看和停止已有进程，不会自动停止后台进程。</string>
+    <string name="settings_storage_title">存储</string>
+    <string name="settings_storage_refresh">刷新占用</string>
+    <string name="settings_storage_usage">历史记录：%1$s\n图片附件：%2$s</string>
+    <string name="settings_storage_usage_incomplete">部分文件无法统计</string>
+    <string name="settings_attachment_storage_limit_label">图片附件存储上限（MiB）</string>
+    <string name="settings_attachment_storage_limit_hint">0 表示不限额；不删除已有数据；可在侧栏长按删除不需要的对话。额度按磁盘上的 Base64 UTF-8 字节统计，不是解码后的图片大小，不限制文本或工具结果。</string>
 
     <!-- 多提供商 -->
     <string name="settings_providers_title">模型提供商</string>
@@ -172,6 +187,12 @@
     <string name="model_dialog_reasoning_value_label">请求值</string>
     <string name="model_dialog_reasoning_required">至少启用一个推理档位。</string>
     <string name="model_dialog_reasoning_value_required">已启用的推理档位必须填写请求值。</string>
+    <string name="model_supports_tools">支持工具调用</string>
+    <string name="model_supports_vision">支持图片输入</string>
+    <string name="model_supports_usage">支持用量统计</string>
+    <string name="model_without_tools">无工具</string>
+    <string name="model_without_vision">无图片</string>
+    <string name="model_without_usage">无用量</string>
     <string name="model_context_length_set">上下文 %1$d</string>
     <string name="model_context_length_unset">上下文未设置</string>
     <string name="model_reasoning_summary">推理 %1$s</string>

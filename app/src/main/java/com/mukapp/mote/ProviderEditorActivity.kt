@@ -204,8 +204,12 @@ class ProviderEditorActivity : AppCompatActivity() {
                 fetchedModels.clear()
                 fetchedModels.addAll(
                     fetched.map { model ->
+                        val existing = models.firstOrNull { it.id == model.id }
                         model.copy(
-                            reasoningEfforts = ReasoningEffortOptions.defaultMappingFor(selectedProviderType)
+                            reasoningEfforts = ReasoningEffortOptions.defaultMappingFor(selectedProviderType),
+                            supportsTools = existing?.supportsTools ?: true,
+                            supportsVision = existing?.supportsVision ?: true,
+                            supportsUsage = existing?.supportsUsage ?: true
                         )
                     }
                 )
@@ -236,7 +240,10 @@ class ProviderEditorActivity : AppCompatActivity() {
             remoteModel.copy(
                 displayName = existing.displayName,
                 contextLength = remoteModel.contextLength.takeIf { it > 0 } ?: existing.contextLength,
-                reasoningEfforts = existing.reasoningEfforts
+                reasoningEfforts = existing.reasoningEfforts,
+                supportsTools = existing.supportsTools,
+                supportsVision = existing.supportsVision,
+                supportsUsage = existing.supportsUsage
             )
         }
         showModelDialog(index = null, existing = initial)
@@ -286,6 +293,9 @@ class ProviderEditorActivity : AppCompatActivity() {
         dialogBinding.editModelContextLength.setText(
             existing?.contextLength?.takeIf { it > 0 }?.toString().orEmpty()
         )
+        dialogBinding.checkboxModelSupportsTools.isChecked = existing?.supportsTools ?: true
+        dialogBinding.checkboxModelSupportsVision.isChecked = existing?.supportsVision ?: true
+        dialogBinding.checkboxModelSupportsUsage.isChecked = existing?.supportsUsage ?: true
         val reasoningRows = buildReasoningEditorRows(dialogBinding, existing)
         dialogBinding.textModelReasoningError.isVisible = false
 
@@ -304,6 +314,18 @@ class ProviderEditorActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 dialogBinding.inputModelId.error = null
+
+                val rawContextLength = dialogBinding.editModelContextLength.text?.toString().orEmpty().trim()
+                val contextLength = if (rawContextLength.isEmpty() || rawContextLength == "0") {
+                    0
+                } else {
+                    rawContextLength.toIntOrNull()?.takeIf { it > 0 }
+                }
+                if (contextLength == null) {
+                    dialogBinding.inputModelContextLength.error = getString(R.string.nonnegative_integer_required)
+                    return@setOnClickListener
+                }
+                dialogBinding.inputModelContextLength.error = null
 
                 val reasoningEfforts = linkedMapOf<String, String>()
                 var hasInvalidValue = false
@@ -330,8 +352,6 @@ class ProviderEditorActivity : AppCompatActivity() {
                 }
                 dialogBinding.textModelReasoningError.isVisible = false
 
-                val contextLength = dialogBinding.editModelContextLength.text?.toString()
-                    ?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
                 val newModel = ModelInfo(
                     id = id,
                     displayName = dialogBinding.editModelDisplayName.text?.toString().orEmpty().trim(),
@@ -339,7 +359,10 @@ class ProviderEditorActivity : AppCompatActivity() {
                     reasoningEfforts = ReasoningEffortOptions.normalizeMapping(
                         selectedProviderType,
                         reasoningEfforts
-                    )
+                    ),
+                    supportsTools = dialogBinding.checkboxModelSupportsTools.isChecked,
+                    supportsVision = dialogBinding.checkboxModelSupportsVision.isChecked,
+                    supportsUsage = dialogBinding.checkboxModelSupportsUsage.isChecked
                 )
                 if (index != null && index in models.indices) {
                     models[index] = newModel

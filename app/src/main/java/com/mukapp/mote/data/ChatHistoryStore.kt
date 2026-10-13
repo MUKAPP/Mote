@@ -30,8 +30,21 @@ import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.LinkOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
+
+internal class AttachmentPreparationBatch(
+    val id: String,
+    val rootPath: String,
+    val conversationId: String,
+    val sourceAttachments: List<ChatAttachment>,
+    val expectedRefs: Set<String>
+) {
+    internal val createdRefs = mutableSetOf<String>()
+    internal var committedMessageId: String? = null
+    internal var finished: Boolean = false
+}
 
 object ChatHistoryStore {
     private const val Component = "History"
@@ -40,7 +53,7 @@ object ChatHistoryStore {
     private const val ConversationsDirectoryName = "conversations"
     private const val IndexFileName = "index.json"
     private const val SummaryIndexFileName = "summaries.json"
-    private const val SummaryIndexSchemaVersion = 1
+    private const val SummaryIndexSchemaVersion = 2
     private const val BlobsDirectoryName = "blobs"
     private const val BlobFileExtension = "b64"
     private const val LegacyFileName = "history.json"
@@ -49,20 +62,296 @@ object ChatHistoryStore {
     private const val DefaultConversationTitle = "新对话"
     private val SafeConversationIdPattern = Regex("^[A-Za-z0-9_-]{1,80}$")
 
+    private data class SummaryIndexEntry(
+        val summary: ConversationSummary,
+        val fileMtime: Long,
+        val fileLength: Long
+    )
+
     private val summaryCacheLock = Any()
 
     /**
      * 对话数据变更互斥锁：串行化 saveConversation / updateConversationTitle /
      * deleteConversation / clearConversation，避免并发调用方对同一对话文件读-改-写
      * 交错产生 last-writer-wins（当前 ViewModel 侧已由 persistenceMutex 串行，
-     * 此锁在 store 层收口该约束）。锁序：先本锁，后 summaryCacheLock；
-     * 旧历史迁移持 summaryCacheLock 时直接写文件、不经上述入口，无反向嵌套。
+     * 此锁在 store 层收口该约束）。锁序：mutation → summaryCacheLock / pinLock；
+     * pinLock 不反向获取磁盘锁，旧历史迁移同样先获取 mutation。
      */
     private val conversationMutationLock = Any()
+
+    // 需要同时持有两把锁时始终 mutation → pin；Main 只操作 pin 元数据。
+    private val pinLock = Any()
+    private data class PinKey(val rootPath: String, val conversationId: String, val ownerId: String)
+    private val attachmentPins = mutableMapOf<PinKey, Set<String>>()
+    private val preparationBatches = mutableMapOf<PinKey, AttachmentPreparationBatch>()
+    private val retainedMessageIds = mutableMapOf<PinKey, Set<String>>()
+
+    internal fun attachmentRefs(attachments: List<ChatAttachment>): Set<String> =
+        attachments.mapNotNull { it.base64Ref?.takeIf(::isSafeBlobFileName) }.toSet()
+
+    internal fun updateAttachmentPins(context: Context, conversationId: String, ownerId: String, refs: Set<String>) {
+        synchronized(pinLock) {
+            val key = PinKey(context.filesDir.absolutePath, conversationId, ownerId)
+            val safeRefs = refs.filterTo(mutableSetOf(), ::isSafeBlobFileName)
+            if (safeRefs.isEmpty()) attachmentPins.remove(key) else attachmentPins[key] = safeRefs
+        }
+    }
+
+    // 只在 pinLock 内使用。
+    private fun isRefPinned(rootPath: String, conversationId: String, ref: String): Boolean =
+        attachmentPins.any { (key, refs) -> key.rootPath == rootPath && key.conversationId == conversationId && ref in refs }
+
+    private fun hasPins(rootPath: String, conversationId: String): Boolean =
+        attachmentPins.keys.any { it.rootPath == rootPath && it.conversationId == conversationId }
+
+    internal fun beginAttachmentPreparation(context: Context, conversationId: String, attachments: List<ChatAttachment>): AttachmentPreparationBatch {
+        require(isSafeConversationId(conversationId)) { "对话 ID 不合法。" }
+        val expectedRefs = attachments.filter { it.type == ChatAttachmentType.Image }.mapNotNull { attachment ->
+            attachment.base64Ref?.takeIf(::isSafeBlobFileName)
+                ?: attachment.id.takeIf { !attachment.base64Data.isNullOrBlank() && SafeConversationIdPattern.matches(it) }
+                    ?.let { "$it.$BlobFileExtension" }
+        }.toSet() + attachmentRefs(attachments)
+        val batch = AttachmentPreparationBatch(UUID.randomUUID().toString(), context.filesDir.absolutePath, conversationId, attachments.toList(), expectedRefs)
+        synchronized(pinLock) {
+            val key = PinKey(batch.rootPath, conversationId, batch.id)
+            preparationBatches[key] = batch
+            attachmentPins[key] = expectedRefs
+        }
+        return batch
+    }
+
+    internal fun storeAttachmentPayloads(context: Context, batch: AttachmentPreparationBatch, limitBytes: Long = 0): List<ChatAttachment> = synchronized(conversationMutationLock) {
+        check(context.filesDir.absolutePath == batch.rootPath)
+        synchronized(pinLock) {
+            check(preparationBatches[PinKey(batch.rootPath, batch.conversationId, batch.id)] === batch && !batch.finished)
+        }
+        val blobDir = conversationBlobDir(context, batch.conversationId)
+        val newPayloads = linkedMapOf<String, String>()
+        val prepared = batch.sourceAttachments.filter { it.type == ChatAttachmentType.Image }.distinctBy { it.id }.associate { attachment ->
+            if (attachment.base64Ref != null) {
+                check(isSafeBlobFileName(attachment.base64Ref)) { "附件内容缺失或不可读，请重新选择图片。" }
+                attachment.id to attachment.copy(base64Data = null)
+            } else {
+                val base64 = attachment.base64Data?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("附件内容缺失或不可读，请重新选择图片。")
+                check(SafeConversationIdPattern.matches(attachment.id)) { "附件 ID 不合法。" }
+                val ref = "${attachment.id}.$BlobFileExtension"
+                if (!File(blobDir, ref).exists()) newPayloads[ref] = base64
+                attachment.id to attachment.copy(base64Data = null, base64Ref = ref)
+            }
+        }
+        if (limitBytes > 0 && newPayloads.isNotEmpty()) {
+            val usage = scanStorage(File(File(context.filesDir, DirectoryName), BlobsDirectoryName), attachmentsOnly = true)
+            check(usage.complete) { "无法统计附件占用，暂时不能新增图片。" }
+            val newBytes = newPayloads.values.sumOf { it.length.toLong() }
+            check(newBytes <= limitBytes && usage.attachmentBytes <= limitBytes - newBytes) {
+                "附件存储将超过设置的上限，请删除不需要的对话或调整上限。"
+            }
+        }
+        newPayloads.forEach { (ref, base64) ->
+            if (Thread.currentThread().isInterrupted) throw CancellationException("附件准备已取消。")
+            writeBlobAtomically(File(blobDir, ref), base64) {
+                synchronized(pinLock) { batch.createdRefs += ref }
+            }
+        }
+        batch.sourceAttachments.map { attachment ->
+            if (attachment.type == ChatAttachmentType.Image) prepared.getValue(attachment.id) else attachment
+        }
+    }
+
+    internal fun commitAttachmentPreparation(batch: AttachmentPreparationBatch, messageId: String) {
+        synchronized(pinLock) {
+            check(!batch.finished)
+            batch.committedMessageId = messageId
+        }
+    }
+
+    internal fun finishAttachmentPreparation(context: Context, batch: AttachmentPreparationBatch, handedOff: Boolean) {
+        synchronized(conversationMutationLock) {
+            val rollbackRefs = synchronized(pinLock) {
+                if (batch.finished) return
+                batch.finished = true
+                if (handedOff && batch.committedMessageId != null) {
+                    null
+                } else {
+                    val key = PinKey(batch.rootPath, batch.conversationId, batch.id)
+                    attachmentPins.remove(key)
+                    preparationBatches.remove(key)
+                    batch.createdRefs.toSet()
+                }
+            }
+            cleanupUnreferencedAttachments(context, batch.conversationId, rollbackRefs)
+        }
+    }
+
+    private fun releaseSavedPreparations(context: Context, conversationId: String, payload: JSONObject, refs: Set<String>) {
+        val messageIds = listOf("uiMessages", "conversationMessages").flatMap { key ->
+            val messages = payload.optJSONArray(key) ?: return@flatMap emptyList<String>()
+            (0 until messages.length()).mapNotNull { messages.optJSONObject(it)?.optString("id") }
+        }.toSet()
+        synchronized(pinLock) {
+            val keys = preparationBatches.filter { (key, batch) ->
+                key.rootPath == context.filesDir.absolutePath && key.conversationId == conversationId &&
+                    batch.committedMessageId in messageIds && refs.containsAll(batch.expectedRefs)
+            }.keys.toList()
+            keys.forEach { key -> preparationBatches.remove(key); attachmentPins.remove(key) }
+        }
+    }
+
+    internal fun retainAttachmentPreparations(context: Context, conversationId: String, ownerId: String, messageIds: Set<String>) {
+        synchronized(pinLock) {
+            val rootPath = context.filesDir.absolutePath
+            val key = PinKey(rootPath, conversationId, ownerId)
+            if (messageIds.isEmpty()) retainedMessageIds.remove(key) else retainedMessageIds[key] = messageIds
+            releaseUnusedPreparationsLocked(rootPath, conversationId)
+        }
+    }
+
+    private fun releaseUnusedPreparationsLocked(rootPath: String, conversationId: String) {
+        val hasSave = attachmentPins.keys.any {
+            it.rootPath == rootPath && it.conversationId == conversationId && it.ownerId.startsWith("save:")
+        }
+        if (hasSave) return
+        val retained = retainedMessageIds.filterKeys { it.rootPath == rootPath && it.conversationId == conversationId }.values.flatten().toSet()
+        val unused = preparationBatches.filter { (key, batch) ->
+            key.rootPath == rootPath && key.conversationId == conversationId && batch.finished &&
+                batch.committedMessageId !in retained
+        }.keys.toList()
+        unused.forEach { preparationBatches.remove(it); attachmentPins.remove(it) }
+    }
+
+    // IO 清理；排队快照仍持有 save owner 时不得撤掉 pending-save pin。
+    internal fun cleanupUnreferencedAttachments(context: Context, conversationId: String, onlyRefs: Set<String>? = null) {
+        if (!isSafeConversationId(conversationId)) return
+        synchronized(conversationMutationLock) {
+            synchronized(pinLock) {
+                releaseUnusedPreparationsLocked(context.filesDir.absolutePath, conversationId)
+            }
+            val diskRefs = readDiskAttachmentRefs(context, conversationId) ?: return
+            val blobDir = File(File(File(context.filesDir, DirectoryName), BlobsDirectoryName), conversationId)
+            if (onlyRefs == null) pruneStaleBlobs(context, conversationId, blobDir, diskRefs)
+            else onlyRefs.forEach { ref ->
+                synchronized(pinLock) {
+                    if (ref !in diskRefs && !isRefPinned(context.filesDir.absolutePath, conversationId, ref)) {
+                        val file = File(blobDir, ref)
+                        if (file.exists() && !file.delete()) MoteLog.w(Component, "附件准备回滚清理失败，文件仍占用存储。")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun readDiskAttachmentRefs(context: Context, conversationId: String): Set<String>? {
+        val file = File(File(File(context.filesDir, DirectoryName), ConversationsDirectoryName), "$conversationId.json")
+        return try {
+            val attributes = try {
+                Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (_: NoSuchFileException) {
+                val corruptedDir = File(file.parentFile, CorruptedDirectoryName)
+                val corruptedFiles = if (corruptedDir.exists()) {
+                    corruptedDir.listFiles() ?: throw IOException("无法读取已隔离历史目录。")
+                } else emptyArray()
+                if (corruptedFiles.any { it.name.startsWith("$conversationId.") }) {
+                    MoteLog.w(Component, "历史记录已隔离，保留附件文件与存储占用。")
+                    return null
+                }
+                return emptySet()
+            }
+            check(attributes.isRegularFile && !attributes.isSymbolicLink)
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val refs = mutableSetOf<String>()
+            listOf("uiMessages", "conversationMessages").forEach { key ->
+                val messages = root.getJSONArray(key)
+                for (index in 0 until messages.length()) {
+                    val attachments = messages.getJSONObject(index).optJSONArray("attachments") ?: continue
+                    for (attachmentIndex in 0 until attachments.length()) {
+                        val attachment = attachments.getJSONObject(attachmentIndex)
+                        val ref = attachment.optString("base64Ref").takeIf { it.isNotBlank() }
+                        if (ref != null) {
+                            check(isSafeBlobFileName(ref))
+                            refs += ref
+                        } else if (attachment.optString("base64Data").isNotBlank()) {
+                            val id = attachment.optString("id")
+                            if (SafeConversationIdPattern.matches(id)) refs += "$id.$BlobFileExtension"
+                        }
+                    }
+                }
+            }
+            refs
+        } catch (error: Exception) {
+            MoteLog.w(Component, "无法可靠读取附件磁盘引用，保留文件；存储占用未释放。", error)
+            null
+        }
+    }
+
+    internal fun readAttachmentBase64(context: Context, conversationId: String, base64Ref: String): String {
+        try {
+            check(isSafeConversationId(conversationId) && isSafeBlobFileName(base64Ref))
+            val file = File(File(File(File(context.filesDir, DirectoryName), BlobsDirectoryName), conversationId), base64Ref)
+            check(Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS))
+            return file.readText(Charsets.UTF_8).also { check(it.isNotBlank()) }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            throw IllegalStateException("附件内容缺失或不可读，请重新选择图片。", error)
+        }
+    }
+
+    internal fun materializeAttachmentsForRequest(context: Context, conversationId: String, messages: List<ChatMessage>): List<ChatMessage> {
+        val cache = mutableMapOf<String, String>()
+        return messages.map { message ->
+            if (message.attachments.none { it.type == ChatAttachmentType.Image }) return@map message
+            message.copy(attachments = message.attachments.map { attachment ->
+                if (attachment.type != ChatAttachmentType.Image || !attachment.base64Data.isNullOrBlank()) attachment
+                else {
+                    val ref = attachment.base64Ref ?: throw IllegalStateException("附件内容缺失或不可读，请重新选择图片。")
+                    attachment.copy(base64Data = cache.getOrPut(ref) { readAttachmentBase64(context, conversationId, ref) })
+                }
+            })
+        }
+    }
+
+    data class HistoryStorageUsage(val totalBytes: Long, val attachmentBytes: Long, val fileCount: Int, val complete: Boolean)
+
+    fun getStorageUsage(context: Context): HistoryStorageUsage = scanStorage(File(context.filesDir, DirectoryName))
+
+    private fun scanStorage(root: File, attachmentsOnly: Boolean = false): HistoryStorageUsage {
+        var totalBytes = 0L
+        var attachmentBytes = 0L
+        var fileCount = 0
+        var complete = true
+        fun visit(file: File, inBlobs: Boolean) {
+            val attributes = try {
+                Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (_: NoSuchFileException) {
+                if (file != root) complete = false
+                return
+            } catch (_: Exception) { complete = false; return }
+            if (file == root && !attributes.isDirectory) {
+                complete = false
+                return
+            }
+            when {
+                attributes.isSymbolicLink -> complete = false
+                attributes.isDirectory -> {
+                    val children = try { file.listFiles() } catch (_: Exception) { null }
+                    if (children == null) complete = false
+                    else children.forEach { visit(it, inBlobs || (file == root && it.name == BlobsDirectoryName)) }
+                }
+                attributes.isRegularFile -> {
+                    totalBytes += attributes.size()
+                    if (inBlobs) attachmentBytes += attributes.size()
+                    fileCount++
+                }
+                else -> complete = false
+            }
+        }
+        visit(root, attachmentsOnly)
+        return HistoryStorageUsage(totalBytes, attachmentBytes, fileCount, complete)
+    }
     @Volatile
     private var legacyMigrationChecked: Boolean = false
     @Volatile
-    private var cachedConversationSummaries: List<ConversationSummary>? = null
+    private var cachedSummaryEntries: List<SummaryIndexEntry>? = null
     @Volatile
     private var orphanSweepDone: Boolean = false
 
@@ -111,6 +400,9 @@ object ChatHistoryStore {
                 put("contextSummaries", serializeContextSummaries(contextSummaries))
             }
             writeConversationPayload(context, safeConversationId, historyFile, payload)
+            val summaryEntry = readSummaryFileAttributes(historyFile)?.let { attributes ->
+                parseSummaryIndexEntry(historyFile, payload, attributes)
+            }
             if (loadCurrentConversationId(context) == safeConversationId) {
                 saveCurrentConversationId(
                     context = context,
@@ -118,9 +410,7 @@ object ChatHistoryStore {
                     allowMissingConversation = false
                 )
             }
-            parseConversationSummary(historyFile, payload)?.let { summary ->
-                upsertCachedSummary(context, summary)
-            }
+            summaryEntry?.let { upsertCachedSummary(context, it) }
             MoteLog.i(
                 Component,
                 MoteLog.event(
@@ -197,8 +487,7 @@ object ChatHistoryStore {
         }
 
         val root = readJsonObjectOrNull(file) ?: return null
-        // v3 附件外置：把 base64Ref 读回 base64Data，上层内存模型不感知外置。v2 内联文件天然 no-op。
-        inlineAttachmentBlobs(root, conversationBlobDir(context, conversationId))
+        // v3 保留引用；图片内容仅在缩略图或实际请求的 IO 边界加载。
         return deserializeConversation(file, root).also { state ->
             MoteLog.d(
                 Component,
@@ -216,8 +505,8 @@ object ChatHistoryStore {
     fun listConversations(context: Context): List<ConversationSummary> {
         migrateLegacyConversationIfNeeded(context)
 
-        val summaries = synchronized(summaryCacheLock) {
-            cachedConversationSummaries?.also { cached ->
+        val entries = synchronized(summaryCacheLock) {
+            cachedSummaryEntries?.also { cached ->
                 MoteLog.d(Component, MoteLog.event("对话列表缓存命中", "count" to cached.size))
             } ?: run {
                 // 冷启动三级读取：内存缓存 → 摘要索引（须与目录一致）→ 全量扫描重建。
@@ -231,25 +520,26 @@ object ChatHistoryStore {
                         writeSummaryIndex(context, rebuilt)
                     }
                 }
-                cachedConversationSummaries = resolved
+                cachedSummaryEntries = resolved
                 resolved
             }
         }
         sweepOrphanBlobDirsOnce(context)
-        return summaries
+        return entries.map { it.summary }
     }
 
-    private fun scanConversationSummaries(context: Context): List<ConversationSummary> {
+    private fun scanConversationSummaries(context: Context): List<SummaryIndexEntry> {
         val conversationsDir = ensureConversationsDir(context)
         val files = conversationsDir.listFiles { file ->
-            file.isFile &&
-                    file.extension.equals("json", ignoreCase = true) &&
+            file.extension.equals("json", ignoreCase = true) &&
                     isSafeConversationId(file.nameWithoutExtension)
         }.orEmpty()
         return files.mapNotNull { file ->
+            // 指纹必须先于正文读取；扫描中变更时，下次一致性校验会拒绝这份索引。
+            val attributes = readSummaryFileAttributes(file) ?: return@mapNotNull null
             val root = readJsonObjectOrNull(file) ?: return@mapNotNull null
-            parseConversationSummary(file, root)
-        }.sortedByDescending { it.updatedAt }.also { summaries ->
+            parseSummaryIndexEntry(file, root, attributes)
+        }.sortedByDescending { it.summary.updatedAt }.also { summaries ->
             MoteLog.i(
                 Component,
                 MoteLog.event("已扫描对话列表", "files" to files.size, "summaries" to summaries.size)
@@ -257,21 +547,21 @@ object ChatHistoryStore {
         }
     }
 
-    private fun upsertCachedSummary(context: Context, summary: ConversationSummary) {
+    private fun upsertCachedSummary(context: Context, entry: SummaryIndexEntry) {
         synchronized(summaryCacheLock) {
-            val summaries = cachedConversationSummaries ?: return
-            val updated = (summaries.filterNot { it.id == summary.id } + summary)
-                .sortedByDescending { it.updatedAt }
-            cachedConversationSummaries = updated
+            val entries = cachedSummaryEntries ?: return
+            val updated = (entries.filterNot { it.summary.id == entry.summary.id } + entry)
+                .sortedByDescending { it.summary.updatedAt }
+            cachedSummaryEntries = updated
             writeSummaryIndex(context, updated)
         }
     }
 
     private fun removeCachedSummary(context: Context, conversationId: String) {
         synchronized(summaryCacheLock) {
-            val summaries = cachedConversationSummaries ?: return
-            val updated = summaries.filterNot { it.id == conversationId }
-            cachedConversationSummaries = updated
+            val entries = cachedSummaryEntries ?: return
+            val updated = entries.filterNot { it.summary.id == conversationId }
+            cachedSummaryEntries = updated
             writeSummaryIndex(context, updated)
         }
     }
@@ -279,7 +569,7 @@ object ChatHistoryStore {
     private fun resetCaches() {
         synchronized(summaryCacheLock) {
             legacyMigrationChecked = false
-            cachedConversationSummaries = null
+            cachedSummaryEntries = null
         }
     }
 
@@ -319,6 +609,12 @@ object ChatHistoryStore {
 
             // unlink 成功或确认文件不存在即提交；此后的清理失败不能再报告为未删除。
             Files.deleteIfExists(file.toPath())
+            synchronized(pinLock) {
+                val rootPath = context.filesDir.absolutePath
+                attachmentPins.keys.removeAll { it.rootPath == rootPath && it.conversationId == conversationId }
+                preparationBatches.keys.removeAll { it.rootPath == rootPath && it.conversationId == conversationId }
+                retainedMessageIds.keys.removeAll { it.rootPath == rootPath && it.conversationId == conversationId }
+            }
             var cleanupFailed = false
             fun recordCleanupFailure(message: String, error: Exception) {
                 if (error is CancellationException) throw error
@@ -382,9 +678,9 @@ object ChatHistoryStore {
             val root = readJsonObjectOrNull(file) ?: return false
             root.put("title", normalizeTitle(normalizedTitle))
             writeJsonAtomically(file, root)
-            parseConversationSummary(file, root)?.let { summary ->
-                upsertCachedSummary(context, summary)
-            }
+            readSummaryFileAttributes(file)?.let { attributes ->
+                parseSummaryIndexEntry(file, root, attributes)
+            }?.let { upsertCachedSummary(context, it) }
             MoteLog.i(
                 Component,
                 MoteLog.event(
@@ -412,14 +708,14 @@ object ChatHistoryStore {
         }
     }
 
-    private fun migrateLegacyConversationIfNeeded(context: Context) {
+    private fun migrateLegacyConversationIfNeeded(context: Context): Unit = synchronized(conversationMutationLock) migration@ {
         if (legacyMigrationChecked) {
-            return
+            return@migration
         }
 
         synchronized(summaryCacheLock) {
             if (legacyMigrationChecked) {
-                return
+                return@migration
             }
 
             val historyDir = ensureHistoryDir(context)
@@ -440,21 +736,21 @@ object ChatHistoryStore {
                         "hasMarker" to migrationMarkerFile.exists()
                     )
                 )
-                return
+                return@migration
             }
 
             val legacyFile = File(historyDir, LegacyFileName)
             if (!legacyFile.exists() || !legacyFile.isFile) {
                 legacyMigrationChecked = true
                 MoteLog.d(Component, "未发现旧版历史文件，跳过迁移。")
-                return
+                return@migration
             }
 
             val legacyRoot = readJsonObjectOrNull(legacyFile)
             if (legacyRoot == null) {
                 legacyMigrationChecked = true
                 MoteLog.w(Component, "旧版历史文件无法解析，跳过迁移。")
-                return
+                return@migration
             }
 
             val legacyState = deserializeLegacyConversation(legacyRoot)
@@ -467,9 +763,9 @@ object ChatHistoryStore {
                     }
                 )
                 legacyMigrationChecked = true
-                cachedConversationSummaries = null
+                cachedSummaryEntries = null
                 MoteLog.i(Component, "旧版历史为空，已写入迁移标记。")
-                return
+                return@migration
             }
 
             val conversationId = newConversationId()
@@ -502,7 +798,7 @@ object ChatHistoryStore {
                 }
             )
             legacyMigrationChecked = true
-            cachedConversationSummaries = null
+            cachedSummaryEntries = null
             MoteLog.i(
                 Component,
                 MoteLog.event(
@@ -598,7 +894,7 @@ object ChatHistoryStore {
             .filter { it.content.isNotBlank() && it.sourceMessageIds.isNotEmpty() }
     }
 
-    private fun parseConversationSummary(file: File, root: JSONObject): ConversationSummary? {
+    private fun parseConversationSummary(file: File, root: JSONObject, fileMtime: Long = file.lastModified()): ConversationSummary? {
         val conversationId = file.nameWithoutExtension
         if (!isSafeConversationId(conversationId)) {
             return null
@@ -610,18 +906,26 @@ object ChatHistoryStore {
             title = root.optString("title").ifBlank {
                 buildFallbackTitle(deserializeMessages(uiMessages))
             },
-            createdAt = root.optLong("createdAt", file.lastModified()).takeIf { it > 0L }
-                ?: file.lastModified(),
-            updatedAt = root.optLong("updatedAt", file.lastModified()).takeIf { it > 0L }
-                ?: file.lastModified(),
+            createdAt = root.optLong("createdAt", fileMtime).takeIf { it > 0L } ?: fileMtime,
+            updatedAt = root.optLong("updatedAt", fileMtime).takeIf { it > 0L } ?: fileMtime,
             messageCount = messageCount
         )
+    }
+
+    private fun readSummaryFileAttributes(file: File): BasicFileAttributes? = runCatching {
+        Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+    }.getOrNull()?.takeIf { it.isRegularFile }
+
+    private fun parseSummaryIndexEntry(file: File, root: JSONObject, attributes: BasicFileAttributes): SummaryIndexEntry? {
+        val fileMtime = attributes.lastModifiedTime().toMillis()
+        val summary = parseConversationSummary(file, root, fileMtime) ?: return null
+        return SummaryIndexEntry(summary, fileMtime, attributes.size())
     }
 
     /** 取对话的 createdAt/title 元数据：优先内存摘要缓存（0 次读盘），未命中时回退单文件读取。 */
     private fun conversationMetadata(conversationId: String, file: File): ConversationSummary? {
         synchronized(summaryCacheLock) {
-            cachedConversationSummaries?.firstOrNull { it.id == conversationId }?.let { return it }
+            cachedSummaryEntries?.firstOrNull { it.summary.id == conversationId }?.summary?.let { return it }
         }
         if (!file.exists()) {
             return null
@@ -632,8 +936,8 @@ object ChatHistoryStore {
 
     private fun summaryIndexFile(context: Context): File = File(ensureHistoryDir(context), SummaryIndexFileName)
 
-    /** 写摘要索引。索引是衍生数据，写失败只告警不阻断保存；下次冷启动回退全量扫描重建。 */
-    private fun writeSummaryIndex(context: Context, summaries: List<ConversationSummary>) {
+    /** 索引是衍生数据；仅写 entry 自带指纹，不为旧摘要重新读取 stat。写失败只告警。 */
+    private fun writeSummaryIndex(context: Context, entries: List<SummaryIndexEntry>) {
         runCatching {
             writeJsonAtomically(
                 summaryIndexFile(context),
@@ -643,7 +947,8 @@ object ChatHistoryStore {
                     put(
                         "conversations",
                         JSONArray().apply {
-                            summaries.forEach { summary ->
+                            entries.forEach { entry ->
+                                val summary = entry.summary
                                 put(
                                     JSONObject().apply {
                                         put("id", summary.id)
@@ -651,6 +956,8 @@ object ChatHistoryStore {
                                         put("createdAt", summary.createdAt)
                                         put("updatedAt", summary.updatedAt)
                                         put("messageCount", summary.messageCount)
+                                        put("fileMtime", entry.fileMtime)
+                                        put("fileLength", entry.fileLength)
                                     }
                                 )
                             }
@@ -659,12 +966,12 @@ object ChatHistoryStore {
                 }
             )
         }.onFailure { error ->
-            MoteLog.w(Component, MoteLog.event("写入摘要索引失败", "count" to summaries.size), error)
+            MoteLog.w(Component, MoteLog.event("写入摘要索引失败", "count" to entries.size), error)
         }
     }
 
-    /** 读摘要索引；损坏或版本不符时删除并返回 null（不走 quarantine，直接重建）。 */
-    private fun loadSummaryIndexOrNull(context: Context): List<ConversationSummary>? {
+    /** 索引损坏则删除，版本或字段无效则返回 null；调用方全量扫描重建。 */
+    private fun loadSummaryIndexOrNull(context: Context): List<SummaryIndexEntry>? {
         val file = summaryIndexFile(context)
         if (!file.exists() || !file.isFile) {
             return null
@@ -678,35 +985,54 @@ object ChatHistoryStore {
             return null
         }
         val array = root.optJSONArray("conversations") ?: return null
-        val summaries = buildList {
+        val entries = buildList {
+            val ids = mutableSetOf<String>()
             for (index in 0 until array.length()) {
                 val item = array.optJSONObject(index) ?: return null
                 val id = item.optString("id")
-                if (!isSafeConversationId(id)) {
+                if (!isSafeConversationId(id) || !ids.add(id)) {
                     return null
                 }
+                val fileMtime = summaryFingerprintLongOrNull(item.opt("fileMtime")) ?: return null
+                val fileLength = summaryFingerprintLongOrNull(item.opt("fileLength")) ?: return null
                 add(
-                    ConversationSummary(
-                        id = id,
-                        title = item.optString("title").ifBlank { DefaultConversationTitle },
-                        createdAt = item.optLong("createdAt", 0L),
-                        updatedAt = item.optLong("updatedAt", 0L),
-                        messageCount = item.optInt("messageCount", 0)
+                    SummaryIndexEntry(
+                        summary = ConversationSummary(
+                            id = id,
+                            title = item.optString("title").ifBlank { DefaultConversationTitle },
+                            createdAt = item.optLong("createdAt", 0L),
+                            updatedAt = item.optLong("updatedAt", 0L),
+                            messageCount = item.optInt("messageCount", 0)
+                        ),
+                        fileMtime = fileMtime,
+                        fileLength = fileLength
                     )
                 )
             }
         }
-        return summaries.sortedByDescending { it.updatedAt }
+        return entries.sortedByDescending { it.summary.updatedAt }
     }
 
-    /** 索引与目录一致性校验：对话写入与索引写入之间崩溃会导致 id 集合不一致，此时废弃索引重建。 */
-    private fun summaryIndexMatchesDirectory(context: Context, summaries: List<ConversationSummary>): Boolean {
-        val directoryIds = ensureConversationsDir(context).listFiles { file ->
-            file.isFile &&
-                    file.extension.equals("json", ignoreCase = true) &&
+    private fun summaryFingerprintLongOrNull(value: Any?): Long? = when (value) {
+        is Long -> value
+        is Int -> value.toLong()
+        else -> null
+    }?.takeIf { it >= 0L }
+
+    /** 校验 ID 与内容绑定的 mtime/length；同 ID 文件被更新也必须废弃旧摘要索引。 */
+    private fun summaryIndexMatchesDirectory(context: Context, entries: List<SummaryIndexEntry>): Boolean {
+        val files = ensureConversationsDir(context).listFiles { file ->
+            file.extension.equals("json", ignoreCase = true) &&
                     isSafeConversationId(file.nameWithoutExtension)
-        }?.map { it.nameWithoutExtension }?.toSet().orEmpty()
-        return summaries.map { it.id }.toSet() == directoryIds
+        } ?: return false
+        if (files.size != entries.size) return false
+        val entriesById = entries.associateByTo(mutableMapOf()) { it.summary.id }
+        return files.all { file ->
+            val entry = entriesById.remove(file.nameWithoutExtension) ?: return@all false
+            val attributes = readSummaryFileAttributes(file) ?: return@all false
+            entry.fileMtime == attributes.lastModifiedTime().toMillis() &&
+                    entry.fileLength == attributes.size()
+        }
     }
 
     private fun blobsRootDir(context: Context): File = File(ensureHistoryDir(context), BlobsDirectoryName)
@@ -723,7 +1049,8 @@ object ChatHistoryStore {
         val blobDir = conversationBlobDir(context, conversationId)
         val referenced = externalizeAttachmentBlobs(payload, blobDir)
         writeJsonAtomically(file, payload)
-        pruneStaleBlobs(blobDir, referenced)
+        releaseSavedPreparations(context, conversationId, payload, referenced)
+        pruneStaleBlobs(context, conversationId, blobDir, referenced)
     }
 
     /**
@@ -740,7 +1067,10 @@ object ChatHistoryStore {
                     val attachment = attachments.optJSONObject(attachmentIndex) ?: continue
                     val existingRef = attachment.optString("base64Ref").takeIf { it.isNotBlank() }
                     if (existingRef != null) {
-                        referenced += existingRef
+                        if (isSafeBlobFileName(existingRef)) {
+                            referenced += existingRef
+                            attachment.remove("base64Data")
+                        }
                         continue
                     }
                     val base64 = attachment.optString("base64Data").takeIf { it.isNotEmpty() } ?: continue
@@ -762,46 +1092,25 @@ object ChatHistoryStore {
         return referenced
     }
 
-    /** 把 base64Ref 引用的 blob 读回为 base64Data；blob 缺失时告警并移除引用，附件其余字段保留。 */
-    private fun inlineAttachmentBlobs(root: JSONObject, blobDir: File) {
-        val blobCache = HashMap<String, String?>()
-        listOf("uiMessages", "conversationMessages").forEach { key ->
-            val messages = root.optJSONArray(key) ?: return@forEach
-            for (messageIndex in 0 until messages.length()) {
-                val attachments = messages.optJSONObject(messageIndex)?.optJSONArray("attachments") ?: continue
-                for (attachmentIndex in 0 until attachments.length()) {
-                    val attachment = attachments.optJSONObject(attachmentIndex) ?: continue
-                    val blobName = attachment.optString("base64Ref").takeIf { it.isNotBlank() } ?: continue
-                    attachment.remove("base64Ref")
-                    if (!isSafeBlobFileName(blobName)) {
-                        continue
-                    }
-                    val base64 = blobCache.getOrPut(blobName) {
-                        runCatching { File(blobDir, blobName).readText(Charsets.UTF_8) }.getOrElse {
-                            MoteLog.w(Component, MoteLog.event("附件 blob 缺失或不可读", "file" to blobName))
-                            null
-                        }
-                    }
-                    if (base64 != null) {
-                        attachment.put("base64Data", base64)
-                    }
+
+    /** 删除 blobDir 下不再被引用的 blob 与残留临时文件；全部清空后顺带删除空目录。 */
+    private fun pruneStaleBlobs(context: Context, conversationId: String, blobDir: File, referenced: Set<String>) {
+        val files = blobDir.listFiles { file -> file.isFile } ?: run {
+            if (blobDir.exists()) MoteLog.w(Component, "附件目录无法读取，未完成清理，文件仍占用存储。")
+            return
+        }
+        files.forEach { file ->
+            synchronized(pinLock) {
+                val pinned = isRefPinned(context.filesDir.absolutePath, conversationId, file.name)
+                val stale = file.name.endsWith(".tmp") ||
+                        (file.name.endsWith(".$BlobFileExtension") && file.name !in referenced && !pinned)
+                if (stale && !file.delete()) {
+                    MoteLog.w(Component, "无法删除滞留附件文件。")
                 }
             }
         }
-    }
-
-    /** 删除 blobDir 下不再被引用的 blob 与残留临时文件；全部清空后顺带删除空目录。 */
-    private fun pruneStaleBlobs(blobDir: File, referenced: Set<String>) {
-        val files = blobDir.listFiles { file -> file.isFile } ?: return
-        files.forEach { file ->
-            val stale = file.name.endsWith(".tmp") ||
-                    (file.name.endsWith(".$BlobFileExtension") && file.name !in referenced)
-            if (stale && !file.delete()) {
-                MoteLog.w(Component, MoteLog.event("无法删除滞留附件文件", "file" to file.name))
-            }
-        }
-        if (referenced.isEmpty()) {
-            blobDir.delete()
+        synchronized(pinLock) {
+            if (referenced.isEmpty() && !hasPins(context.filesDir.absolutePath, conversationId)) blobDir.delete()
         }
     }
 
@@ -819,11 +1128,11 @@ object ChatHistoryStore {
     }
 
     /** 清理没有对应对话文件的 blob 子目录。被隔离对话（corrupted/{id}.{时间戳}.corrupt.json）的 blob 保留以便恢复。 */
-    private fun sweepOrphanBlobDirs(context: Context) {
+    private fun sweepOrphanBlobDirs(context: Context): Unit = synchronized(conversationMutationLock) sweep@ {
         runCatching {
             val blobDirs = blobsRootDir(context).listFiles { file -> file.isDirectory }.orEmpty()
             if (blobDirs.isEmpty()) {
-                return
+                return@sweep
             }
             val conversationsDir = ensureConversationsDir(context)
             val liveIds = conversationsDir.listFiles { file ->
@@ -835,8 +1144,18 @@ object ChatHistoryStore {
                 .listFiles()?.map { it.name.substringBefore('.') }?.toSet().orEmpty()
             var removed = 0
             blobDirs.forEach { dir ->
-                if (dir.name !in liveIds && dir.name !in corruptedIds && dir.deleteRecursively()) {
-                    removed++
+                if (dir.name !in liveIds && dir.name !in corruptedIds) {
+                    val files = dir.listFiles() ?: return@forEach
+                    files.forEach { file ->
+                        synchronized(pinLock) {
+                            if (!hasPins(context.filesDir.absolutePath, dir.name) && !file.delete()) {
+                                MoteLog.w(Component, "无法删除孤儿附件文件。")
+                            }
+                        }
+                    }
+                    synchronized(pinLock) {
+                        if (!hasPins(context.filesDir.absolutePath, dir.name) && dir.delete()) removed++
+                    }
                 }
             }
             if (removed > 0) {
@@ -845,6 +1164,7 @@ object ChatHistoryStore {
         }.onFailure { error ->
             MoteLog.w(Component, "清理孤儿附件目录失败。", error)
         }
+        Unit
     }
 
     private fun loadCurrentConversationIdForDeletion(context: Context): String {
@@ -974,7 +1294,7 @@ object ChatHistoryStore {
     }
 
     /** 写附件 blob 文本：temp + fsync + 原子替换，与 [writeJsonAtomically] 同规格。 */
-    private fun writeBlobAtomically(file: File, text: String) {
+    private fun writeBlobAtomically(file: File, text: String, onMoved: (() -> Unit)? = null) {
         val parent = file.parentFile ?: throw IllegalStateException("附件文件路径无效。")
         if (!parent.exists() && !parent.mkdirs()) {
             throw IllegalStateException("无法创建附件目录。")
@@ -989,14 +1309,14 @@ object ChatHistoryStore {
                     output.fd.sync()
                 }
             }
-            moveReplacing(tempFile, file)
+            moveReplacing(tempFile, file, onMoved)
         }.onFailure { error ->
             tempFile.delete()
             throw error
         }
     }
 
-    private fun moveReplacing(source: File, target: File) {
+    private fun moveReplacing(source: File, target: File, onMoved: (() -> Unit)? = null) {
         try {
             Files.move(
                 source.toPath(),
@@ -1013,6 +1333,7 @@ object ChatHistoryStore {
                 StandardCopyOption.REPLACE_EXISTING
             )
         }
+        onMoved?.invoke()
         fsyncDirectoryQuietly(target.parentFile)
     }
 
@@ -1161,6 +1482,7 @@ object ChatHistoryStore {
                             put("textContent", attachment.textContent)
                         }
                         attachment.base64Data?.let { put("base64Data", it) }
+                        attachment.base64Ref?.let { put("base64Ref", it) }
                         put("truncated", attachment.truncated)
                     }
                 )
@@ -1300,7 +1622,8 @@ object ChatHistoryStore {
                             null
                         },
                         base64Data = item.optString("base64Data").takeIf { it.isNotBlank() },
-                        truncated = item.optBoolean("truncated", false)
+                        truncated = item.optBoolean("truncated", false),
+                        base64Ref = item.optString("base64Ref").takeIf { it.isNotBlank() }
                     )
                 )
             }

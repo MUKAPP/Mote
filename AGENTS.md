@@ -71,28 +71,28 @@ app/src/main/java/com/mukapp/mote/
 - 后台压缩结果仅留在独立 `viewModelScope` 的 Deferred 中；安全请求边界接管后才向 `contextSummariesInternal` 追加新摘要（保留旧摘要，后续摘要可引用旧摘要 ID），不删除 UI 与原始消息。后台完成不插提示、不保存；接管提示在最终 assistant 写回后插入，摘要、完整原始消息与提示沿用发送收尾保存，待接管结果不落盘。
 - 发送请求时只用最新可用摘要；摘要依赖旧摘要时递归解析，临时作为 User 消息放在未压缩消息前发送。
 - 删除/编辑/重试消息命中摘要的 `sourceMessageIds` 时，删除命中摘要及其后续依赖；最新摘要被删则自动回退旧摘要。
-- `compressionTriggerPercent` 是接管基线（占当前对话模型 `contextLength` 的百分比，默认 80%）；后台压缩提前 10 个百分点启动，最低从 1% 开始，默认 70% 预取/80% 接管。低于接管基线不使用已就绪摘要；达到基线但摘要未完成仍继续对话，仅超过模型上下文长度才等待。填 0 或对话模型未填上下文长度时不自动压缩；切分至少需要 2 条消息和 2 条用户消息，并保留最新完整用户轮次。
+- `compressionTriggerPercent` 是接管基线（占有效输入额度 `contextLength-outputReserveTokens` 的百分比，默认 80%）；后台压缩提前 10 个百分点启动，最低从 1% 开始，默认 70% 预取/80% 接管。低于接管基线不使用已就绪摘要；达到基线但摘要未完成仍继续对话，仅超过有效输入额度才等待。填 0 或对话模型未填上下文长度时不自动压缩；切分至少需要 2 条消息和 2 条用户消息，并保留最新完整用户轮次。
 - 最近上下文预算约 35%（`1024..32000`），摘要预算约 12%（`512..8192`）。
-- 后台任务使用固定来源前缀，接管时保留近期完整轮次和压缩期间新增消息；新建/切换/删除当前对话、编辑/删除/重试消息及压缩 profile 变化会取消旧任务，非当前对话删除与前台停止不取消当前后台任务。profile 仅包含解析后的聊天模型、压缩模型与接管百分比，标题/搜索设置及临时推理强度不影响它。
+- 后台任务使用固定来源前缀，接管时保留近期完整轮次和压缩期间新增消息；新建/切换/删除当前对话、编辑/删除/重试消息及压缩 profile 变化会取消旧任务，非当前对话删除与前台停止不取消当前后台任务。profile 包含不带密钥的持久聊天/压缩模型、接管百分比及默认推理的请求包络 key；标题、密钥、搜索端点、临时推理和动态工具截断额度不影响它，实际工具集合变化会影响包络。
 
 ### Token 计数
 
-- 优先使用 API `usage.inputTokens` 作为锚点；前缀匹配时用"锚点 + 增量估算"，否则回退本地估算。
+- 优先使用 API `usage.inputTokens` 作为锚点；消息 ID 前缀、请求包络 key 与共同工具结果截断额度同时匹配时用“锚点 + 新消息文本/图片估算”，否则回退全量本地估算。生产包络包含模型/推理、实际 system prompt/tools 与输出预留，不含 API key、不落盘；本地每张 Image（内联或 ref-only）预留 1024 token，Base64 不按文本计数。输出预留复用实际请求 `max_tokens`，否则已配置上下文本地保留最多 1024 token；未配置长度不限制。helper 无包络的旧计数契约不变。
 
 ### 历史存储
 
-- 对话文件：`chat_history/conversations/{conversationId}.json`（`schemaVersion=3`）；当前对话指针：`chat_history/index.json`；轻量摘要索引：`chat_history/summaries.json`（衍生数据，损坏或与目录不一致时自动删除并全量扫描重建）。
-- 附件 base64 外置到 `chat_history/blobs/{conversationId}/{attachmentId}.b64`，对话 JSON 中以 `base64Ref` 引用；加载时回填 `base64Data`，内存模型不感知外置。旧版 v2 内联文件可直接读取，保存时自然升级为 v3。
-- 写入使用临时文件 + `fsync` + 原子移动；对话保存先写 blob 再写 JSON，最后清理不再引用的 blob。对话 ID 匹配 `^[A-Za-z0-9_-]{1,80}$`。
+- 对话文件：`chat_history/conversations/{conversationId}.json`（`schemaVersion=3`）；当前对话指针：`chat_history/index.json`；轻量摘要索引：`chat_history/summaries.json`（索引 schema v2，entry 绑定对应内容的读取前或写入后 mtime/length；旧版本、损坏或与目录指纹不一致时扫描重建，写索引不为旧摘要重新取 stat）。
+- 附件 base64 外置到 `chat_history/blobs/{conversationId}/{attachmentId}.b64`，模型末尾 `base64Ref` 保留安全文件名；v3 加载只保留引用，缩略图及压缩后的实际请求在 IO 按需读取，不写回 raw/usage anchor。缺失 blob 不隔离对话，发送明确报错。旧版 v2 内联文件可直接读取，保存时自然升级为 v3。
+- 写入使用临时文件 + `fsync` + 原子移动；对话保存先写 blob 再写 JSON，最后清理不再引用的 blob。草稿、准备批次和保存快照由进程内 owner pin 保护，磁盘锁→pinLock；准备成功同栈提交消息 ID，pending pin 仅在成功 JSON 含该消息及全部预期 refs 后释放。取消回滚本批创建文件并复核磁盘/其他 pin，不在 Main 删除文件。附件额度仅限制新增图片 Base64 磁盘字节，0 不限额；不裁剪旧历史。对话 ID 匹配 `^[A-Za-z0-9_-]{1,80}$`。
 - 删除以对话 JSON unlink 成功/确认不存在为提交点；`ConversationDeletionResult` 返回替代 ID 与 `cleanupFailed`，提交后清理失败不再报告未删除。删除专用索引读取拒绝损坏/非普通文件，读取失败不覆盖索引。删除对应 blob 子目录；孤儿 blob 目录每进程扫描清理一次（被隔离对话的 blob 保留以便恢复）。
 - 损坏对话 JSON 隔离到 `corrupted/` 目录（`index.json`、`summaries.json` 豁免）。旧版 `history.json` 首次加载时自动迁移。
 - 历史文件同时保存 `uiMessages`、`conversationMessages` 和 `contextSummaries`；旧版 `isContextSummary` 加载时迁移为独立摘要。
 
 ### 其他
 
-- 工具结果写入历史时保留完整内容；加入 API 请求前由 `limitToolResultsForContext()` 截断到单条最多 24000 字符。`ToolDetailFormatter` 将参数/结果各按 5000 字符预览，仅原参数不超 5000 时尝试 JSON 美化；「查看全部」以原始参数/结果跳转 `FreeCopyActivity` 纯文本模式，不经 JSON 往返。
+- 工具结果写入历史时保留完整内容；加入 API 请求前由 `limitToolResultsForContext()` 以本轮共同额度截断，默认单条 24000 字符，已配置有效输入额度时可能进一步收紧，保留 assistant/tool 配对。`ToolDetailFormatter` 将参数/结果各按 5000 字符预览，仅原参数不超 5000 时尝试 JSON 美化；「查看全部」以原始参数/结果跳转 `FreeCopyActivity` 纯文本模式，不经 JSON 往返。
 - `assistantParts` 按顺序保存 `markdown`/`thinking`/`tool` 片段；`AssistantToolPart.isLoading` 仅运行时使用。
-- `streamChatWithRetries()` 每次流式请求最多重试 3 次；`streamChat()` 内部的 `include_usage` 降级重试仅在尚未发出任何 delta 时触发。
+- `streamChatWithRetries()` 仅对输出前暂时性 HTTP/传输失败最多重试 3 次；正文、思考及工具增量均阻止自动重试，部分输出保留为原正文并使用独立错误条。等待遵守 Retry-After/指数退避，超过60秒不抢跑，停止可取消。`streamChat()` 的 include_usage 兼容降级仅在启用 usage、HTTP 400/422 明确不支持且无输出时重发一次；EOF 仅在已见 `[DONE]` 或 finish_reason 时正常结束。
 - 停止生成会清理待确认工具令牌、停止前台 Shell 并取消协程；工具执行经 `runInterruptible` 派发，取消时中断执行线程。
 
 ## AI 工具
@@ -113,6 +113,8 @@ app/src/main/java/com/mukapp/mote/
 | `wait` | 等待后继续工具循环（`1..3600` 秒） | `seconds` |
 
 - `confirmation_id` 只能由应用在用户确认高风险 Shell 或敏感路径读取后写入，模型不能自行构造。
+- `ModelInfo/ResolvedModel` 的 tools/vision/usage 能力及 `ApiSettings` 的 Shell/文件/抓取/局域网权限默认 true，兼容旧安装。请求定义与实际执行共用权限；执行前取本轮快照 AND 当前权限，收紧立即生效，新授予下一轮生效。关闭 Shell 仅禁止新命令，保留状态/停止，不自动杀后台进程。
+- Shell 不是隔离沙箱；局域网开关只限制网页抓取，不限制模型接口、搜索或 Shell。仅公网模式的 fetch_url 使用独立连接池、NO_PROXY 与真实连接 DNS 整组地址检查，每跳校验；fetch_webview 不暴露且创建前拒绝，允许模式禁 file/content access。
 
 ## Shell 与 BusyBox
 
@@ -133,7 +135,7 @@ app/src/main/java/com/mukapp/mote/
 
 - 多提供商：每个 `ModelProvider` 有独立 baseUrl/apiKey + 模型列表；`ChatApiClient` 的聊天/标题/压缩方法接收 `ResolvedModel`（由 `ApiSettings.resolve*()` 从 `ModelRef` 解析）。`streamChat()` 另收 `ApiSettings` 仅用于工具/搜索可用性。
 - 主聊天：`ChatApiClient.streamChat(model, settings, ...)`，固定 `model` + `messages` + `stream=true` + `Accept: text/event-stream`。
-- 优先携带 `stream_options.include_usage=true`，不兼容时自动降级重试。`reasoning_effort` 取所选模型的设置，仅非空时发送。
+- `supportsUsage=true` 时优先携带 `stream_options.include_usage=true`，不兼容时按上述条件降级；false 完全省略该键。`supportsTools=false` 完全省略 tools，仍返回工具调用视为不可重试协议错误；`supportsVision=false` 拒绝实际请求图片而不静默丢图。`reasoning_effort` 取所选模型的设置，仅非空时发送。
 - 流式解析：`delta.content`、`delta.reasoning_content`、`delta.tool_calls`。非流式回退兼容多种格式。
 - `usage` 兼容 `input_tokens/prompt_tokens`、`output_tokens/completion_tokens`、cached tokens、reasoning tokens。
 - 模型列表：`listModels(baseUrl, apiKey)`，`GET {baseUrl}/models`，解析 `data[].id`，上下文长度尽力从 `context_length`/`context_window` 等字段解析。
@@ -144,6 +146,7 @@ app/src/main/java/com/mukapp/mote/
 
 - 入口 `MarkdownView`，将 AST 映射为原生 View 树，支持流式 block 级增量更新。
 - `ChatMessageAdapter` 优先用 `setParts()` 渲染 assistant 片段，无片段时回退 `setMarkdown()`。
+- 流式 `StreamingUpdatePayload` 按 part ID/kind 与对象引用推导 dirty 提示；`MarkdownView.setParts()` 在稳定结构/cache/renderMode 下复用未变状态，null、结构/链接定义/cache 变化和流式收尾走完整路径，收尾刷新所有 Markdown 的交互/span。会话阅读锚点仅在正确列表真实布局/定位完成的 generation 上保存，进程内恢复，不落历史 JSON。
 - `MarkdownParseCache` 全局缓存解析结果，历史 Markdown 后台预解析，流式最后片段跳过预解析。
 - 代码高亮：`MarkdownCodeSpanRenderer`，主策略 prism4j，失败后正则回退；流式未闭合代码块暂不高亮（等宽显示），闭合或流式结束后补高亮并缓存。
 - LaTeX 公式：块级支持 `$$...$$` / `\[...\]`，行内支持 `$...$` / `\(...\)`；已闭合公式用 RaTeX 原生渲染，流式未闭合公式保持原文显示。

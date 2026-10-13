@@ -156,6 +156,7 @@ class MarkdownView @JvmOverloads constructor(
     private var toolTransitionSceneRoot: ViewGroup? = null
     /** parts 模式上一次渲染的 isStreaming；流式→非流式时 markdown part 即使内容未变也需收尾刷新 */
     private var lastRenderedPartsStreaming: Boolean = false
+    private var canReusePartStateHints: Boolean = false
     private var lastRenderedLinkDefs: Map<String, Pair<String, String>> = emptyMap()
     /** 缓存上一次渲染 Markdown 文本时的 block 列表，用于流式增量更新 */
     private var lastRenderedBlocks: List<MdBlock> = emptyList()
@@ -173,6 +174,9 @@ class MarkdownView @JvmOverloads constructor(
 
     /** 设置全局解析缓存引用，由 ChatMessageAdapter 在创建 ViewHolder 时注入 */
     fun setGlobalParseCache(cache: MarkdownParseCache?) {
+        if (globalParseCache !== cache) {
+            canReusePartStateHints = false
+        }
         globalParseCache = cache
     }
 
@@ -182,6 +186,7 @@ class MarkdownView @JvmOverloads constructor(
      * key = part id
      */
     private data class PartBlocksCache(
+        val text: String,
         val blocks: List<MdBlock>,
         val linkDefs: Map<String, Pair<String, String>>,
         val isStreaming: Boolean
@@ -291,7 +296,8 @@ class MarkdownView @JvmOverloads constructor(
         parts: List<AssistantPart>,
         isStreaming: Boolean,
         expandedThinkingPartIds: MutableSet<String>,
-        expandedToolPartIds: MutableSet<String>
+        expandedToolPartIds: MutableSet<String>,
+        dirtyPartIds: Set<String>? = null
     ) {
         val visibleParts = parts.filter(::hasVisibleContent)
         if (visibleParts.isEmpty()) {
@@ -299,6 +305,32 @@ class MarkdownView @JvmOverloads constructor(
             return
         }
         isVisible = true
+
+        if (dirtyPartIds != null && canReusePartStates(visibleParts, isStreaming, dirtyPartIds)) {
+            val partStates = visibleParts.mapIndexed { index, part ->
+                val previousState = lastRenderedPartStates[index]
+                val expanded = isPartExpanded(part, expandedThinkingPartIds, expandedToolPartIds)
+                if (part.id !in dirtyPartIds && previousState.expanded == expanded &&
+                    isPartExpansionCurrent(index, part, expanded)
+                ) {
+                    previousState
+                } else {
+                    createRenderedPartState(part, expandedThinkingPartIds, expandedToolPartIds)
+                }
+            }
+            renderPartViewsIncrementally(
+                parts = visibleParts,
+                partStates = partStates,
+                isStreaming = isStreaming,
+                expandedThinkingPartIds = expandedThinkingPartIds,
+                expandedToolPartIds = expandedToolPartIds,
+                finalizeMarkdownParts = false,
+                dirtyPartIds = dirtyPartIds
+            )
+            syncIntermediatePartSpacing(visibleParts, expandedThinkingPartIds, expandedToolPartIds)
+            lastRenderedPartStates = partStates
+            return
+        }
 
         // 收集所有当前可见的 markdown 片段文本，用于淘汰已不再使用的解析缓存
         val activeMarkdownTexts = HashSet<String>()
@@ -358,6 +390,7 @@ class MarkdownView @JvmOverloads constructor(
         renderMode = RenderMode.Parts
         lastRenderedPartStates = partStates
         lastRenderedPartsStreaming = isStreaming
+        canReusePartStateHints = true
         lastRenderedLinkDefs = emptyMap()
     }
 
@@ -412,7 +445,7 @@ class MarkdownView @JvmOverloads constructor(
                 createBlockView(block, isStreaming, linkDefs, nested = false, isLastInContainer = index == blocks.lastIndex)
             )
         }
-        partBlocksCache[part.id] = PartBlocksCache(blocks, linkDefs, isStreaming)
+        partBlocksCache[part.id] = PartBlocksCache(part.text, blocks, linkDefs, isStreaming)
     }
 
     /** 优先复用 partParseCache / 全局缓存中的解析结果，避免对相同文本的重复解析 */
@@ -717,6 +750,70 @@ class MarkdownView @JvmOverloads constructor(
         }
     }
 
+    /** hint 只用于同一流式结构；链接定义或块缓存变化仍走完整状态路径。 */
+    private fun canReusePartStates(
+        parts: List<AssistantPart>,
+        isStreaming: Boolean,
+        dirtyPartIds: Set<String>
+    ): Boolean {
+        if (!canReusePartStateHints || !isStreaming || !lastRenderedPartsStreaming ||
+            !canApplyIncrementalPartUpdate() || parts.size != lastRenderedPartStates.size
+        ) {
+            return false
+        }
+        for (index in parts.indices) {
+            val part = parts[index]
+            val previousState = lastRenderedPartStates[index]
+            if (part.id != previousState.id || partKind(part) != previousState.kind) {
+                return false
+            }
+            if (part is AssistantMarkdownPart) {
+                val cached = partBlocksCache[part.id] ?: return false
+                val container = getChildAt(index) as? LinearLayout ?: return false
+                if (cached.isStreaming != isStreaming || container.childCount != cached.blocks.size) {
+                    return false
+                }
+            }
+        }
+        for (part in parts) {
+            if (part is AssistantMarkdownPart && part.id in dirtyPartIds) {
+                val cached = partBlocksCache.getValue(part.id)
+                // 稳定结构无需为未变化片段重新构造文本 hash 集合；仅淘汰 dirty 片段的旧解析。
+                if (cached.text !== part.text) {
+                    partParseCache.remove(cached.text)
+                }
+                if (obtainParseResult(part.text, isStreaming).linkDefs != cached.linkDefs) {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    private fun partKind(part: AssistantPart): AssistantPartKind = when (part) {
+        is AssistantMarkdownPart -> AssistantPartKind.Markdown
+        is AssistantThinkingPart -> AssistantPartKind.Thinking
+        is AssistantToolPart -> AssistantPartKind.Tool
+    }
+
+    private fun isPartExpanded(
+        part: AssistantPart,
+        expandedThinkingPartIds: Set<String>,
+        expandedToolPartIds: Set<String>
+    ): Boolean = when (part) {
+        is AssistantMarkdownPart -> false
+        is AssistantThinkingPart -> part.id in expandedThinkingPartIds
+        is AssistantToolPart -> part.id in expandedToolPartIds
+    }
+
+    private fun isPartExpansionCurrent(index: Int, part: AssistantPart, expanded: Boolean): Boolean {
+        return when (part) {
+            is AssistantMarkdownPart -> true
+            is AssistantThinkingPart -> (getChildAt(index).tag as? ThinkingPartViewHolder)?.renderedExpanded == expanded
+            is AssistantToolPart -> (getChildAt(index).tag as? ToolPartViewHolder)?.renderedExpanded == expanded
+        }
+    }
+
     private fun canApplyIncrementalPartUpdate(): Boolean {
         return renderMode == RenderMode.Parts && childCount == lastRenderedPartStates.size
     }
@@ -743,7 +840,8 @@ class MarkdownView @JvmOverloads constructor(
         isStreaming: Boolean,
         expandedThinkingPartIds: MutableSet<String>,
         expandedToolPartIds: MutableSet<String>,
-        finalizeMarkdownParts: Boolean
+        finalizeMarkdownParts: Boolean,
+        dirtyPartIds: Set<String>? = null
     ) {
         val sharedCount = minOf(lastRenderedPartStates.size, partStates.size)
         for (index in 0 until sharedCount) {
@@ -751,11 +849,17 @@ class MarkdownView @JvmOverloads constructor(
             val previousState = lastRenderedPartStates[index]
             val nextState = partStates[index]
             val statesEqual = previousState == nextState
-            // tool 即使状态等值也要同步当前展开集合、点击后的展开状态及相邻间距。
-            // 流式收尾时 markdown 不能跳过：需重建 spanned/启用链接点击。
-            if (statesEqual && part !is AssistantToolPart &&
+            val expansionCurrent = isPartExpansionCurrent(index, part, nextState.expanded)
+            // 普通路径保留 tool 句柄同步；hint 路径只更新 dirty 或展开态变化的视图。
+            // 流式收尾时所有 markdown 都需重建 span 并启用链接点击。
+            if (statesEqual && expansionCurrent &&
+                (dirtyPartIds == null && part !is AssistantToolPart ||
+                    dirtyPartIds != null && part.id !in dirtyPartIds) &&
                 !(finalizeMarkdownParts && part is AssistantMarkdownPart)
             ) {
+                if (part is AssistantToolPart) {
+                    (getChildAt(index).tag as? ToolPartViewHolder)?.expandedToolPartIds = expandedToolPartIds
+                }
                 continue
             }
             val existingView = getChildAt(index)
@@ -835,20 +939,20 @@ class MarkdownView @JvmOverloads constructor(
                     createBlockView(block, isStreaming, newLinkDefs, nested = false, isLastInContainer = index == newBlocks.lastIndex)
                 )
             }
-            partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
+            partBlocksCache[part.id] = PartBlocksCache(part.text, newBlocks, newLinkDefs, isStreaming)
             return true
         }
 
         if (cached.linkDefs != newLinkDefs || (cached.isStreaming && !isStreaming)) {
             // linkDefs 变化或流式收尾：逐块原地刷新，复用既有视图
             refreshAllBlockViews(container, cached.blocks, newBlocks, isStreaming, newLinkDefs)
-            partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
+            partBlocksCache[part.id] = PartBlocksCache(part.text, newBlocks, newLinkDefs, isStreaming)
             return true
         }
 
         // 执行 block 级增量更新
         renderBlocksIncrementally(container, newBlocks, isStreaming, newLinkDefs, cached.blocks)
-        partBlocksCache[part.id] = PartBlocksCache(newBlocks, newLinkDefs, isStreaming)
+        partBlocksCache[part.id] = PartBlocksCache(part.text, newBlocks, newLinkDefs, isStreaming)
         return true
     }
 
@@ -859,6 +963,7 @@ class MarkdownView @JvmOverloads constructor(
         lastRenderedBlocks = emptyList()
         lastRenderedIsStreaming = false
         lastRenderedPartsStreaming = false
+        canReusePartStateHints = false
         lastRenderedMarkdownText = null
         partParseCache.clear()
         partBlocksCache.clear()

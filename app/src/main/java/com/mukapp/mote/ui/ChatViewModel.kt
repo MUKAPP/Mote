@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.mukapp.mote.R
 import com.mukapp.mote.data.ApiSettingsStore
 import com.mukapp.mote.data.ChatHistoryStore
+import com.mukapp.mote.data.AttachmentPreparationBatch
 import com.mukapp.mote.data.model.AssistantMarkdownPart
 import com.mukapp.mote.data.model.AssistantPart
 import com.mukapp.mote.data.model.AssistantThinkingPart
@@ -23,6 +24,7 @@ import com.mukapp.mote.data.model.ConversationSummary
 import com.mukapp.mote.data.model.ContextSummary
 import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ResolvedModel
+import com.mukapp.mote.data.model.ReasoningEffortOptions
 import com.mukapp.mote.data.model.SavedConversationState
 import com.mukapp.mote.data.model.TokenUsage
 import com.mukapp.mote.data.model.UiNoticeKinds
@@ -32,9 +34,11 @@ import com.mukapp.mote.data.model.resolvedCompressionModel
 import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.data.model.resolvedTitleModel
 import com.mukapp.mote.network.ChatApiClient
+import com.mukapp.mote.network.ChatApiException
 import com.mukapp.mote.tools.LocalAiTools
 import com.mukapp.mote.tools.ShellProcessManager
 import com.mukapp.mote.util.MoteLog
+import com.mukapp.mote.ui.ChatConversationContextHelper.ContextTokenEnvelope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -105,6 +109,12 @@ private data class StreamChatAttemptResult(
     val accumulatedThinking: String
 )
 
+data class ConversationReadingPosition(
+    val messageId: String,
+    val offsetPx: Int,
+    val followOutput: Boolean
+)
+
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val logComponent = "Chat"
     private val appContext = application.applicationContext
@@ -124,12 +134,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _draftAttachments = MutableLiveData<List<ChatAttachment>>(emptyList())
     val draftAttachments: LiveData<List<ChatAttachment>> = _draftAttachments
+    private val draftAttachmentOwnerId = "draft:${UUID.randomUUID()}"
+    private val attachmentMemoryOwnerId = "memory:${UUID.randomUUID()}"
+    private var draftAttachmentsConversationId = ""
 
     private val _conversationSummaries = MutableLiveData<List<ConversationSummary>>(emptyList())
     val conversationSummaries: LiveData<List<ConversationSummary>> = _conversationSummaries
 
     private val _currentConversationId = MutableLiveData("")
     val currentConversationId: LiveData<String> = _currentConversationId
+    private val readingPositions = mutableMapOf<String, ConversationReadingPosition>()
+
+    fun saveReadingPosition(conversationId: String, position: ConversationReadingPosition) {
+        if (conversationId.isBlank() || position.messageId.isBlank() || persistenceState.isDeleted(conversationId)) return
+        readingPositions[conversationId] = position
+    }
+
+    fun getReadingPosition(conversationId: String): ConversationReadingPosition? =
+        readingPositions[conversationId]
 
     private val _isSending = MutableLiveData(false)
     val isSending: LiveData<Boolean> = _isSending
@@ -204,18 +226,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_isSending.value == true) {
             return
         }
-        _draftAttachments.value = _draftAttachments.value.orEmpty() + attachment
+        setDraftAttachments(_draftAttachments.value.orEmpty() + attachment)
     }
 
     fun removeDraftAttachment(attachmentId: String) {
         if (_isSending.value == true) {
             return
         }
-        _draftAttachments.value = _draftAttachments.value.orEmpty().filter { it.id != attachmentId }
+        setDraftAttachments(_draftAttachments.value.orEmpty().filter { it.id != attachmentId })
+    }
+
+    private fun setDraftAttachments(attachments: List<ChatAttachment>) {
+        val conversationId = _currentConversationId.value.orEmpty()
+        val previousId = draftAttachmentsConversationId
+        val previousRefs = ChatHistoryStore.attachmentRefs(_draftAttachments.value.orEmpty())
+        val nextRefs = ChatHistoryStore.attachmentRefs(attachments)
+        ChatHistoryStore.updateAttachmentPins(appContext, conversationId, draftAttachmentOwnerId,
+            if (previousId == conversationId) previousRefs + nextRefs else nextRefs)
+        _draftAttachments.value = attachments
+        draftAttachmentsConversationId = conversationId
+        ChatHistoryStore.updateAttachmentPins(appContext, conversationId, draftAttachmentOwnerId, nextRefs)
+        if (previousId != conversationId) {
+            ChatHistoryStore.updateAttachmentPins(appContext, previousId, draftAttachmentOwnerId, emptySet())
+        }
+        if (previousId.isNotBlank() && previousRefs.any { previousId != conversationId || it !in nextRefs }) {
+            viewModelScope.launch(Dispatchers.IO) { ChatHistoryStore.cleanupUnreferencedAttachments(appContext, previousId) }
+        }
     }
 
     fun reloadSettings() {
         val previousSettings = _savedSettings.value
+        val previousEnvelopeKey = currentEnvelopeKey(previousSettings)
         val previousModel = previousSettings?.resolvedChatModel()
         val loadedSettings = ApiSettingsStore.load(appContext)
         val loadedModel = loadedSettings.resolvedChatModel()
@@ -224,17 +265,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         _savedSettings.value = loadedSettings
         if (previousModel != loadedModel) {
-            clearTemporaryReasoningEffort()
+            _temporaryReasoningEffort.value = null
         }
+        clearAnchorIfEnvelopeChanged(previousEnvelopeKey, loadedSettings)
         MoteLog.d(logComponent, "已重新加载设置。")
     }
 
     fun saveSettings(settings: ApiSettings) {
+        val previousEnvelopeKey = currentEnvelopeKey(_savedSettings.value)
         ApiSettingsStore.save(appContext, settings)
         if (_savedSettings.value?.let { compressionProfile(it) } != compressionProfile(settings)) {
             invalidateSoftCompact()
         }
         _savedSettings.value = settings
+        clearAnchorIfEnvelopeChanged(previousEnvelopeKey, settings)
         MoteLog.i(
             logComponent,
             MoteLog.event(
@@ -259,12 +303,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val updated = current.copy(chatModel = ref)
+        val previousEnvelopeKey = currentEnvelopeKey(current)
         ApiSettingsStore.save(appContext, updated)
         if (compressionProfile(current) != compressionProfile(updated)) {
             invalidateSoftCompact()
         }
         _savedSettings.value = updated
-        clearTemporaryReasoningEffort()
+        _temporaryReasoningEffort.value = null
+        clearAnchorIfEnvelopeChanged(previousEnvelopeKey, updated)
         MoteLog.i(
             logComponent,
             MoteLog.event("切换对话模型", "providerId" to MoteLog.shortId(ref.providerId), "model" to ref.modelId)
@@ -276,13 +322,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_temporaryReasoningEffort.value == effortKey) {
             return
         }
+        val settings = _savedSettings.value
+        val previousEnvelopeKey = currentEnvelopeKey(settings)
         _temporaryReasoningEffort.value = effortKey
+        clearAnchorIfEnvelopeChanged(previousEnvelopeKey, settings)
         MoteLog.i(logComponent, MoteLog.event("临时调整推理强度", "effort" to (effortKey ?: "默认")))
     }
 
     private fun clearTemporaryReasoningEffort() {
         if (_temporaryReasoningEffort.value != null) {
+            val settings = _savedSettings.value
+            val previousEnvelopeKey = currentEnvelopeKey(settings)
             _temporaryReasoningEffort.value = null
+            clearAnchorIfEnvelopeChanged(previousEnvelopeKey, settings)
         }
     }
 
@@ -312,7 +364,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val newConversationId = ChatHistoryStore.newConversationId()
         setCurrentConversationId(newConversationId)
         _draftMessage.value = ""
-        _draftAttachments.value = emptyList()
+        setDraftAttachments(emptyList())
         publishMessagesImmediately()
         persistCurrentConversationIdAsync(
             conversationId = newConversationId,
@@ -359,7 +411,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 applyConversationState(historyState)
                 _draftMessage.value = ""
-                _draftAttachments.value = emptyList()
+                setDraftAttachments(emptyList())
                 persistCurrentConversationIdAsync(conversationId, requestVersion)
                 MoteLog.i(logComponent, MoteLog.event("已切换对话", "conversationId" to MoteLog.shortId(conversationId)))
             }
@@ -411,7 +463,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (replacementState != null && !persistenceState.isBlocked(replacementState.conversationId)) {
                     applyConversationState(replacementState)
                     _draftMessage.value = ""
-                    _draftAttachments.value = emptyList()
+                    setDraftAttachments(emptyList())
                     persistCurrentConversationIdAsync(replacementState.conversationId, requestVersion)
                 } else {
                     resetToNewConversation(requestVersion)
@@ -575,6 +627,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             return null
         }
+        withContext(NonCancellable + Dispatchers.Main) {
+            readingPositions.remove(conversationId)
+        }
         var cleanupFailed = deleteResult.cleanupFailed
         val summaries = try {
             persistenceMutex.withLock { ChatHistoryStore.listConversations(appContext) }
@@ -605,11 +660,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val settings = _savedSettings.value ?: ApiSettingsStore.load(appContext)
-        val chatModel = settings.resolvedChatModel()?.let { base ->
-            _temporaryReasoningEffort.value?.let { effortKey ->
-                settings.resolve(settings.chatModel?.copy(reasoningEffort = effortKey)) ?: base
-            } ?: base
-        }
+        val chatModel = resolveRequestChatModel(settings)
         if (chatModel == null) {
             MoteLog.w(logComponent, "发送被拒绝：未配置可用的对话模型。")
             uiMessagesInternal += ChatMessage(
@@ -620,7 +671,60 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        if (!chatModel.supportsVision && attachments.any { it.type == ChatAttachmentType.Image }) {
+            _userNotice.value = "当前模型不支持图片输入。"
+            return
+        }
+
+        try {
+            effectiveInputLimit(chatModel, buildContextTokenEnvelope(settings, chatModel))
+        } catch (error: IllegalStateException) {
+            _userNotice.value = error.message
+            return
+        }
+
+        val conversationId = _currentConversationId.value.orEmpty()
+        val draftTextSnapshot = _draftMessage.value.orEmpty()
         markStateChanged()
+        val batch = ChatHistoryStore.beginAttachmentPreparation(appContext, conversationId, attachments)
+        _isSending.value = true
+        stopGenerationRequested = false
+        activeSendJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val preparationJob = currentCoroutineContext()[Job]
+            var handedOff = false
+            try {
+                val preparedAttachments = withContext(Dispatchers.IO) {
+                    ChatHistoryStore.storeAttachmentPayloads(appContext, batch, settings.attachmentStorageLimitMiB.coerceAtLeast(0).toLong() * 1024L * 1024L)
+                }
+                currentCoroutineContext().ensureActive()
+                if (_currentConversationId.value != conversationId) throw CancellationException("对话已切换。")
+                startPreparedTurn(content, preparedAttachments, settings, chatModel, batch)
+                handedOff = true
+                if (_draftMessage.value == draftTextSnapshot) _draftMessage.value = ""
+            } catch (error: Exception) {
+                if (error !is CancellationException) {
+                    MoteLog.w(logComponent, "附件准备失败，保留草稿。", error)
+                    _userNotice.value = error.message ?: "附件准备失败，请重新选择图片。"
+                }
+            } finally {
+                try {
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        ChatHistoryStore.finishAttachmentPreparation(appContext, batch, handedOff)
+                    }
+                } finally {
+                    if (activeSendJob === preparationJob) {
+                        activeSendJob = null
+                        stopGenerationRequested = false
+                        _isSending.value = false
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startPreparedTurn(content: String, attachments: List<ChatAttachment>, settings: ApiSettings, chatModel: ResolvedModel, batch: AttachmentPreparationBatch) {
+        val envelope = buildContextTokenEnvelope(settings, chatModel)
+        val inputLimit = effectiveInputLimit(chatModel, envelope)
         val isFirstUserMessage = uiMessagesInternal.none { it.role == ChatRole.User }
         val titleSeed = content.ifBlank { buildAttachmentTitleSeed(attachments) }
         val userMessage = ChatMessage(
@@ -630,6 +734,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         uiMessagesInternal += userMessage
         conversationMessagesInternal += userMessage
+        ChatHistoryStore.commitAttachmentPreparation(batch, userMessage.id)
+        ChatHistoryStore.retainAttachmentPreparations(appContext, batch.conversationId, attachmentMemoryOwnerId, uiMessagesInternal.map { it.id }.toSet())
         MoteLog.i(
             logComponent,
             MoteLog.event(
@@ -648,8 +754,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (isFirstUserMessage) {
             currentConversationTitle = buildFallbackTitle(titleSeed)
         }
-        _draftMessage.value = ""
-        _draftAttachments.value = emptyList()
+        setDraftAttachments(emptyList())
 
         val assistantId = UUID.randomUUID().toString()
         uiMessagesInternal += ChatMessage(
@@ -694,8 +799,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val result = runCatching {
-                var workingConversation = prepareConversationForSending(settings)
-                    .toMutableList()
+                var workingConversation = prepareConversationForSending(settings, envelope, inputLimit)
                 var workingRawConversation = ChatConversationContextHelper
                     .filterConversationMessages(conversationMessagesInternal)
                     .filterNot { it.isContextSummary }
@@ -729,10 +833,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 repeat(MaxToolRounds) { roundIndex ->
+                    val requestSnapshot = buildRequestMessages(workingConversation.messages, envelope)
+                    check(chatModel.supportsVision || requestSnapshot.none { message ->
+                        message.attachments.any { it.type == ChatAttachmentType.Image }
+                    }) { "当前模型不支持图片输入。" }
+                    val requestMessages = withContext(Dispatchers.IO) {
+                        ChatHistoryStore.materializeAttachmentsForRequest(appContext, batch.conversationId, requestSnapshot)
+                    }
                     val streamResult = streamChatWithRetries(
                         chatModel = chatModel,
                         settings = settings,
-                        messages = buildRequestMessages(workingConversation),
+                        messages = requestMessages,
                         assistantParts = assistantParts,
                         assistantIndex = assistantIndex,
                         assistantId = assistantId
@@ -767,7 +878,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 ?: throw IllegalStateException("接口返回内容为空。")
                         updateContextTokenUsageAnchor(
                             requestedMessages = workingConversation,
-                            usage = response.usage
+                            usage = response.usage,
+                            envelope = envelope
                         )
                         return@runCatching completeAssistantTurn(
                             finalReply = finalReply,
@@ -778,14 +890,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                     updateContextTokenUsageAnchor(
                         requestedMessages = workingConversation,
-                        usage = response.usage
+                        usage = response.usage,
+                        envelope = envelope
                     )
                     val toolCallMessage = ChatMessage(
                         role = ChatRole.Assistant,
                         content = response.content,
                         toolCalls = response.toolCalls
                     )
-                    workingConversation += toolCallMessage
                     workingRawConversation += toolCallMessage
                     executedToolRounds += 1
                     MoteLog.i(
@@ -823,6 +935,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     skipStoppedAssistantContextCommit = true
                     val toolBatch = executeToolCallsWithConfirmation(
                         settings = settings,
+                        chatModel = chatModel,
                         toolCalls = response.toolCalls,
                         assistantParts = assistantParts,
                         assistantIndex = assistantIndex,
@@ -852,8 +965,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     commitRawConversationSnapshot()
                     workingConversation = prepareConversationForSending(
                         settings = settings,
+                        envelope = envelope,
+                        inputLimit = inputLimit,
                         rawMessages = workingRawConversation
-                    ).toMutableList()
+                    )
                     hasCommittedToolContextInCurrentTurn = true
                     skipStoppedAssistantContextCommit = false
 
@@ -997,6 +1112,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        ChatHistoryStore.updateAttachmentPins(appContext, draftAttachmentsConversationId, draftAttachmentOwnerId, emptySet())
+        val conversationId = _currentConversationId.value.orEmpty()
+        ChatHistoryStore.retainAttachmentPreparations(appContext, conversationId, attachmentMemoryOwnerId, emptySet())
+        Thread({ ChatHistoryStore.cleanupUnreferencedAttachments(appContext, conversationId) }, "AttachmentCleanup").start()
         softCompactCheckJob = null
         softCompactTask = null
         failedCompressionSourceIds = null
@@ -1070,7 +1189,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .map { it.id }
             .toSet()
         _draftMessage.value = message.content
-        _draftAttachments.value = message.attachments
+        setDraftAttachments(message.attachments)
         repeat(uiMessagesInternal.size - index) {
             uiMessagesInternal.removeAt(uiMessagesInternal.lastIndex)
         }
@@ -1135,7 +1254,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val userAttachments = userMessage.attachments
             val affectedUserMessageIds = setOf(userMessage.id)
             _draftMessage.value = userContent
-            _draftAttachments.value = userAttachments
+            setDraftAttachments(userAttachments)
             uiMessagesInternal.removeAt(userIndex)
             rebuildConversationAfterUiMutation(affectedUserMessageIds)
             publishMessagesImmediately()
@@ -1525,115 +1644,123 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         assistantIndex: Int,
         assistantId: String
     ): StreamChatAttemptResult {
-        var lastError: Throwable? = null
         var retryNoticeIndex: Int? = null
-        repeat(MaxStreamRetryAttempts + 1) { attemptIndex ->
-            val accumulatedReply = StringBuilder()
-            val accumulatedThinking = StringBuilder()
-            val partCountBeforeAttempt = assistantParts.size
+        try {
+            repeat(MaxStreamRetryAttempts + 1) { attemptIndex ->
+                val accumulatedReply = StringBuilder()
+                val accumulatedThinking = StringBuilder()
+                val partCountBeforeAttempt = assistantParts.size
 
-            try {
-                MoteLog.i(
-                    logComponent,
-                    MoteLog.event(
-                        "开始流式请求尝试",
-                        "attempt" to (attemptIndex + 1),
-                        "maxAttempts" to (MaxStreamRetryAttempts + 1),
-                        "messages" to messages.size
+                try {
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "开始流式请求尝试",
+                            "attempt" to (attemptIndex + 1),
+                            "maxAttempts" to (MaxStreamRetryAttempts + 1),
+                            "messages" to messages.size
+                        )
                     )
-                )
-                val response = ChatApiClient.streamChat(
-                    model = chatModel,
-                    settings = settings,
-                    messages = messages,
-                    onDelta = { delta ->
-                        accumulatedReply.append(delta)
-                        appendAssistantMarkdownAfterRetryNotice(
-                            parts = assistantParts,
-                            retryNoticeIndex = retryNoticeIndex,
-                            delta = delta
-                        )
-                        requestStreamingPublish(
-                            assistantIndex = assistantIndex,
-                            assistantId = assistantId,
-                            assistantParts = assistantParts
-                        )
-                    },
-                    onThinkingDelta = { thinkingDelta ->
-                        accumulatedThinking.append(thinkingDelta)
-                        appendAssistantThinking(assistantParts, thinkingDelta)
+                    val response = ChatApiClient.streamChat(
+                        model = chatModel,
+                        settings = settings,
+                        messages = messages,
+                        onDelta = { delta ->
+                            accumulatedReply.append(delta)
+                            appendAssistantMarkdownAfterRetryNotice(
+                                parts = assistantParts,
+                                retryNoticeIndex = retryNoticeIndex,
+                                delta = delta
+                            )
+                            requestStreamingPublish(
+                                assistantIndex = assistantIndex,
+                                assistantId = assistantId,
+                                assistantParts = assistantParts
+                            )
+                        },
+                        onThinkingDelta = { thinkingDelta ->
+                            accumulatedThinking.append(thinkingDelta)
+                            appendAssistantThinking(assistantParts, thinkingDelta)
+                            requestStreamingPublish(
+                                assistantIndex = assistantIndex,
+                                assistantId = assistantId,
+                                assistantParts = assistantParts
+                            )
+                        }
+                    )
+                    if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
+                        retryNoticeIndex = null
                         requestStreamingPublish(
                             assistantIndex = assistantIndex,
                             assistantId = assistantId,
                             assistantParts = assistantParts
                         )
                     }
-                )
-                if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
+                    MoteLog.i(
+                        logComponent,
+                        MoteLog.event(
+                            "流式请求尝试成功",
+                            "attempt" to (attemptIndex + 1),
+                            "contentLength" to accumulatedReply.length,
+                            "thinkingLength" to accumulatedThinking.length,
+                            "toolCalls" to response.toolCalls.size
+                        )
+                    )
+                    return StreamChatAttemptResult(
+                        response = response,
+                        accumulatedReply = accumulatedReply.toString(),
+                        accumulatedThinking = accumulatedThinking.toString()
+                    )
+                } catch (error: Throwable) {
+                    if (error is CancellationException) throw error
+                    currentCoroutineContext().ensureActive()
+                    val apiError = error as? ChatApiException
+                    val headerWait = apiError?.retryAfterMillis ?: 0L
+                    val nextAttempt = attemptIndex + 1
+                    val canRetry = apiError != null && apiError.retryableBeforeOutput &&
+                        !apiError.hasOutput && accumulatedReply.isEmpty() && accumulatedThinking.isEmpty() &&
+                        headerWait <= 60_000L && nextAttempt <= MaxStreamRetryAttempts
+                    if (!canRetry) {
+                        MoteLog.e(
+                            logComponent,
+                            MoteLog.event("流式请求失败，不再自动重试", "attempts" to (attemptIndex + 1), "error" to error),
+                            error
+                        )
+                        throw error
+                    }
+
+                    removeAssistantPartsFrom(assistantParts, partCountBeforeAttempt)
+                    MoteLog.w(
+                        logComponent,
+                        MoteLog.event("流式请求失败，准备重试", "nextAttempt" to (nextAttempt + 1), "error" to error)
+                    )
+                    retryNoticeIndex = replaceRetryNoticePart(
+                        parts = assistantParts,
+                        retryNoticeIndex = retryNoticeIndex,
+                        attempt = nextAttempt,
+                        error = error
+                    )
                     requestStreamingPublish(
                         assistantIndex = assistantIndex,
                         assistantId = assistantId,
                         assistantParts = assistantParts
                     )
+                    delay(maxOf(headerWait, 1000L shl attemptIndex))
                 }
-                MoteLog.i(
-                    logComponent,
-                    MoteLog.event(
-                        "流式请求尝试成功",
-                        "attempt" to (attemptIndex + 1),
-                        "contentLength" to accumulatedReply.length,
-                        "thinkingLength" to accumulatedThinking.length,
-                        "toolCalls" to response.toolCalls.size
-                    )
-                )
-                return StreamChatAttemptResult(
-                    response = response,
-                    accumulatedReply = accumulatedReply.toString(),
-                    accumulatedThinking = accumulatedThinking.toString()
-                )
-            } catch (error: Throwable) {
-                if (error is CancellationException) {
-                    throw error
-                }
-
-                lastError = error
-                removeAssistantPartsFrom(assistantParts, partCountBeforeAttempt)
-                val nextAttempt = attemptIndex + 1
-                if (nextAttempt > MaxStreamRetryAttempts) {
-                    MoteLog.e(
-                        logComponent,
-                        MoteLog.event("流式请求重试已耗尽", "attempts" to (attemptIndex + 1), "error" to error),
-                        error
-                    )
-                    if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
-                        requestStreamingPublish(
-                            assistantIndex = assistantIndex,
-                            assistantId = assistantId,
-                            assistantParts = assistantParts
-                        )
-                    }
-                    throw error
-                }
-
-                MoteLog.w(
-                    logComponent,
-                    MoteLog.event("流式请求失败，准备重试", "nextAttempt" to (nextAttempt + 1), "error" to error)
-                )
-                retryNoticeIndex = replaceRetryNoticePart(
-                    parts = assistantParts,
-                    retryNoticeIndex = retryNoticeIndex,
-                    attempt = nextAttempt,
-                    error = error
-                )
+            }
+            throw IllegalStateException("请求失败，重试次数已用尽。")
+        } catch (error: Throwable) {
+            if (removeRetryNoticePart(assistantParts, retryNoticeIndex)) {
                 requestStreamingPublish(
                     assistantIndex = assistantIndex,
                     assistantId = assistantId,
                     assistantParts = assistantParts
                 )
             }
+            // 失败或停止时保留 builder 中尚未发布的正文/思考，临时重试提示不参与收尾。
+            flushStreamingPublish()
+            throw error
         }
-
-        throw lastError ?: IllegalStateException("请求失败，重试次数已用尽。")
     }
 
     private fun removeAssistantPartsFrom(parts: MutableList<AssistantPart>, startIndex: Int) {
@@ -1696,6 +1823,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun executeToolCallsWithConfirmation(
         settings: ApiSettings,
+        chatModel: ResolvedModel,
         toolCalls: List<AiToolCall>,
         assistantParts: MutableList<AssistantPart>,
         assistantIndex: Int,
@@ -1711,7 +1839,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     "toolCallId" to MoteLog.shortId(toolCall.id)
                 )
             )
-            var result = executeLocalToolCall(settings, toolCall)
+            var result = executeLocalToolCall(settings, chatModel, toolCall)
             val confirmation = parseToolConfirmationRequest(result.content, toolCall.arguments)
             if (confirmation != null) {
                 MoteLog.w(
@@ -1753,15 +1881,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "confirmationId" to MoteLog.shortId(confirmation.confirmationId)
                     )
                 )
-                result = executeLocalToolCall(
-                    settings,
-                    toolCall.copy(
-                        arguments = addConfirmationId(
-                            toolCall.arguments,
-                            confirmation.confirmationId
+                result = try {
+                    executeLocalToolCall(
+                        settings = settings,
+                        chatModel = chatModel,
+                        toolCall = toolCall.copy(
+                            arguments = addConfirmationId(
+                                toolCall.arguments,
+                                confirmation.confirmationId
+                            )
                         )
                     )
-                )
+                } finally {
+                    // 权限可能在等待确认时收紧；未消费的批准令牌也必须释放。
+                    LocalAiTools.discardPendingToolConfirmation(confirmation.confirmationId)
+                }
             }
             results += result
             MoteLog.i(
@@ -1777,14 +1911,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return ToolExecutionBatch(results = results, cancelled = false)
     }
 
-    private suspend fun executeLocalToolCall(settings: ApiSettings, toolCall: AiToolCall): ChatMessage {
+    private suspend fun executeLocalToolCall(
+        settings: ApiSettings,
+        chatModel: ResolvedModel,
+        toolCall: AiToolCall
+    ): ChatMessage {
+        val effectiveSettings = withContext(Dispatchers.Main) {
+            val currentSettings = _savedSettings.value ?: settings
+            settings.copy(
+                allowShell = settings.allowShell && currentSettings.allowShell,
+                allowFileTools = settings.allowFileTools && currentSettings.allowFileTools,
+                allowNetworkFetch = settings.allowNetworkFetch && currentSettings.allowNetworkFetch,
+                allowLocalNetwork = settings.allowLocalNetwork && currentSettings.allowLocalNetwork
+            )
+        }
         return try {
             // runInterruptible：协程取消时中断执行线程，打断工具内部的阻塞等待（latch/waitFor/读循环检查点）。
             runInterruptible(Dispatchers.IO) {
                 LocalAiTools.executeToolCall(
                     context = appContext,
                     toolCall = toolCall,
-                    settings = settings,
+                    settings = effectiveSettings,
+                    model = chatModel,
                     onShellProcessStarted = { id, background ->
                         if (!background) {
                             activeForegroundShellProcessId = id
@@ -1905,20 +2053,79 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return payload.toString()
     }
 
-    private fun resolveConversationTokenCount(messages: List<ChatMessage>): ChatConversationContextHelper.ContextTokenCount {
-        return ChatConversationContextHelper.resolveConversationTokenCount(
-            messages = messages,
-            usageAnchor = contextTokenUsageAnchor
-        )
+    private fun resolveRequestChatModel(
+        settings: ApiSettings,
+        temporaryEffort: String? = _temporaryReasoningEffort.value
+    ): ResolvedModel? {
+        val base = settings.resolvedChatModel() ?: return null
+        return temporaryEffort?.let { effortKey ->
+            settings.resolve(settings.chatModel?.copy(reasoningEffort = effortKey))
+        } ?: base
+    }
+
+    private fun buildContextTokenEnvelope(settings: ApiSettings, model: ResolvedModel): ContextTokenEnvelope {
+        val systemPrompt = buildSystemPrompt()
+        val tools = LocalAiTools.toolDefinitions(settings, model)
+        val toolsJson = if (tools.length() == 0) "" else tools.toString()
+        val encodedMaxTokens = ReasoningEffortOptions.encode(
+            type = model.providerType,
+            key = model.reasoningEffortKey,
+            value = model.reasoningEffortValue
+        ).topLevel["max_tokens"] as? Number
+        val outputReserveTokens = encodedMaxTokens?.toInt() ?: if (model.contextLength > 0) {
+            minOf(1_024, maxOf(1, model.contextLength / 10))
+        } else {
+            0
+        }
+        // 长度前缀避免字段内容中的分隔符碰撞；只在请求准备/设置边界构造，不含凭据。
+        val modelKey = buildString {
+            fun field(value: String) {
+                append(value.length).append(':').append(value)
+            }
+            field("1") // estimatorVersion
+            field(model.providerType.storageKey)
+            field(model.baseUrl.trim().trimEnd('/'))
+            field(model.model)
+            field(model.reasoningEffortKey)
+            field(model.reasoningEffortValue)
+            field(model.supportsVision.toString())
+            field(systemPrompt)
+            field(toolsJson)
+            field(outputReserveTokens.toString())
+        }
+        return ContextTokenEnvelope(modelKey, systemPrompt, toolsJson, outputReserveTokens)
+    }
+
+    private fun currentEnvelopeKey(settings: ApiSettings?): String? {
+        if (settings == null) return null
+        val model = resolveRequestChatModel(settings) ?: return null
+        return buildContextTokenEnvelope(settings, model).modelKey
+    }
+
+    private fun clearAnchorIfEnvelopeChanged(previousKey: String?, settings: ApiSettings?) {
+        if (previousKey != currentEnvelopeKey(settings)) {
+            clearContextTokenUsageAnchor()
+        }
+    }
+
+    private fun effectiveInputLimit(model: ResolvedModel, envelope: ContextTokenEnvelope): Int {
+        if (model.contextLength <= 0) return 0
+        check(model.contextLength > envelope.outputReserveTokens) {
+            "模型上下文长度不足以容纳当前输出预算，请调整模型配置。"
+        }
+        return model.contextLength - envelope.outputReserveTokens
     }
 
     private fun updateContextTokenUsageAnchor(
-        requestedMessages: List<ChatMessage>,
-        usage: TokenUsage?
+        requestedMessages: LimitedRequestContext,
+        usage: TokenUsage?,
+        envelope: ContextTokenEnvelope
     ) {
         val anchor = ChatConversationContextHelper.buildTokenUsageAnchor(
-            messages = requestedMessages,
-            usage = usage
+            messages = requestedMessages.messages,
+            usage = usage,
+            envelopeKey = envelope.modelKey,
+            toolResultMaxChars = requestedMessages.toolResultMaxChars
         ) ?: return
         contextTokenUsageAnchor = anchor
     }
@@ -2027,20 +2234,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun prepareConversationForSending(
         settings: ApiSettings,
+        envelope: ContextTokenEnvelope,
+        inputLimit: Int,
         rawMessages: List<ChatMessage> = conversationMessagesInternal
-    ): List<ChatMessage> {
+    ): LimitedRequestContext {
         softCompactCheckJob?.cancel()
         softCompactCheckJob = null
-        var prepared = prepareCompressionContext(settings, rawMessages)
+        var prepared = prepareCompressionContext(settings, envelope, inputLimit, rawMessages)
         if (prepared.thresholds == null) {
-            throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
-            return prepared.requestMessages
+            throwIfContextExceedsHardLimitWithoutCompression(inputLimit, prepared.tokenCount)
+            return prepared.requestContext
         }
 
         softCompactTask?.let { task ->
-            if (!isSoftCompactTaskUsable(task, settings, prepared.requestMessages)) {
+            if (!isSoftCompactTaskUsable(task, settings, prepared.requestContext.messages)) {
                 discardSoftCompactTask(task)
-                prepared = prepareCompressionContext(settings, rawMessages)
+                prepared = prepareCompressionContext(settings, envelope, inputLimit, rawMessages)
             }
         }
 
@@ -2048,19 +2257,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         for (attempt in 0..1) {
             val thresholds = prepared.thresholds
             if (thresholds == null) {
-                throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
-                return prepared.requestMessages
+                throwIfContextExceedsHardLimitWithoutCompression(inputLimit, prepared.tokenCount)
+                return prepared.requestContext
             }
             val task = softCompactTask ?: prepared.plan
                 ?.takeIf { prepared.tokenCount.tokens >= thresholds.startTokens }
                 ?.let { startSoftCompact(settings, it) }
             if (prepared.tokenCount.tokens < thresholds.applyTokens || task == null) {
                 // 配置已经变化时，startSoftCompact 不会用本轮旧配置启动新任务。
-                throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
-                return prepared.requestMessages
+                throwIfContextExceedsHardLimitWithoutCompression(inputLimit, prepared.tokenCount)
+                return prepared.requestContext
             }
             if (!task.result.isCompleted && prepared.tokenCount.tokens <= thresholds.hardLimit) {
-                return prepared.requestMessages
+                return prepared.requestContext
             }
 
             val summary = try {
@@ -2070,38 +2279,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // 前台停止必须沿用停止收尾；仅后台被设置/epoch 变更取消则重新检查请求。
                 currentCoroutineContext().ensureActive()
                 discardSoftCompactTask(task)
-                prepared = prepareCompressionContext(settings, rawMessages)
+                prepared = prepareCompressionContext(settings, envelope, inputLimit, rawMessages)
                 continue
             }
 
             // 等待期间的普通追加都从当前 raw 重建，不能拼接启动快照的 recentMessages。
-            prepared = prepareCompressionContext(settings, rawMessages)
-            if (!isSoftCompactTaskUsable(task, settings, prepared.requestMessages)) {
+            prepared = prepareCompressionContext(settings, envelope, inputLimit, rawMessages)
+            if (!isSoftCompactTaskUsable(task, settings, prepared.requestContext.messages)) {
                 discardSoftCompactTask(task)
                 continue
             }
             val currentThresholds = prepared.thresholds
             if (currentThresholds == null || prepared.tokenCount.tokens < currentThresholds.applyTokens) {
-                throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
-                return prepared.requestMessages
+                throwIfContextExceedsHardLimitWithoutCompression(inputLimit, prepared.tokenCount)
+                return prepared.requestContext
             }
 
             if (summary != null) {
                 val normalizedSnapshot = prepared.normalizedMessages
                 val summariesSnapshot = contextSummariesInternal.toList()
-                val (candidateMessages, candidateTokenCount) = withContext(Dispatchers.Default) {
-                    val messages = buildLimitedRequestContextMessages(
-                        normalizedSnapshot,
-                        summariesSnapshot + summary
+                val (candidateContext, candidateTokenCount) = withContext(Dispatchers.Default) {
+                    val requestContext = buildLimitedRequestContextMessages(
+                        rawMessages = normalizedSnapshot,
+                        summaries = summariesSnapshot + summary,
+                        envelope = envelope,
+                        inputLimit = inputLimit
                     )
-                    messages to ChatConversationContextHelper.resolveConversationTokenCount(
-                        messages = messages,
-                        usageAnchor = null
+                    requestContext to ChatConversationContextHelper.resolveConversationTokenCount(
+                        messages = requestContext.messages,
+                        usageAnchor = null,
+                        envelope = envelope,
+                        toolResultMaxChars = requestContext.toolResultMaxChars
                     )
                 }
-                if (!isSoftCompactTaskUsable(task, settings, prepared.requestMessages)) {
+                if (!isSoftCompactTaskUsable(task, settings, prepared.requestContext.messages)) {
                     discardSoftCompactTask(task)
-                    prepared = prepareCompressionContext(settings, rawMessages)
+                    prepared = prepareCompressionContext(settings, envelope, inputLimit, rawMessages)
                     continue
                 }
                 if (!ChatConversationContextHelper.isOverModelContextLength(
@@ -2109,7 +2322,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         contextTokens = candidateTokenCount.tokens
                     )
                 ) {
-                    throwIfContextExceedsHardLimitWithoutCompression(settings, candidateTokenCount)
+                    throwIfContextExceedsHardLimitWithoutCompression(inputLimit, candidateTokenCount)
                     appendContextSummary(summary)
                     pendingCompressionNoticeSummaryIds += summary.id
                     clearContextTokenUsageAnchor()
@@ -2126,7 +2339,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             "contextSummaries" to contextSummariesInternal.size
                         )
                     )
-                    return candidateMessages
+                    return candidateContext
                 }
             }
 
@@ -2145,7 +2358,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     _userNotice.value = "上下文压缩失败，已临时使用原始上下文继续发送。"
                 }
-                return prepared.requestMessages
+                return prepared.requestContext
             }
 
             val updatedPlan = prepared.plan
@@ -2158,13 +2371,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 throw IllegalStateException("上下文压缩失败，且当前上下文长度已超过模型上下文长度，请调大压缩模型配置或删除部分历史消息后重试。")
             }
             // 没有安全切点，或摘要仍不能容纳完整最近轮次，复用现有工具顺序错误。
-            throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
-            return prepared.requestMessages
+            throwIfContextExceedsHardLimitWithoutCompression(inputLimit, prepared.tokenCount)
+            return prepared.requestContext
         }
 
         // 连续失效只能重新按当前快照检查，不能无限启动/等待后台任务。
-        throwIfContextExceedsHardLimitWithoutCompression(settings, prepared.tokenCount)
-        return prepared.requestMessages
+        throwIfContextExceedsHardLimitWithoutCompression(inputLimit, prepared.tokenCount)
+        return prepared.requestContext
     }
 
     private fun isSoftCompactTaskUsable(
@@ -2191,7 +2404,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private data class SoftCompactProfile(
         val chatModel: ResolvedModel,
         val compressionModel: ResolvedModel,
-        val triggerPercent: Int
+        val triggerPercent: Int,
+        val envelopeKey: String
     )
 
     private data class SoftCompactTask(
@@ -2202,22 +2416,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val result: Deferred<ContextSummary?>
     )
 
+    private data class LimitedRequestContext(
+        val messages: List<ChatMessage>,
+        val toolResultMaxChars: Int
+    )
+
     private data class PreparedCompressionContext(
         val normalizedMessages: List<ChatMessage>,
-        val requestMessages: List<ChatMessage>,
+        val requestContext: LimitedRequestContext,
         val tokenCount: ChatConversationContextHelper.ContextTokenCount,
         val thresholds: ChatConversationContextHelper.ContextCompressionThresholds?,
         val plan: ChatConversationContextHelper.ContextCompressionPlan?
     )
 
     private fun compressionProfile(settings: ApiSettings): SoftCompactProfile? {
-        if (ChatConversationContextHelper.calculateContextCompressionThresholds(settings) == null) {
+        val chatModel = settings.resolvedChatModel() ?: return null
+        val envelope = buildContextTokenEnvelope(settings, chatModel)
+        if (chatModel.contextLength <= envelope.outputReserveTokens ||
+            ChatConversationContextHelper.calculateContextCompressionThresholds(
+                settings, chatModel.contextLength - envelope.outputReserveTokens
+            ) == null
+        ) {
             return null
         }
         return SoftCompactProfile(
-            chatModel = settings.resolvedChatModel() ?: return null,
-            compressionModel = settings.resolvedCompressionModel() ?: return null,
-            triggerPercent = settings.compressionTriggerPercent
+            chatModel = chatModel.copy(apiKey = ""),
+            compressionModel = (settings.resolvedCompressionModel() ?: return null).copy(apiKey = ""),
+            triggerPercent = settings.compressionTriggerPercent,
+            envelopeKey = envelope.modelKey
         )
     }
 
@@ -2232,6 +2458,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun prepareCompressionContext(
         settings: ApiSettings,
+        envelope: ContextTokenEnvelope,
+        inputLimit: Int,
         rawMessages: List<ChatMessage>
     ): PreparedCompressionContext {
         // 主线程只浅快照；附件内容不复制，历史过滤、token 估算与切分放到 Default。
@@ -2241,21 +2469,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return withContext(Dispatchers.Default) {
             val normalizedMessages = ChatConversationContextHelper.filterConversationMessages(rawSnapshot)
                 .filterNot { it.isContextSummary }
-            val requestMessages = buildLimitedRequestContextMessages(normalizedMessages, summariesSnapshot)
-            val tokenCount = ChatConversationContextHelper.resolveConversationTokenCount(
-                messages = requestMessages,
-                usageAnchor = anchorSnapshot
+            val requestContext = buildLimitedRequestContextMessages(
+                rawMessages = normalizedMessages,
+                summaries = summariesSnapshot,
+                envelope = envelope,
+                inputLimit = inputLimit
             )
-            val thresholds = ChatConversationContextHelper.calculateContextCompressionThresholds(settings)
+            val tokenCount = ChatConversationContextHelper.resolveConversationTokenCount(
+                messages = requestContext.messages,
+                usageAnchor = anchorSnapshot,
+                envelope = envelope,
+                toolResultMaxChars = requestContext.toolResultMaxChars
+            )
+            val thresholds = ChatConversationContextHelper.calculateContextCompressionThresholds(settings, inputLimit)
             PreparedCompressionContext(
                 normalizedMessages = normalizedMessages,
-                requestMessages = requestMessages,
+                requestContext = requestContext,
                 tokenCount = tokenCount,
                 thresholds = thresholds,
                 plan = thresholds?.let {
                     ChatConversationContextHelper.buildContextCompressionPlan(
                         settings = settings,
-                        messages = requestMessages,
+                        messages = requestContext.messages,
                         tokenCount = tokenCount,
                         triggerTokens = it.startTokens
                     )
@@ -2279,10 +2514,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (profile != _savedSettings.value?.let { compressionProfile(it) }) {
             return null
         }
+        val compressionModel = settings.resolvedCompressionModel() ?: return null
         val result = viewModelScope.async(start = CoroutineStart.LAZY) {
             try {
                 val content = ChatApiClient.compressConversation(
-                    model = profile.compressionModel,
+                    model = compressionModel,
                     messages = plan.messagesToCompress,
                     maxSummaryTokens = plan.maxSummaryTokens
                 )
@@ -2325,7 +2561,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val epoch = softCompactEpoch
         val profile = compressionProfile(settings) ?: return
         softCompactCheckJob = viewModelScope.launch {
-            val prepared = prepareCompressionContext(settings, conversationMessagesInternal)
+            val model = settings.resolvedChatModel() ?: return@launch
+            val envelope = buildContextTokenEnvelope(settings, model)
+            val prepared = prepareCompressionContext(
+                settings, envelope, effectiveInputLimit(model, envelope), conversationMessagesInternal
+            )
             if (_currentConversationId.value != conversationId || softCompactEpoch != epoch ||
                 profile != _savedSettings.value?.let { compressionProfile(it) } ||
                 persistenceState.isBlocked(conversationId)
@@ -2342,18 +2582,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildLimitedRequestContextMessages(
         rawMessages: List<ChatMessage>,
-        summaries: List<ContextSummary> = contextSummariesInternal
-    ): List<ChatMessage> {
-        return ChatConversationContextHelper.limitToolResultsForContext(
-            ChatConversationContextHelper.applyContextSummariesForRequest(
-                conversationMessages = rawMessages,
-                contextSummaries = summaries
-            )
+        summaries: List<ContextSummary> = contextSummariesInternal,
+        envelope: ContextTokenEnvelope,
+        inputLimit: Int
+    ): LimitedRequestContext {
+        val requestMessages = ChatConversationContextHelper.applyContextSummariesForRequest(
+            conversationMessages = rawMessages,
+            contextSummaries = summaries
+        )
+        val toolCount = requestMessages.count { it.role == ChatRole.Tool }
+        val maxChars = if (inputLimit > 0 && toolCount > 0) {
+            val withoutToolContent = requestMessages.map { message ->
+                if (message.role == ChatRole.Tool) message.copy(content = "") else message
+            }
+            val nonToolTokens = ChatConversationContextHelper.estimateRequestTokens(withoutToolContent, envelope)
+            val remainingTokens = (inputLimit.toLong() - nonToolTokens - toolCount.toLong() * 256)
+                .coerceAtLeast(0)
+            minOf(ChatConversationContextHelper.MaxToolResultContextChars.toLong(), remainingTokens / toolCount).toInt()
+        } else {
+            ChatConversationContextHelper.MaxToolResultContextChars
+        }
+        return LimitedRequestContext(
+            messages = ChatConversationContextHelper.limitToolResultsForContext(requestMessages, maxChars),
+            toolResultMaxChars = maxChars
         )
     }
 
-    private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
-        return listOf(ChatMessage(role = ChatRole.System, content = buildSystemPrompt())) + messages
+    private fun buildRequestMessages(messages: List<ChatMessage>, envelope: ContextTokenEnvelope): List<ChatMessage> {
+        return listOf(ChatMessage(role = ChatRole.System, content = envelope.systemPrompt)) + messages
     }
 
     private fun TokenUsage?.usageLogFields(): Array<Pair<String, Any?>> {
@@ -2367,11 +2623,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun throwIfContextExceedsHardLimitWithoutCompression(
-        settings: ApiSettings,
+        inputLimit: Int,
         tokenCount: ChatConversationContextHelper.ContextTokenCount
     ) {
         ChatConversationContextHelper.requireWithinModelContextLength(
-            modelContextLength = settings.resolvedChatModel()?.contextLength ?: 0,
+            modelContextLength = inputLimit,
             contextTokens = tokenCount.tokens
         )
     }
@@ -2385,7 +2641,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val anchoredMessages = contextTokenUsageAnchor?.messages
         if (anchoredMessages != null &&
             !ChatConversationContextHelper.hasMessagePrefix(
-                // 锚点检查按消息 id 比较，工具结果限流不改变 id 序列，可跳过 limitToolResultsForContext
+                // 此处仅检查消息身份；共同截断额度由下一次请求计数时与锚点独立匹配。
                 ChatConversationContextHelper.applyContextSummariesForRequest(
                     conversationMessages = conversationMessagesInternal,
                     contextSummaries = contextSummariesInternal
@@ -2409,6 +2665,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val conversationSnapshot = conversationMessagesInternal.toList()
         val contextSummarySnapshot = contextSummariesInternal.toList()
         val saveVersion = persistenceState.registerSave(conversationIdSnapshot)
+        val saveOwnerId = "save:$conversationIdSnapshot:$saveVersion"
+        ChatHistoryStore.updateAttachmentPins(appContext, conversationIdSnapshot, saveOwnerId,
+            ChatHistoryStore.attachmentRefs((uiSnapshot + conversationSnapshot).flatMap { it.attachments }))
+        ChatHistoryStore.retainAttachmentPreparations(appContext, conversationIdSnapshot, attachmentMemoryOwnerId,
+            (uiSnapshot + conversationSnapshot).map { it.id }.toSet())
         MoteLog.d(
             logComponent,
             MoteLog.event(
@@ -2421,48 +2682,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
 
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                persistenceMutex.withLock {
-                    if (persistenceState.shouldSkipSave(conversationIdSnapshot, saveVersion)) {
-                        MoteLog.d(
-                            logComponent,
-                            MoteLog.event(
-                                "跳过过期保存快照",
-                                "conversationId" to MoteLog.shortId(conversationIdSnapshot),
-                                "saveVersion" to saveVersion
-                            )
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val summaries = withContext(Dispatchers.IO) {
+                    persistenceMutex.withLock {
+                        if (persistenceState.shouldSkipSave(conversationIdSnapshot, saveVersion)) {
+                            MoteLog.d(logComponent, "跳过过期保存快照。")
+                            return@withLock ChatHistoryStore.listConversations(appContext)
+                        }
+                        val effectiveTitle = persistenceState.effectiveTitle(conversationIdSnapshot, titleSnapshot)
+                        ChatHistoryStore.saveConversation(
+                            context = appContext,
+                            settings = settingsSnapshot,
+                            conversationId = conversationIdSnapshot,
+                            title = effectiveTitle,
+                            uiMessages = uiSnapshot,
+                            conversationMessages = conversationSnapshot,
+                            contextSummaries = contextSummarySnapshot
                         )
-                        return@runCatching ChatHistoryStore.listConversations(appContext)
+                        ChatHistoryStore.listConversations(appContext)
                     }
-                    val effectiveTitle = persistenceState.effectiveTitle(conversationIdSnapshot, titleSnapshot)
-                    ChatHistoryStore.saveConversation(
-                        context = appContext,
-                        settings = settingsSnapshot,
-                        conversationId = conversationIdSnapshot,
-                        title = effectiveTitle,
-                        uiMessages = uiSnapshot,
-                        conversationMessages = conversationSnapshot,
-                        contextSummaries = contextSummarySnapshot
-                    )
-                    ChatHistoryStore.listConversations(appContext)
                 }
-            }.onFailure { error ->
+                publishConversationSummaries(summaries)
+            } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 MoteLog.e(logComponent, "保存聊天记录失败", error)
-                persistenceState.finishSave(conversationIdSnapshot, saveVersion)
-            }.onSuccess { summaries ->
-                persistenceState.finishSave(conversationIdSnapshot, saveVersion)
-                MoteLog.d(
-                    logComponent,
-                    MoteLog.event(
-                        "聊天记录保存任务完成",
-                        "conversationId" to MoteLog.shortId(conversationIdSnapshot),
-                        "summaries" to summaries.size
-                    )
-                )
-                withContext(Dispatchers.Main) {
-                    publishConversationSummaries(summaries)
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    persistenceState.finishSave(conversationIdSnapshot, saveVersion)
+                    ChatHistoryStore.updateAttachmentPins(appContext, conversationIdSnapshot, saveOwnerId, emptySet())
+                    ChatHistoryStore.cleanupUnreferencedAttachments(appContext, conversationIdSnapshot)
                 }
             }
         }
@@ -2586,6 +2835,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun setCurrentConversationId(conversationId: String) {
+        val previousId = _currentConversationId.value.orEmpty()
+        if (previousId.isNotBlank() && previousId != conversationId) {
+            ChatHistoryStore.retainAttachmentPreparations(appContext, previousId, attachmentMemoryOwnerId, emptySet())
+            viewModelScope.launch(Dispatchers.IO) { ChatHistoryStore.cleanupUnreferencedAttachments(appContext, previousId) }
+        }
         _currentConversationId.value = conversationId
     }
 

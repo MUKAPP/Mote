@@ -154,6 +154,11 @@ object ApiSettingsStore {
             put("searxngUrl", settings.searxngUrl)
             put("tavilyApiKey", codec.encode(settings.tavilyApiKey))
             put("anysearchApiKey", codec.encode(settings.anysearchApiKey))
+            put("allowShell", settings.allowShell)
+            put("allowFileTools", settings.allowFileTools)
+            put("allowNetworkFetch", settings.allowNetworkFetch)
+            put("allowLocalNetwork", settings.allowLocalNetwork)
+            put("attachmentStorageLimitMiB", settings.attachmentStorageLimitMiB)
         }
     }
 
@@ -175,6 +180,9 @@ object ApiSettingsStore {
             put("id", model.id)
             put("displayName", model.displayName)
             put("contextLength", model.contextLength)
+            put("supportsTools", model.supportsTools)
+            put("supportsVision", model.supportsVision)
+            put("supportsUsage", model.supportsUsage)
             put(
                 "reasoningEfforts",
                 JSONObject().apply {
@@ -225,7 +233,12 @@ object ApiSettingsStore {
                 ),
             searxngUrl = root.optString("searxngUrl"),
             tavilyApiKey = tavilyApiKey,
-            anysearchApiKey = anysearchApiKey
+            anysearchApiKey = anysearchApiKey,
+            allowShell = root.optBoolean("allowShell", true),
+            allowFileTools = root.optBoolean("allowFileTools", true),
+            allowNetworkFetch = root.optBoolean("allowNetworkFetch", true),
+            allowLocalNetwork = root.optBoolean("allowLocalNetwork", true),
+            attachmentStorageLimitMiB = root.optInt("attachmentStorageLimitMiB", 0).coerceAtLeast(0)
         )
     }
 
@@ -260,7 +273,10 @@ object ApiSettingsStore {
                             id = id,
                             displayName = item.optString("displayName"),
                             contextLength = item.optInt("contextLength", 0).coerceAtLeast(0),
-                            reasoningEfforts = reasoningEfforts
+                            reasoningEfforts = reasoningEfforts,
+                            supportsTools = item.optBoolean("supportsTools", true),
+                            supportsVision = item.optBoolean("supportsVision", true),
+                            supportsUsage = item.optBoolean("supportsUsage", true)
                         )
                     )
                 }

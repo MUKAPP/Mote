@@ -5,9 +5,11 @@ import com.mukapp.mote.data.model.AiToolCall
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ChatMessage
 import com.mukapp.mote.data.model.ChatRole
+import com.mukapp.mote.data.model.ResolvedModel
 import com.mukapp.mote.data.model.resolvedSearchProvider
 import com.mukapp.mote.util.MoteLog
 import com.mukapp.mote.util.optIntOrNull
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -66,9 +68,9 @@ object LocalAiTools {
             WebSearchTools.anysearchSearchEndpoint = value
         }
 
-    fun toolDefinitions(settings: ApiSettings = ApiSettings()): JSONArray {
+    fun toolDefinitions(settings: ApiSettings = ApiSettings(), model: ResolvedModel? = null): JSONArray {
         val searchProvider = settings.resolvedSearchProvider()
-        val definitions = AiToolDefinitions.forSearchProvider(searchProvider)
+        val definitions = AiToolDefinitions.forSettings(settings, model?.supportsTools ?: true)
         MoteLog.d(
             Component,
             MoteLog.event(
@@ -84,7 +86,8 @@ object LocalAiTools {
         context: Context,
         toolCall: AiToolCall,
         settings: ApiSettings = ApiSettings(),
-        onShellProcessStarted: ((String, Boolean) -> Unit)? = null
+        onShellProcessStarted: ((String, Boolean) -> Unit)? = null,
+        model: ResolvedModel? = null
     ): ChatMessage {
         val startMs = System.currentTimeMillis()
         MoteLog.i(
@@ -97,13 +100,21 @@ object LocalAiTools {
             )
         )
         val output = runCatching {
+            check(model?.supportsTools != false) { "当前模型不支持工具调用。" }
+            when (toolCall.name) {
+                ShellToolName -> check(settings.allowShell) { "Shell 执行已在设置中关闭。" }
+                ReadFileToolName, ReadLocalFileToolAlias, ListPathToolName ->
+                    check(settings.allowFileTools) { "文件工具已在设置中关闭。" }
+                FetchUrlToolName, FetchWebViewToolName ->
+                    check(settings.allowNetworkFetch) { "网页抓取已在设置中关闭。" }
+            }
             when (toolCall.name) {
                 ReadFileToolName, ReadLocalFileToolAlias ->
                     readFile(toolCall.arguments, SensitivePathGuard.forPrivateData(context))
                 ListPathToolName -> listPath(toolCall.arguments, SensitivePathGuard.forPrivateData(context))
                 GetCurrentTimeToolName -> getCurrentTime()
-                FetchUrlToolName -> UrlFetchTools.fetchUrl(toolCall.arguments)
-                FetchWebViewToolName -> UrlFetchTools.fetchWebView(context, toolCall.arguments)
+                FetchUrlToolName -> UrlFetchTools.fetchUrl(toolCall.arguments, settings.allowLocalNetwork)
+                FetchWebViewToolName -> UrlFetchTools.fetchWebView(context, toolCall.arguments, settings.allowLocalNetwork)
                 WebSearchToolName -> WebSearchTools.webSearch(settings, toolCall.arguments)
                 ShellToolName -> ShellTools.runShell(context, toolCall.arguments, onShellProcessStarted)
                 ShellStatusToolName -> ShellTools.checkShellStatus(toolCall.arguments)
@@ -126,6 +137,7 @@ object LocalAiTools {
                 )
             )
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             if (error.isInterruption()) {
                 // 工具被取消（runInterruptible 中断执行线程）：恢复中断位并上抛，让协程取消正常传播。
                 Thread.currentThread().interrupt()

@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.LruCache
 import android.widget.ImageView
+import com.mukapp.mote.data.ChatHistoryStore
 import com.mukapp.mote.data.model.ChatAttachment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,7 +16,7 @@ import kotlinx.coroutines.withContext
 /**
  * 附件图片缩略图加载器。
  *
- * 从附件的 base64 数据解码出降采样后的缩略图，按附件 id 缓存；异步加载完成后通过
+ * 从附件内联数据或当前会话 blob 在 IO 解码缩略图，以会话、附件、引用与尺寸共同缓存；
  * tag 校验目标 ImageView 是否仍指向同一附件，避免 RecyclerView 复用时图片错位。
  * 圆角由 ShapeableImageView 自行裁剪，这里只负责提供原始 Bitmap。
  */
@@ -33,26 +34,32 @@ object AttachmentThumbnailLoader {
      * 为 [target] 加载 [attachment] 的缩略图，目标边长约 [sizePx] 像素。
      * 命中缓存时同步设置；否则在 IO 线程解码后再回填。
      */
-    fun load(target: ImageView, attachment: ChatAttachment, sizePx: Int) {
-        val id = attachment.id
-        target.tag = id
-
-        cache.get(id)?.let {
+    fun load(target: ImageView, attachment: ChatAttachment, sizePx: Int, conversationId: String) {
+        val key = "$conversationId:${attachment.id}:${attachment.base64Ref.orEmpty()}:$sizePx"
+        target.tag = key
+        target.setImageDrawable(null)
+        cache.get(key)?.let {
             target.setImageBitmap(it)
             return
         }
-
-        val base64 = attachment.base64Data
-        if (base64.isNullOrBlank()) {
-            return
-        }
-
+        val context = target.context.applicationContext
         scope.launch {
-            val bitmap = withContext(Dispatchers.IO) { decode(base64, sizePx) } ?: return@launch
-            cache.put(id, bitmap)
-            if (target.tag == id) {
-                target.setImageBitmap(bitmap)
-            }
+            val bitmap = withContext(Dispatchers.IO) {
+                try {
+                    val base64 = attachment.base64Data?.takeIf { it.isNotBlank() }
+                        ?: ChatHistoryStore.readAttachmentBase64(context, conversationId,
+                            attachment.base64Ref ?: throw IllegalStateException("附件缺少内容引用。"))
+                    decode(base64, sizePx).also {
+                        if (it == null) MoteLog.w("Attachment", "附件缩略图解码失败。")
+                    }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    MoteLog.w("Attachment", "附件缩略图内容缺失或不可读。")
+                    null
+                }
+            } ?: return@launch
+            cache.put(key, bitmap)
+            if (target.tag == key) target.setImageBitmap(bitmap)
         }
     }
 

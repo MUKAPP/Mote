@@ -1,46 +1,65 @@
 package com.mukapp.mote.tools
 
+import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.SearchProvider
+import com.mukapp.mote.data.model.resolvedSearchProvider
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** AI 工具的 OpenAI function 定义。所有工具 description 必填，schema 均 additionalProperties=false。 */
 internal object AiToolDefinitions {
 
-    private fun buildBaseToolDefinitions(): JSONArray {
-        return JSONArray()
-            .put(buildReadFileDefinition())
-            .put(buildListPathDefinition())
-            .put(buildGetCurrentTimeDefinition())
-            .put(buildFetchUrlDefinition())
-            .put(buildFetchWebViewDefinition())
-            .put(buildShellDefinition())
-            .put(buildShellStatusDefinition())
-            .put(buildShellStopDefinition())
-            .put(buildWaitDefinition())
+    private const val FilePermission = 1
+    private const val FetchPermission = 2
+    private const val ShellPermission = 4
+    private const val LocalNetworkPermission = 8
+    private const val PermissionVariants = 16
+
+    // 以搜索提供商（含未启用）和权限 mask 定位，最多缓存 4 × 16 份定义。
+    // 调用方只读不改，直接复用缓存 JSONArray，不逐请求复制。
+    private val cachedToolDefinitions = arrayOfNulls<JSONArray>(4 * PermissionVariants)
+    private val emptyToolDefinitions = JSONArray()
+
+    fun forSettings(settings: ApiSettings, supportsTools: Boolean): JSONArray {
+        if (!supportsTools) return emptyToolDefinitions
+        val searchProvider = settings.resolvedSearchProvider()
+        val permissionMask = (if (settings.allowFileTools) FilePermission else 0) or
+            (if (settings.allowNetworkFetch) FetchPermission else 0) or
+            (if (settings.allowShell) ShellPermission else 0) or
+            (if (settings.allowLocalNetwork) LocalNetworkPermission else 0)
+        val cacheIndex = ((searchProvider?.ordinal ?: -1) + 1) * PermissionVariants + permissionMask
+        return synchronized(cachedToolDefinitions) {
+            cachedToolDefinitions[cacheIndex] ?: buildToolDefinitions(searchProvider, permissionMask).also {
+                cachedToolDefinitions[cacheIndex] = it
+            }
+        }
     }
 
-    // 按搜索提供商各缓存一份完整定义。每份都由 buildBaseToolDefinitions() 单独构造，互不共享节点。
-    // 调用方（ChatApiClient）只读不改，因此直接返回缓存实例：这些 JSONArray 视为不可变，不要就地修改。
-    private val cachedToolDefinitionsWithoutSearch: JSONArray by lazy {
-        buildBaseToolDefinitions()
-    }
-    private val cachedToolDefinitionsWithSearxng: JSONArray by lazy {
-        buildBaseToolDefinitions().put(buildSearxngWebSearchDefinition())
-    }
-    private val cachedToolDefinitionsWithTavily: JSONArray by lazy {
-        buildBaseToolDefinitions().put(buildTavilyWebSearchDefinition())
-    }
-    private val cachedToolDefinitionsWithAnysearch: JSONArray by lazy {
-        buildBaseToolDefinitions().put(buildAnysearchWebSearchDefinition())
-    }
-
-    fun forSearchProvider(searchProvider: SearchProvider?): JSONArray {
-        return when (searchProvider) {
-            SearchProvider.Searxng -> cachedToolDefinitionsWithSearxng
-            SearchProvider.Tavily -> cachedToolDefinitionsWithTavily
-            SearchProvider.Anysearch -> cachedToolDefinitionsWithAnysearch
-            null -> cachedToolDefinitionsWithoutSearch
+    private fun buildToolDefinitions(searchProvider: SearchProvider?, permissionMask: Int): JSONArray {
+        return JSONArray().apply {
+            if (permissionMask and FilePermission != 0) {
+                put(buildReadFileDefinition())
+                put(buildListPathDefinition())
+            }
+            put(buildGetCurrentTimeDefinition())
+            if (permissionMask and FetchPermission != 0) {
+                put(buildFetchUrlDefinition())
+                if (permissionMask and LocalNetworkPermission != 0) {
+                    put(buildFetchWebViewDefinition())
+                }
+            }
+            if (permissionMask and ShellPermission != 0) {
+                put(buildShellDefinition())
+            }
+            put(buildShellStatusDefinition())
+            put(buildShellStopDefinition())
+            put(buildWaitDefinition())
+            when (searchProvider) {
+                SearchProvider.Searxng -> put(buildSearxngWebSearchDefinition())
+                SearchProvider.Tavily -> put(buildTavilyWebSearchDefinition())
+                SearchProvider.Anysearch -> put(buildAnysearchWebSearchDefinition())
+                null -> Unit
+            }
         }
     }
 

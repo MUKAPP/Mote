@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.mukapp.mote.R
 import com.mukapp.mote.data.model.ConversationSummary
@@ -15,8 +16,14 @@ class ConversationSummaryAdapter(
     private val onConversationClick: (ConversationSummary) -> Unit,
     private val onConversationLongClick: ((view: View, summary: ConversationSummary) -> Unit)? = null
 ) : RecyclerView.Adapter<ConversationSummaryAdapter.ViewHolder>() {
-    private val items = mutableListOf<ConversationSummary>()
+    private var items: List<ConversationSummary> = emptyList()
+    private var timeTexts: List<String> = emptyList()
     private var currentConversationId: String = ""
+
+    private data class SummaryPayload(
+        val contentChanged: Boolean,
+        val selectionChanged: Boolean
+    )
 
     init {
         setHasStableIds(true)
@@ -36,36 +43,71 @@ class ConversationSummaryAdapter(
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        holder.bind(items[position])
+        holder.bind(items[position], timeTexts[position])
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.isEmpty()) {
+            onBindViewHolder(holder, position)
+            return
+        }
+        var contentChanged = false
+        var selectionChanged = false
+        for (payload in payloads) {
+            if (payload !is SummaryPayload) {
+                onBindViewHolder(holder, position)
+                return
+            }
+            contentChanged = contentChanged || payload.contentChanged
+            selectionChanged = selectionChanged || payload.selectionChanged
+        }
+        if (contentChanged) {
+            holder.bindContent(items[position], timeTexts[position])
+        }
+        if (selectionChanged) {
+            holder.bindSelection(items[position].id == currentConversationId)
+        }
     }
 
     override fun getItemCount(): Int = items.size
 
     fun submitItems(newItems: List<ConversationSummary>, selectedId: String) {
-        val oldItems = items.toList()
+        val oldItems = items
+        val oldTimeTexts = timeTexts
         val oldSelectedId = currentConversationId
+        val nextItems = newItems.toList()
+        val now = System.currentTimeMillis()
+        val nextTimeTexts = nextItems.map { formatRelativeTime(it.updatedAt, now) }
+        val diffResult = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldItems.size
+            override fun getNewListSize(): Int = nextItems.size
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition].id == nextItems[newItemPosition].id
+            }
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val old = oldItems[oldItemPosition]
+                val new = nextItems[newItemPosition]
+                return old == new &&
+                    oldTimeTexts[oldItemPosition] == nextTimeTexts[newItemPosition] &&
+                    (old.id == oldSelectedId) == (new.id == selectedId)
+            }
+
+            override fun getChangePayload(oldItemPosition: Int, newItemPosition: Int): Any {
+                val old = oldItems[oldItemPosition]
+                val new = nextItems[newItemPosition]
+                return SummaryPayload(
+                    contentChanged = old != new ||
+                        oldTimeTexts[oldItemPosition] != nextTimeTexts[newItemPosition],
+                    selectionChanged = (old.id == oldSelectedId) != (new.id == selectedId)
+                )
+            }
+        }, true)
+        items = nextItems
+        timeTexts = nextTimeTexts
         currentConversationId = selectedId
-
-        val sameIdentityOrder = oldItems.size == newItems.size && oldItems.indices.all { index ->
-            oldItems[index].id == newItems[index].id
-        }
-        items.clear()
-        items.addAll(newItems)
-
-        if (sameIdentityOrder) {
-            val changedIndices = newItems.indices.filter { index ->
-                oldItems[index] != newItems[index] ||
-                    oldItems[index].id == oldSelectedId ||
-                    newItems[index].id == currentConversationId
-            }
-            when {
-                changedIndices.isEmpty() -> Unit
-                changedIndices.size <= 4 -> changedIndices.forEach { notifyItemChanged(it) }
-                else -> notifyDataSetChanged()
-            }
-        } else {
-            notifyDataSetChanged()
-        }
+        diffResult.dispatchUpdatesTo(this)
     }
 
     inner class ViewHolder(
@@ -82,8 +124,19 @@ class ConversationSummaryAdapter(
             }
         }
 
-        fun bind(item: ConversationSummary) {
-            val selected = item.id == currentConversationId
+        fun bind(item: ConversationSummary, timeText: String) {
+            bindContent(item, timeText)
+            bindSelection(item.id == currentConversationId)
+        }
+
+        fun bindContent(item: ConversationSummary, timeText: String) {
+            binding.textTitle.text = item.title.ifBlank {
+                binding.root.context.getString(R.string.nav_untitled_chat)
+            }
+            binding.textTime.text = timeText
+        }
+
+        fun bindSelection(selected: Boolean) {
             val context = binding.root.context
             val backgroundColor = ContextCompat.getColor(
                 context,
@@ -99,20 +152,6 @@ class ConversationSummaryAdapter(
             )
             binding.cardConversation.setCardBackgroundColor(backgroundColor)
             binding.textTitle.setTextColor(textColor)
-            binding.textTitle.text = item.title.ifBlank { context.getString(R.string.nav_untitled_chat) }
-
-            // 显示相对时间
-            val timeText = if (item.updatedAt > 0) {
-                DateUtils.getRelativeTimeSpanString(
-                    item.updatedAt,
-                    System.currentTimeMillis(),
-                    DateUtils.MINUTE_IN_MILLIS,
-                    DateUtils.FORMAT_ABBREV_RELATIVE
-                )
-            } else {
-                ""
-            }
-            binding.textTime.text = timeText
             binding.textTime.setTextColor(subtextColor)
 
             binding.root.isSelected = selected
@@ -129,6 +168,19 @@ class ConversationSummaryAdapter(
     }
 
     private companion object {
+        fun formatRelativeTime(updatedAt: Long, now: Long): String {
+            return if (updatedAt > 0) {
+                DateUtils.getRelativeTimeSpanString(
+                    updatedAt,
+                    now,
+                    DateUtils.MINUTE_IN_MILLIS,
+                    DateUtils.FORMAT_ABBREV_RELATIVE
+                ).toString()
+            } else {
+                ""
+            }
+        }
+
         fun stableItemId(id: String): Long {
             return runCatching {
                 val uuid = UUID.fromString(id)

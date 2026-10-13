@@ -23,7 +23,8 @@ data class ChatAttachment(
     val directReadable: Boolean = false,
     val textContent: String? = null,
     val base64Data: String? = null,
-    val truncated: Boolean = false
+    val truncated: Boolean = false,
+    val base64Ref: String? = null
 )
 
 /** 仅取文件名（去掉任何路径前缀），用于附件 UI 展示，避免暴露完整路径。 */
@@ -93,7 +94,10 @@ data class ModelInfo(
     val id: String,
     val displayName: String = "",
     val contextLength: Int = 0,
-    val reasoningEfforts: Map<String, String> = emptyMap()
+    val reasoningEfforts: Map<String, String> = emptyMap(),
+    val supportsTools: Boolean = true,
+    val supportsVision: Boolean = true,
+    val supportsUsage: Boolean = true
 ) {
     val label: String get() = displayName.ifBlank { id }
 }
@@ -125,7 +129,10 @@ data class ResolvedModel(
     val reasoningEffortKey: String,
     val reasoningEffortValue: String,
     val contextLength: Int,
-    val providerType: ProviderType = ProviderType.Generic
+    val providerType: ProviderType = ProviderType.Generic,
+    val supportsTools: Boolean = true,
+    val supportsVision: Boolean = true,
+    val supportsUsage: Boolean = true
 )
 
 enum class SearchProvider(val storageKey: String) {
@@ -149,7 +156,12 @@ data class ApiSettings(
     val searchProvider: SearchProvider? = null,
     val searxngUrl: String = "",
     val tavilyApiKey: String = "",
-    val anysearchApiKey: String = ""
+    val anysearchApiKey: String = "",
+    val allowShell: Boolean = true,
+    val allowFileTools: Boolean = true,
+    val allowNetworkFetch: Boolean = true,
+    val allowLocalNetwork: Boolean = true,
+    val attachmentStorageLimitMiB: Int = 0
 ) {
     companion object {
         const val DefaultCompressionTriggerPercent: Int = 80
@@ -241,7 +253,10 @@ fun ApiSettings.resolve(ref: ModelRef?): ResolvedModel? {
         reasoningEffortKey = reasoningEffortKey,
         reasoningEffortValue = reasoningEffortValue,
         contextLength = model.contextLength,
-        providerType = provider.type
+        providerType = provider.type,
+        supportsTools = model.supportsTools,
+        supportsVision = model.supportsVision,
+        supportsUsage = model.supportsUsage
     )
 }
 

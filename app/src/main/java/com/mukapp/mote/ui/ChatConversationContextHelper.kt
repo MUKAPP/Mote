@@ -14,6 +14,14 @@ import org.json.JSONObject
 internal object ChatConversationContextHelper {
     internal const val MaxToolResultContextChars = 24_000
 
+    data class ContextTokenEnvelope(
+        val modelKey: String,
+        val systemPrompt: String,
+        val toolsJson: String,
+        val outputReserveTokens: Int,
+        val imageReserveTokens: Int = 1_024
+    )
+
     data class ContextTokenCount(
         val tokens: Int,
         val sourceLabel: String
@@ -35,7 +43,9 @@ internal object ChatConversationContextHelper {
 
     data class ContextTokenUsageAnchor(
         val messages: List<ChatMessage>,
-        val inputTokens: Int
+        val inputTokens: Int,
+        val envelopeKey: String? = null,
+        val toolResultMaxChars: Int? = null
     )
 
     private const val MaxCopiedMetadataStringChars = 2_000
@@ -59,8 +69,12 @@ internal object ChatConversationContextHelper {
         "tail"
     )
 
-    fun calculateContextCompressionThresholds(settings: ApiSettings): ContextCompressionThresholds? {
-        val contextLength = settings.resolvedChatModel()?.contextLength?.takeIf { it > 0 } ?: return null
+    fun calculateContextCompressionThresholds(
+        settings: ApiSettings,
+        inputLimit: Int? = null
+    ): ContextCompressionThresholds? {
+        val contextLength = (inputLimit ?: settings.resolvedChatModel()?.contextLength)
+            ?.takeIf { it > 0 } ?: return null
         val percent = settings.compressionTriggerPercent
         if (percent == 0) {
             return null
@@ -294,18 +308,21 @@ internal object ChatConversationContextHelper {
         }.distinct()
     }
 
-    fun limitToolResultForContext(message: ChatMessage): ChatMessage {
+    fun limitToolResultForContext(
+        message: ChatMessage,
+        maxContextChars: Int = MaxToolResultContextChars
+    ): ChatMessage {
         if (message.role != ChatRole.Tool) {
             return message
         }
         val content = message.content
-        if (content.length <= MaxToolResultContextChars) {
+        if (content.length <= maxContextChars) {
             return message
         }
 
-        val headLength = MaxToolResultContextChars / 2
-        val tailLength = MaxToolResultContextChars - headLength
-        val omittedChars = content.length - MaxToolResultContextChars
+        val headLength = maxContextChars / 2
+        val tailLength = maxContextChars - headLength
+        val omittedChars = content.length - maxContextChars
         val originalObject = runCatching { JSONObject(content) }.getOrNull()
         return message.copy(
             content = JSONObject().apply {
@@ -321,8 +338,11 @@ internal object ChatConversationContextHelper {
         )
     }
 
-    fun limitToolResultsForContext(messages: List<ChatMessage>): List<ChatMessage> {
-        return messages.map { message -> limitToolResultForContext(message) }
+    fun limitToolResultsForContext(
+        messages: List<ChatMessage>,
+        maxContextChars: Int = MaxToolResultContextChars
+    ): List<ChatMessage> {
+        return messages.map { message -> limitToolResultForContext(message, maxContextChars) }
     }
 
     fun replaceLoadingToolParts(
@@ -356,25 +376,56 @@ internal object ChatConversationContextHelper {
         return messages.sumOf { message -> estimateMessageTokens(message) + MessageOverheadTokens }
     }
 
+    fun estimateRequestTokens(messages: List<ChatMessage>, envelope: ContextTokenEnvelope): Int {
+        val systemTokens = estimateTextTokens(ChatRole.System.apiValue) +
+            estimateTextTokens(envelope.systemPrompt) + MessageOverheadTokens
+        return addTokenCounts(
+            estimateMessageInputTokens(messages, envelope.imageReserveTokens),
+            addTokenCounts(systemTokens, estimateTextTokens(envelope.toolsJson))
+        )
+    }
+
+    private fun estimateMessageInputTokens(messages: List<ChatMessage>, imageReserveTokens: Int): Int {
+        val imageCount = messages.sumOf { message ->
+            message.attachments.count { attachment -> attachment.type == ChatAttachmentType.Image }.toLong()
+        }
+        val imageTokens = (imageCount * imageReserveTokens)
+            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return addTokenCounts(estimateConversationTokens(messages), imageTokens)
+    }
+
     fun buildTokenUsageAnchor(
         messages: List<ChatMessage>,
-        usage: TokenUsage?
+        usage: TokenUsage?,
+        envelopeKey: String? = null,
+        toolResultMaxChars: Int? = null
     ): ContextTokenUsageAnchor? {
         val inputTokens = usage?.inputTokens?.takeIf { it > 0 } ?: return null
         return ContextTokenUsageAnchor(
             messages = filterConversationMessages(messages),
-            inputTokens = inputTokens
+            inputTokens = inputTokens,
+            envelopeKey = envelopeKey,
+            toolResultMaxChars = toolResultMaxChars
         )
     }
 
     fun resolveConversationTokenCount(
         messages: List<ChatMessage>,
-        usageAnchor: ContextTokenUsageAnchor?
+        usageAnchor: ContextTokenUsageAnchor?,
+        envelope: ContextTokenEnvelope? = null,
+        toolResultMaxChars: Int? = null
     ): ContextTokenCount {
         val normalizedMessages = filterConversationMessages(messages)
-        if (usageAnchor != null && hasMessagePrefix(normalizedMessages, usageAnchor.messages)) {
+        val envelopeMatches = envelope == null ||
+            (usageAnchor?.envelopeKey == envelope.modelKey &&
+                usageAnchor?.toolResultMaxChars == toolResultMaxChars)
+        if (usageAnchor != null && envelopeMatches && hasMessagePrefix(normalizedMessages, usageAnchor.messages)) {
             val appendedMessages = normalizedMessages.drop(usageAnchor.messages.size)
-            val appendedTokens = estimateConversationTokens(appendedMessages)
+            val appendedTokens = if (envelope == null) {
+                estimateConversationTokens(appendedMessages)
+            } else {
+                estimateMessageInputTokens(appendedMessages, envelope.imageReserveTokens)
+            }
             return ContextTokenCount(
                 tokens = addTokenCounts(usageAnchor.inputTokens, appendedTokens),
                 sourceLabel = if (appendedMessages.isEmpty()) {
@@ -386,7 +437,11 @@ internal object ChatConversationContextHelper {
         }
 
         return ContextTokenCount(
-            tokens = estimateConversationTokens(normalizedMessages),
+            tokens = if (envelope == null) {
+                estimateConversationTokens(normalizedMessages)
+            } else {
+                estimateRequestTokens(normalizedMessages, envelope)
+            },
             sourceLabel = "本地估算"
         )
     }
@@ -524,8 +579,8 @@ internal object ChatConversationContextHelper {
     /**
      * 按消息 id 判断前缀：同 id 视为同一消息，避免对含大附件的消息做全字段比较。
      * 依赖约定：所有改变已有消息内容的路径要么清除 usage 锚点、要么生成新 id；
-     * 唯一保 id 改内容的变换是 limitToolResultForContext（截断不改变消息身份，正是希望忽略的差异）。
-     * 未来新增"保 id 改内容且不清锚点"的变换时须重新评估锚点检查。
+     * 工具结果截断保留消息 id；生产 usage 锚点另校验共同截断额度，额度变化时不复用旧输入用量。
+     * 未来新增其他“保 id 改内容且不清锚点”的变换时须重新评估锚点检查。
      */
     fun hasMessagePrefix(messages: List<ChatMessage>, prefix: List<ChatMessage>): Boolean {
         if (prefix.size > messages.size) {

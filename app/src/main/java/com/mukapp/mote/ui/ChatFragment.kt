@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -23,9 +24,11 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.view.LayoutInflater
+import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.ViewTreeObserver
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.webkit.MimeTypeMap
@@ -87,6 +90,8 @@ class ChatFragment : Fragment() {
     }
 
     private var latestMessages: List<ChatMessage> = emptyList()
+    private var renderedConversationId: String = ""
+    private var latestMessagesConversationId: String = ""
     private var latestSettings: ApiSettings = ApiSettings()
     private var latestIsSending: Boolean = false
     private var latestDraftAttachments: List<ChatAttachment> = emptyList()
@@ -98,9 +103,17 @@ class ChatFragment : Fragment() {
     private var observedConversationId: String? = null
     private var renderMessagesPending: Boolean = false
     private var lastRenderedMessageCount: Int = 0
-    private var scrollAfterLayoutPending: Boolean = false
-    private val smoothScrollToBottomRunnable = Runnable { scrollToBottomIfScrollable(animated = true) }
-    private val immediateScrollToBottomRunnable = Runnable { scrollToBottomIfScrollable(animated = false) }
+    private var scrollGeneration = 0L
+    private var readingReadyGeneration: Long? = null
+    private data class PendingReadingRestore(
+        val conversationId: String,
+        val generation: Long,
+        val position: ConversationReadingPosition?
+    )
+    private var pendingReadingRestore: PendingReadingRestore? = null
+    private var readingLayoutListener: ViewTreeObserver.OnPreDrawListener? = null
+    private var bottomScrollRunnable: Runnable? = null
+    private var animatedBottomGeneration: Long? = null
     private val markdownPreparseRunnable = Runnable { runMarkdownPreparseForViewport() }
     private var lastMarkdownPreparseSignature: String? = null
     private var lastMarkdownPreparseUptime: Long = 0L
@@ -131,6 +144,7 @@ class ChatFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        val binding = this.binding
         setupRecyclerView()
         setupInputArea()
         setupExampleChips()
@@ -141,6 +155,7 @@ class ChatFragment : Fragment() {
         var imeAnimationRunning = false
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            if (_binding !== binding) return@setOnApplyWindowInsetsListener insets
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
 
@@ -165,6 +180,7 @@ class ChatFragment : Fragment() {
 
         val inputStackLayoutChangeListener =
             View.OnLayoutChangeListener { changedView, _, top, _, bottom, _, oldTop, _, oldBottom ->
+                if (_binding !== binding) return@OnLayoutChangeListener
                 if ((bottom - top) != (oldBottom - oldTop)) {
                     updateContentPadding(
                         bottom = max(
@@ -183,12 +199,14 @@ class ChatFragment : Fragment() {
 
             override fun onPrepare(animation: WindowInsetsAnimationCompat) {
                 super.onPrepare(animation)
+                if (_binding !== binding) return
                 imeAnimationRunning = true
                 previousBottom = max(systemBottomInset, imeBottomInset)
             }
 
             override fun onEnd(animation: WindowInsetsAnimationCompat) {
                 super.onEnd(animation)
+                if (_binding !== binding) return
                 imeAnimationRunning = false
             }
 
@@ -196,6 +214,7 @@ class ChatFragment : Fragment() {
                 insets: WindowInsetsCompat,
                 runningAnimations: MutableList<WindowInsetsAnimationCompat>
             ): WindowInsetsCompat {
+                if (_binding !== binding) return insets
                 val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
                 val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
                 val currentBottom = max(systemBottom, imeBottom)
@@ -213,7 +232,9 @@ class ChatFragment : Fragment() {
                 )
 
                 // 核心2：让列表内容严格跟随输入法的位移量进行像素级滚动
-                binding.recyclerMessages.scrollBy(0, delta)
+                if (readingReadyGeneration == scrollGeneration &&
+                    isReadingTarget(renderedConversationId, scrollGeneration)
+                ) binding.recyclerMessages.scrollBy(0, delta)
 
                 return insets
             }
@@ -271,17 +292,23 @@ class ChatFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        saveReadingPositionIfReady()
+        cancelReadingCallbacks()
+        scrollGeneration++
+        readingReadyGeneration = null
+        pendingReadingRestore = null
+        observedConversationId = null
+        renderedConversationId = ""
+        renderMessagesPending = false
         parseCache.clear()
         toolbarLayoutChangeListener?.let { listener ->
             activity?.findViewById<View>(R.id.blur_view_toolbar)?.removeOnLayoutChangeListener(listener)
         }
         toolbarLayoutChangeListener = null
-        binding.recyclerMessages.removeCallbacks(smoothScrollToBottomRunnable)
-        binding.recyclerMessages.removeCallbacks(immediateScrollToBottomRunnable)
+        binding.recyclerMessages.stopScroll()
         binding.recyclerMessages.removeCallbacks(markdownPreparseRunnable)
         binding.scrollToBottomContent.animate().cancel()
         scrollToBottomVisible = false
-        scrollAfterLayoutPending = false
         binding.recyclerMessages.adapter = null
         _binding = null
         super.onDestroyView()
@@ -303,7 +330,8 @@ class ChatFragment : Fragment() {
                     R.string.dialog_delete_message
                 ) { viewModel.deleteMessage(index) }
             },
-            onRetryMessage = { index -> viewModel.retryMessage(index) }
+            onRetryMessage = { index -> viewModel.retryMessage(index) },
+            conversationIdProvider = { renderedConversationId }
         )
         adapter.parseCache = parseCache
 
@@ -347,13 +375,13 @@ class ChatFragment : Fragment() {
                 recyclerView: androidx.recyclerview.widget.RecyclerView,
                 newState: Int
             ) {
+                if (recyclerView !== _binding?.recyclerMessages) return
                 when (newState) {
                     androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_DRAGGING -> {
                         // 用户开始触摸拖拽时立即取消自动吸附，避免流式输出的延迟滚动抢滚动。
                         userScrolling = true
                         followOutput = false
-                        recyclerView.removeCallbacks(smoothScrollToBottomRunnable)
-                        recyclerView.removeCallbacks(immediateScrollToBottomRunnable)
+                        cancelPendingReadingRestore()
                     }
 
                     androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_IDLE -> {
@@ -362,6 +390,10 @@ class ChatFragment : Fragment() {
                             followOutput = !recyclerView.canScrollVertically(1)
                         }
                         userScrolling = false
+                        animatedBottomGeneration?.let { generation ->
+                            val conversationId = renderedConversationId
+                            afterMessagesLayout(conversationId, generation) { completeAnimatedBottomIfSettled() }
+                        }
                         scheduleMarkdownPreparse(immediate = true)
                         updateScrollToBottomButton()
                     }
@@ -373,6 +405,7 @@ class ChatFragment : Fragment() {
                 dx: Int,
                 dy: Int
             ) {
+                if (recyclerView !== _binding?.recyclerMessages) return
                 if (dy != 0) {
                     lastScrollDy = dy
                 }
@@ -405,6 +438,7 @@ class ChatFragment : Fragment() {
             if (latestIsSending) {
                 viewModel.stopGenerating()
             } else {
+                cancelPendingReadingRestore()
                 followOutput = true
                 // 发送后首帧直接吸附到底，避免输出开始时的平滑滚动动画
                 pendingImmediateScrollToBottom = true
@@ -510,8 +544,25 @@ class ChatFragment : Fragment() {
     }
 
     private fun observeViewModel() {
+        viewModel.currentConversationId.observe(viewLifecycleOwner) { conversationId ->
+            if (conversationId == observedConversationId) return@observe
+            saveReadingPositionIfReady()
+            binding.recyclerMessages.stopScroll()
+            cancelReadingCallbacks()
+            scrollGeneration++
+            readingReadyGeneration = null
+            observedConversationId = conversationId
+            userScrolling = false
+            pendingImmediateScrollToBottom = false
+            val position = viewModel.getReadingPosition(conversationId)
+            followOutput = position?.followOutput ?: true
+            pendingReadingRestore = if (conversationId.isBlank()) null else
+                PendingReadingRestore(conversationId, scrollGeneration, position)
+        }
+
         viewModel.uiMessages.observe(viewLifecycleOwner) { messages ->
             latestMessages = messages
+            latestMessagesConversationId = viewModel.currentConversationId.value.orEmpty()
             scheduleRenderMessages()
             renderEmptyState()
         }
@@ -550,19 +601,6 @@ class ChatFragment : Fragment() {
             renderSendButton()
         }
 
-        viewModel.currentConversationId.observe(viewLifecycleOwner) { conversationId ->
-            val previousConversationId = observedConversationId
-            observedConversationId = conversationId
-            if (conversationId.isBlank() || conversationId == previousConversationId) {
-                return@observe
-            }
-
-            followOutput = true
-            if (previousConversationId != null || latestMessages.isNotEmpty()) {
-                pendingImmediateScrollToBottom = true
-                postScrollToBottom(animated = false)
-            }
-        }
     }
 
     private fun renderSendButton() {
@@ -600,15 +638,17 @@ class ChatFragment : Fragment() {
             val itemView = when (attachment.type) {
                 ChatAttachmentType.Image -> {
                     val itemBinding = ItemAttachmentImageBinding.inflate(inflater, container, false)
-                    AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt)
+                    AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt, viewModel.currentConversationId.value.orEmpty())
                     itemBinding.imageAttachmentRemove.setOnClickListener {
                         viewModel.removeDraftAttachment(attachment.id)
                     }
+                    installAttachmentRemoveTouchDelegate(itemBinding.root, itemBinding.imageAttachmentRemove)
                     itemBinding.root
                 }
 
                 ChatAttachmentType.File -> {
                     val itemBinding = ItemAttachmentFileBinding.inflate(inflater, container, false)
+                    itemBinding.root.minimumWidth = 48.dpInt
                     itemBinding.textAttachmentName.text = attachment.shortName()
                     itemBinding.root.backgroundTintList = ColorStateList.valueOf(
                         ContextCompat.getColor(requireContext(), R.color.mote_card)
@@ -616,11 +656,37 @@ class ChatFragment : Fragment() {
                     itemBinding.imageAttachmentRemove.setOnClickListener {
                         viewModel.removeDraftAttachment(attachment.id)
                     }
+                    installAttachmentRemoveTouchDelegate(itemBinding.root, itemBinding.imageAttachmentRemove)
                     itemBinding.root
                 }
             }
             container.addView(itemView)
         }
+    }
+
+    /** 保持移除图标的视觉尺寸，仅扩展当前附件 root 内的点击区。 */
+    private fun installAttachmentRemoveTouchDelegate(root: View, removeButton: View) {
+        root.post(object : Runnable {
+            override fun run() {
+                if (!root.isAttachedToWindow) return
+                if (root.isLayoutRequested) {
+                    root.postOnAnimation(this)
+                    return
+                }
+                val target = Rect().also(removeButton::getHitRect)
+                val minimumSize = 48.dpInt
+                val extraWidth = (minimumSize - target.width()).coerceAtLeast(0)
+                val extraHeight = (minimumSize - target.height()).coerceAtLeast(0)
+                target.inset(-(extraWidth / 2), -(extraHeight / 2))
+                target.right += extraWidth % 2
+                target.bottom += extraHeight % 2
+                if (target.left < 0) target.offset(-target.left, 0)
+                if (target.right > root.width) target.offset(root.width - target.right, 0)
+                if (target.top < 0) target.offset(0, -target.top)
+                if (target.bottom > root.height) target.offset(0, root.height - target.bottom)
+                root.touchDelegate = TouchDelegate(target, removeButton)
+            }
+        })
     }
 
     private fun renderToolConfirmation() {
@@ -670,8 +736,11 @@ class ChatFragment : Fragment() {
             )
         }
         updateScrollToBottomButton()
+        val conversationId = observedConversationId.orEmpty()
+        val generation = scrollGeneration
 
         binding.cardShellConfirmation.post {
+            if (_binding !== binding || !isReadingTarget(conversationId, generation)) return@post
             updateContentPadding(
                 bottom = max(systemBottomInset, imeBottomInset) + inputStackHeight() + bottomOffset,
                 scrollRecyclerByBottomDelta = true
@@ -703,7 +772,9 @@ class ChatFragment : Fragment() {
         binding.emptyPlaceholder.root.updatePadding(top = resolvedTop, bottom = bottom)
 
         val bottomDelta = bottom - previousBottom
-        if (scrollRecyclerByBottomDelta && bottomDelta != 0) {
+        if (scrollRecyclerByBottomDelta && bottomDelta != 0 &&
+            readingReadyGeneration == scrollGeneration && isReadingTarget(renderedConversationId, scrollGeneration)
+        ) {
             recyclerView.scrollBy(0, bottomDelta)
         }
     }
@@ -741,6 +812,7 @@ class ChatFragment : Fragment() {
 
     private fun setupScrollToBottomButton() {
         binding.blurScrollToBottom.setOnClickListener {
+            cancelPendingReadingRestore()
             userScrolling = false
             followOutput = true
             postScrollToBottom(animated = true)
@@ -807,33 +879,49 @@ class ChatFragment : Fragment() {
             return
         }
         binding.recyclerMessages.post {
+            if (_binding !== binding) return@post
             renderMessagesPending = false
             renderMessages()
         }
     }
 
     private fun renderMessages() {
+        val binding = _binding ?: return
+        val conversationId = viewModel.currentConversationId.value.orEmpty()
+        if (conversationId.isBlank() || latestMessagesConversationId != conversationId ||
+            observedConversationId != conversationId
+        ) return
+        val generation = scrollGeneration
         val previousMessageCount = lastRenderedMessageCount
+        cancelReadingCallbacks()
+        readingReadyGeneration = null
         adapter.submitMessages(latestMessages, latestIsSending)
+        renderedConversationId = conversationId
+        lastRenderedMessageCount = adapter.itemCount
 
-        // 只预解析当前可见窗口及邻近消息，避免长历史加载时一次性扫描和解析完整对话。
+        // 即使本次 Diff 没有改变尺寸，也必须等待目标列表完成真实布局。
+        binding.recyclerMessages.requestLayout()
         scheduleMarkdownPreparse(immediate = true)
-
-        lastRenderedMessageCount = latestMessages.size
-
         if (adapter.itemCount <= 0) {
             pendingImmediateScrollToBottom = false
+            pendingReadingRestore = null
             return
         }
 
-        val shouldJumpToBottom = pendingImmediateScrollToBottom ||
+        val restore = pendingReadingRestore
+        if (restore != null && restore.conversationId == conversationId && restore.generation == generation) {
+            afterMessagesLayout(conversationId, generation) { restoreReadingPosition(restore) }
+        } else if (followOutput) {
+            val shouldJumpToBottom = pendingImmediateScrollToBottom ||
                 (previousMessageCount == 0 && adapter.itemCount > InitialImmediateScrollThreshold)
-        if (followOutput) {
-            val animated = !latestIsSending && !shouldJumpToBottom
             pendingImmediateScrollToBottom = false
-            postScrollToBottom(animated)
+            postScrollToBottom(animated = !latestIsSending && !shouldJumpToBottom)
+        } else {
+            afterMessagesLayout(conversationId, generation) { completeReadingPosition(conversationId, generation) }
         }
-        binding.recyclerMessages.post { updateScrollToBottomButton() }
+        binding.recyclerMessages.post {
+            if (isReadingTarget(conversationId, generation)) updateScrollToBottomButton()
+        }
     }
 
     /**
@@ -971,116 +1059,184 @@ class ChatFragment : Fragment() {
         return "$firstPosition:$lastPosition:${entries.size}:$hash"
     }
 
-    private fun postScrollToBottom(animated: Boolean) {
+    private fun isReadingTarget(conversationId: String, generation: Long): Boolean =
+        conversationId.isNotBlank() && _binding != null && scrollGeneration == generation &&
+            renderedConversationId == conversationId && observedConversationId == conversationId &&
+            viewModel.currentConversationId.value == conversationId
+
+    private fun saveReadingPositionIfReady() {
         val binding = _binding ?: return
         val recyclerView = binding.recyclerMessages
-        if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
-            return
-        }
-        recyclerView.removeCallbacks(smoothScrollToBottomRunnable)
-        recyclerView.removeCallbacks(immediateScrollToBottomRunnable)
-        recyclerView.post(
-            if (animated) {
-                smoothScrollToBottomRunnable
-            } else {
-                immediateScrollToBottomRunnable
-            }
+        if (renderedConversationId.isBlank() || observedConversationId != renderedConversationId ||
+            readingReadyGeneration != scrollGeneration || recyclerView.isLayoutRequested ||
+            recyclerView.hasPendingAdapterUpdates() || recyclerView.isComputingLayout
+        ) return
+        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+        val firstPosition = layoutManager.findFirstVisibleItemPosition()
+        val message = adapter.getMessageAt(firstPosition) ?: return
+        val firstView = layoutManager.findViewByPosition(firstPosition) ?: return
+        viewModel.saveReadingPosition(
+            renderedConversationId,
+            ConversationReadingPosition(
+                message.id,
+                layoutManager.getDecoratedTop(firstView) - recyclerView.paddingTop,
+                followOutput
+            )
         )
     }
 
-    private fun scrollToBottom(animated: Boolean) {
+    private fun cancelReadingCallbacks() {
+        val recyclerView = _binding?.recyclerMessages ?: return
+        bottomScrollRunnable?.let { recyclerView.removeCallbacks(it) }
+        bottomScrollRunnable = null
+        animatedBottomGeneration = null
+        readingLayoutListener?.let { recyclerView.viewTreeObserver.removeOnPreDrawListener(it) }
+        readingLayoutListener = null
+    }
+
+    private fun cancelPendingReadingRestore() {
+        val recyclerView = _binding?.recyclerMessages ?: return
+        val wasReady = readingReadyGeneration == scrollGeneration && !recyclerView.isLayoutRequested &&
+            !recyclerView.hasPendingAdapterUpdates() && !recyclerView.isComputingLayout
+        cancelReadingCallbacks()
+        scrollGeneration++
+        readingReadyGeneration = if (wasReady) scrollGeneration else null
+        pendingReadingRestore = null
+        pendingImmediateScrollToBottom = false
+        val conversationId = renderedConversationId
+        val generation = scrollGeneration
+        if (!wasReady && isReadingTarget(conversationId, generation) && adapter.itemCount > 0) {
+            afterMessagesLayout(conversationId, generation) { completeReadingPosition(conversationId, generation) }
+        }
+    }
+
+    /** Pre-draw 在真实 RecyclerView layout 后运行；post 本身不代表目标列表已布局。 */
+    private fun afterMessagesLayout(conversationId: String, generation: Long, action: () -> Unit) {
         val binding = _binding ?: return
-        val lastPosition = adapter.itemCount - 1
-        if (lastPosition < 0) {
+        val recyclerView = binding.recyclerMessages
+        readingLayoutListener?.let { recyclerView.viewTreeObserver.removeOnPreDrawListener(it) }
+        val listener = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (_binding !== binding || !isReadingTarget(conversationId, generation)) {
+                    recyclerView.viewTreeObserver.removeOnPreDrawListener(this)
+                    if (readingLayoutListener === this) readingLayoutListener = null
+                    return true
+                }
+                if (!ViewCompat.isLaidOut(recyclerView) || recyclerView.isLayoutRequested ||
+                    recyclerView.hasPendingAdapterUpdates() || recyclerView.isComputingLayout
+                ) return true
+                recyclerView.viewTreeObserver.removeOnPreDrawListener(this)
+                if (readingLayoutListener === this) readingLayoutListener = null
+                action()
+                return !recyclerView.isLayoutRequested
+            }
+        }
+        readingLayoutListener = listener
+        recyclerView.viewTreeObserver.addOnPreDrawListener(listener)
+        recyclerView.invalidate()
+    }
+
+    private fun completeReadingPosition(conversationId: String, generation: Long) {
+        if (!isReadingTarget(conversationId, generation) || adapter.itemCount == 0) return
+        readingReadyGeneration = generation
+        pendingReadingRestore = null
+        updateScrollToBottomButton()
+    }
+
+    private fun restoreReadingPosition(restore: PendingReadingRestore) {
+        if (pendingReadingRestore !== restore || !isReadingTarget(restore.conversationId, restore.generation)) return
+        val position = restore.position
+        val messagePosition = if (position == null) -1 else
+            (0 until adapter.itemCount).firstOrNull { adapter.getMessageAt(it)?.id == position.messageId } ?: -1
+        if (position == null || messagePosition < 0) {
+            scrollToBottom(animated = false, conversationId = restore.conversationId, generation = restore.generation)
             return
         }
         val recyclerView = binding.recyclerMessages
-        if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
+        val layoutManager = recyclerView.layoutManager as LinearLayoutManager
+        recyclerView.stopScroll()
+        layoutManager.scrollToPositionWithOffset(messagePosition, position.offsetPx)
+        afterMessagesLayout(restore.conversationId, restore.generation) {
+            completeReadingPosition(restore.conversationId, restore.generation)
+        }
+    }
+
+    private fun postScrollToBottom(animated: Boolean) {
+        val binding = _binding ?: return
+        val recyclerView = binding.recyclerMessages
+        val conversationId = renderedConversationId
+        val generation = scrollGeneration
+        if (!isReadingTarget(conversationId, generation) || userScrolling ||
+            recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING
+        ) return
+        readingReadyGeneration = null
+        bottomScrollRunnable?.let { recyclerView.removeCallbacks(it) }
+        val runnable = Runnable {
+            bottomScrollRunnable = null
+            if (_binding !== binding || !isReadingTarget(conversationId, generation)) return@Runnable
+            afterMessagesLayout(conversationId, generation) {
+                scrollToBottom(animated, conversationId, generation)
+            }
+        }
+        bottomScrollRunnable = runnable
+        recyclerView.post(runnable)
+    }
+
+    private fun scrollToBottom(animated: Boolean, conversationId: String, generation: Long) {
+        if (!isReadingTarget(conversationId, generation)) return
+        val recyclerView = binding.recyclerMessages
+        val lastPosition = adapter.itemCount - 1
+        if (lastPosition < 0 || userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) return
+        // 内容未超过可视区域时不滚动，避免触发拉伸效果。
+        if (!recyclerView.canScrollVertically(-1) && !recyclerView.canScrollVertically(1)) {
+            completeReadingPosition(conversationId, generation)
             return
         }
         if (animated) {
+            animatedBottomGeneration = generation
             recyclerView.smoothScrollToPosition(lastPosition)
+            afterMessagesLayout(conversationId, generation) { completeAnimatedBottomIfSettled() }
             return
         }
 
-        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
-        if (layoutManager == null) {
-            recyclerView.stopScroll()
-            recyclerView.scrollToPosition(lastPosition)
-            return
-        }
-
+        val layoutManager = recyclerView.layoutManager as LinearLayoutManager
         recyclerView.stopScroll()
         if (layoutManager.findViewByPosition(lastPosition) != null) {
-            // 末条已在视图树（跟随输出时）：直接按实测底部做单次像素吸附，
-            // 不先 scrollToPosition 顶对齐，避免长消息流式时"顶对齐→跳底"的闪跳。
-            snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
+            snapPositionEndToRecyclerBottom(layoutManager, lastPosition, conversationId, generation)
         } else {
-            // 末条不在视图树（首次加载/切换对话等大跳转）：先定位，布局完成后再吸附。
             layoutManager.scrollToPosition(lastPosition)
-            recyclerView.post {
-                if (_binding == null || adapter.itemCount - 1 != lastPosition) {
-                    return@post
-                }
-                if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
-                    return@post
-                }
-                snapPositionEndToRecyclerBottom(layoutManager, lastPosition)
+            afterMessagesLayout(conversationId, generation) {
+                if (adapter.itemCount - 1 == lastPosition && !userScrolling &&
+                    recyclerView.scrollState != RecyclerView.SCROLL_STATE_DRAGGING
+                ) snapPositionEndToRecyclerBottom(layoutManager, lastPosition, conversationId, generation)
             }
         }
+    }
+
+    private fun completeAnimatedBottomIfSettled() {
+        val generation = animatedBottomGeneration ?: return
+        val recyclerView = _binding?.recyclerMessages ?: return
+        val conversationId = renderedConversationId
+        if (!isReadingTarget(conversationId, generation) || recyclerView.scrollState != RecyclerView.SCROLL_STATE_IDLE ||
+            recyclerView.canScrollVertically(1)
+        ) return
+        animatedBottomGeneration = null
+        completeReadingPosition(conversationId, generation)
     }
 
     private fun snapPositionEndToRecyclerBottom(
         layoutManager: LinearLayoutManager,
-        position: Int
+        position: Int,
+        conversationId: String,
+        generation: Long
     ) {
-        val binding = _binding ?: return
+        if (!isReadingTarget(conversationId, generation)) return
         val targetView = layoutManager.findViewByPosition(position) ?: return
         val recyclerView = binding.recyclerMessages
         val viewportBottom = recyclerView.height - recyclerView.paddingBottom
-        val targetBottom = layoutManager.getDecoratedBottom(targetView)
-        val delta = targetBottom - viewportBottom
-        if (delta != 0) {
-            recyclerView.scrollBy(0, delta)
-        }
-    }
-
-    private fun scrollToBottomIfScrollable(animated: Boolean) {
-        val binding = _binding ?: return
-        val recyclerView = binding.recyclerMessages
-        if (userScrolling || recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING) {
-            return
-        }
-        if (recyclerView.isLayoutRequested) {
-            if (scrollAfterLayoutPending) {
-                return
-            }
-            scrollAfterLayoutPending = true
-            recyclerView.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
-                override fun onLayoutChange(
-                    view: View,
-                    left: Int,
-                    top: Int,
-                    right: Int,
-                    bottom: Int,
-                    oldLeft: Int,
-                    oldTop: Int,
-                    oldRight: Int,
-                    oldBottom: Int
-                ) {
-                    view.removeOnLayoutChangeListener(this)
-                    scrollAfterLayoutPending = false
-                    scrollToBottomIfScrollable(animated)
-                }
-            })
-            return
-        }
-
-        // 内容未超过可视区域时跳过自动滚动，避免 RecyclerView 触发拉伸效果。
-        if (!recyclerView.canScrollVertically(-1) && !recyclerView.canScrollVertically(1)) {
-            return
-        }
-        scrollToBottom(animated)
+        val delta = layoutManager.getDecoratedBottom(targetView) - viewportBottom
+        if (delta != 0) recyclerView.scrollBy(0, delta)
+        afterMessagesLayout(conversationId, generation) { completeReadingPosition(conversationId, generation) }
     }
 
     private fun renderEmptyState() {

@@ -2,6 +2,7 @@ package com.mukapp.mote
 
 import android.app.Activity
 import android.os.Bundle
+import android.text.format.Formatter
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -14,7 +15,9 @@ import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.lifecycle.lifecycleScope
 import com.mukapp.mote.data.ApiSettingsStore
+import com.mukapp.mote.data.ChatHistoryStore
 import com.mukapp.mote.data.model.ApiSettings
 import com.mukapp.mote.data.model.ModelRef
 import com.mukapp.mote.data.model.ReasoningEffortOptions
@@ -28,6 +31,9 @@ import com.mukapp.mote.ui.ProviderAdapter
 import com.mukapp.mote.util.dpInt
 import com.mukapp.mote.util.hasManageAllFilesPermission
 import com.mukapp.mote.util.openManageAllFilesAccessSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
@@ -35,6 +41,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private var workingSettings: ApiSettings = ApiSettings()
     private var isApplyingSettings: Boolean = false
+    private var storageUsageGeneration = 0L
 
     private val providerEditorLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -67,6 +74,7 @@ class SettingsActivity : AppCompatActivity() {
         setupProviders()
         setupRoles()
         setupScalarFields()
+        binding.settingsContent.buttonRefreshStorageUsage.setOnClickListener { refreshStorageUsage() }
         applySettings(workingSettings)
         refreshPermissionState()
     }
@@ -74,6 +82,22 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshPermissionState()
+        refreshStorageUsage()
+    }
+
+    private fun refreshStorageUsage() {
+        val generation = ++storageUsageGeneration
+        binding.settingsContent.buttonRefreshStorageUsage.isEnabled = false
+        lifecycleScope.launch {
+            val usage = withContext(Dispatchers.IO) { ChatHistoryStore.getStorageUsage(applicationContext) }
+            if (generation != storageUsageGeneration) return@launch
+            binding.settingsContent.textHistoryStorageUsage.text = getString(
+                R.string.settings_storage_usage,
+                Formatter.formatFileSize(this@SettingsActivity, usage.totalBytes),
+                Formatter.formatFileSize(this@SettingsActivity, usage.attachmentBytes)
+            ) + if (usage.complete) "" else "\n" + getString(R.string.settings_storage_usage_incomplete)
+            binding.settingsContent.buttonRefreshStorageUsage.isEnabled = true
+        }
     }
 
     private fun setupChrome() {
@@ -170,6 +194,43 @@ class SettingsActivity : AppCompatActivity() {
                 ApiSettingsStore.save(this, workingSettings)
             }
         }
+        val onToolPermissionsChanged = {
+            if (!isApplyingSettings) {
+                val updated = workingSettings.copy(
+                    allowShell = binding.settingsContent.checkboxAllowShell.isChecked,
+                    allowFileTools = binding.settingsContent.checkboxAllowFileTools.isChecked,
+                    allowNetworkFetch = binding.settingsContent.checkboxAllowNetworkFetch.isChecked,
+                    allowLocalNetwork = binding.settingsContent.checkboxAllowLocalNetwork.isChecked
+                )
+                if (updated != workingSettings) {
+                    workingSettings = updated
+                    ApiSettingsStore.save(this, workingSettings)
+                }
+            }
+        }
+        binding.settingsContent.checkboxAllowShell.setOnCheckedChangeListener { _, _ -> onToolPermissionsChanged() }
+        binding.settingsContent.checkboxAllowFileTools.setOnCheckedChangeListener { _, _ -> onToolPermissionsChanged() }
+        binding.settingsContent.checkboxAllowNetworkFetch.setOnCheckedChangeListener { _, _ -> onToolPermissionsChanged() }
+        binding.settingsContent.checkboxAllowLocalNetwork.setOnCheckedChangeListener { _, _ -> onToolPermissionsChanged() }
+        binding.settingsContent.editAttachmentStorageLimit.doAfterTextChanged { text ->
+            if (isApplyingSettings) return@doAfterTextChanged
+            val raw = text?.toString().orEmpty().trim()
+            val limit = if (raw.isEmpty() || raw == "0") {
+                0
+            } else {
+                raw.toIntOrNull()?.takeIf { it > 0 }
+            }
+            if (limit == null) {
+                binding.settingsContent.inputAttachmentStorageLimit.error =
+                    getString(R.string.nonnegative_integer_required)
+                return@doAfterTextChanged
+            }
+            binding.settingsContent.inputAttachmentStorageLimit.error = null
+            if (limit != workingSettings.attachmentStorageLimitMiB) {
+                workingSettings = workingSettings.copy(attachmentStorageLimitMiB = limit)
+                ApiSettingsStore.save(this, workingSettings)
+            }
+        }
         val onSearchChanged = {
             if (!isApplyingSettings) {
                 val searxng = binding.settingsContent.editSearxngUrl.text?.toString().orEmpty().trim()
@@ -255,6 +316,15 @@ class SettingsActivity : AppCompatActivity() {
             if (binding.settingsContent.editCompressionTriggerPercent.text?.toString() != percent) {
                 binding.settingsContent.editCompressionTriggerPercent.setText(percent)
             }
+            binding.settingsContent.checkboxAllowShell.isChecked = settings.allowShell
+            binding.settingsContent.checkboxAllowFileTools.isChecked = settings.allowFileTools
+            binding.settingsContent.checkboxAllowNetworkFetch.isChecked = settings.allowNetworkFetch
+            binding.settingsContent.checkboxAllowLocalNetwork.isChecked = settings.allowLocalNetwork
+            val attachmentLimit = settings.attachmentStorageLimitMiB.coerceAtLeast(0).toString()
+            if (binding.settingsContent.editAttachmentStorageLimit.text?.toString() != attachmentLimit) {
+                binding.settingsContent.editAttachmentStorageLimit.setText(attachmentLimit)
+            }
+            binding.settingsContent.inputAttachmentStorageLimit.error = null
             if (binding.settingsContent.editSearxngUrl.text?.toString() != settings.searxngUrl) {
                 binding.settingsContent.editSearxngUrl.setText(settings.searxngUrl)
             }

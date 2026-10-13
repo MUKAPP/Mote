@@ -39,7 +39,8 @@ class ChatMessageAdapter(
     private val onFreeCopyMessage: (ChatMessage) -> Unit,
     private val onEditMessage: (Int) -> Unit,
     private val onDeleteMessage: (Int) -> Unit,
-    private val onRetryMessage: (Int) -> Unit
+    private val onRetryMessage: (Int) -> Unit,
+    private val conversationIdProvider: () -> String = { "" }
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     private val messages = mutableListOf<ChatMessage>()
     private val expandedThinkingPartIds = mutableSetOf<String>()
@@ -49,6 +50,11 @@ class ChatMessageAdapter(
 
     private var isSending: Boolean = false
     private var streamingMessageId: String? = null
+
+    private data class StreamingUpdatePayload(
+        val messageId: String,
+        val dirtyPartIds: Set<String>?
+    )
 
     // stableItemId 会 UUID.fromString + 捕获异常，RecyclerView 每次布局都要为每个可见项调用多次，
     // 这里按消息 ID 记忆化；清理时机复用 trimExpansionStateIfNeeded()。
@@ -98,16 +104,22 @@ class ChatMessageAdapter(
             super.onBindViewHolder(holder, position, payloads)
             return
         }
-        when (holder) {
-            is AssistantViewHolder -> {
-                if (STREAMING_PAYLOAD in payloads) {
-                    // 流式更新走精简路径：只更新内容和状态
-                    holder.bindStreaming(messages[position])
-                } else {
-                    holder.bind(messages[position], position)
-                }
-            }
+        val message = messages[position]
+        if (holder !is AssistantViewHolder || !isSending || message.id != streamingMessageId) {
+            onBindViewHolder(holder, position)
+            return
         }
+        val dirtyPartIds = mutableSetOf<String>()
+        for (payload in payloads) {
+            if (payload !is StreamingUpdatePayload || payload.messageId != message.id ||
+                payload.dirtyPartIds == null
+            ) {
+                holder.bind(message, position)
+                return
+            }
+            dirtyPartIds.addAll(payload.dirtyPartIds)
+        }
+        holder.bindStreaming(message, position, dirtyPartIds)
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
@@ -130,8 +142,10 @@ class ChatMessageAdapter(
             isSending = sending
             streamingMessageId = nextStreamingMessageId
             val lastIndex = messages.lastIndex
-            messages[lastIndex] = filteredMessages[lastIndex]
-            notifyItemChanged(lastIndex, STREAMING_PAYLOAD)
+            val previousMessage = messages[lastIndex]
+            val nextMessage = filteredMessages[lastIndex]
+            messages[lastIndex] = nextMessage
+            notifyItemChanged(lastIndex, streamingUpdatePayload(previousMessage, nextMessage))
             return
         }
 
@@ -154,7 +168,11 @@ class ChatMessageAdapter(
 
         if (sameIdentityOrder) {
             val changedIndices = filteredMessages.indices.filter { index ->
-                oldMessages[index] != filteredMessages[index] ||
+                (if (filteredMessages[index].id == streamingMessageId) {
+                    oldMessages[index] !== filteredMessages[index]
+                } else {
+                    oldMessages[index] != filteredMessages[index]
+                }) ||
                     (oldMessages[index].id == oldStreamingMessageId) !=
                     (filteredMessages[index].id == streamingMessageId)
             }
@@ -163,7 +181,10 @@ class ChatMessageAdapter(
             // 同位仅内容变化：逐项通知只重绑命中项，且不像 notifyDataSetChanged 那样丢弃全部缓存 holder
             changedIndices.forEach {
                 val isStreamingUpdate = filteredMessages[it].id == streamingMessageId
-                notifyItemChanged(it, if (isStreamingUpdate) STREAMING_PAYLOAD else null)
+                notifyItemChanged(
+                    it,
+                    if (isStreamingUpdate) streamingUpdatePayload(oldMessages[it], filteredMessages[it]) else null
+                )
             }
             return
         }
@@ -280,9 +301,34 @@ class ChatMessageAdapter(
             oldLast.role == newLast.role
     }
 
+    private fun streamingUpdatePayload(previous: ChatMessage, next: ChatMessage): StreamingUpdatePayload {
+        val previousParts = previous.assistantParts
+        val nextParts = next.assistantParts
+        if (nextParts.size < previousParts.size) {
+            return StreamingUpdatePayload(next.id, null)
+        }
+        val dirtyPartIds = mutableSetOf<String>()
+        for (index in previousParts.indices) {
+            val previousPart = previousParts[index]
+            val nextPart = nextParts[index]
+            if (previousPart.id != nextPart.id || previousPart.javaClass != nextPart.javaClass) {
+                return StreamingUpdatePayload(next.id, null)
+            }
+            if (previousPart !== nextPart) {
+                dirtyPartIds.add(nextPart.id)
+            }
+        }
+        for (index in previousParts.size until nextParts.size) {
+            dirtyPartIds.add(nextParts[index].id)
+        }
+        return StreamingUpdatePayload(next.id, dirtyPartIds)
+    }
+
     private inner class AssistantViewHolder(
         private val binding: ItemChatMessageBinding
     ) : RecyclerView.ViewHolder(binding.root) {
+        private var boundMessageId: String? = null
+
         init {
             // 长按卡片任意位置（含 Markdown 文本）在手指处弹出菜单（复制/编辑/删除/重试）
             binding.cardMessage.setOnContentLongPressListener { x, y ->
@@ -371,6 +417,7 @@ class ChatMessageAdapter(
 
         fun bind(message: ChatMessage, position: Int) {
             val isStreamingMessage = isSending && message.id == streamingMessageId
+            boundMessageId = message.id
             val hasContent = message.content.isNotBlank()
             val hasParts = message.assistantParts.isNotEmpty()
             val showGeneratingStatus = isStreamingMessage && !hasContent && !hasParts
@@ -415,7 +462,11 @@ class ChatMessageAdapter(
         }
 
         /** 流式更新精简路径：只更新 MarkdownView 内容和实时状态 */
-        fun bindStreaming(message: ChatMessage) {
+        fun bindStreaming(message: ChatMessage, position: Int, dirtyPartIds: Set<String>) {
+            if (boundMessageId != message.id) {
+                bind(message, position)
+                return
+            }
             val hasContent = message.content.isNotBlank()
             val hasParts = message.assistantParts.isNotEmpty()
             syncThinkingPartExpansion(message, true)
@@ -426,16 +477,24 @@ class ChatMessageAdapter(
                     parts = message.assistantParts,
                     isStreaming = true,
                     expandedThinkingPartIds = expandedThinkingPartIds,
-                    expandedToolPartIds = expandedToolPartIds
+                    expandedToolPartIds = expandedToolPartIds,
+                    dirtyPartIds = dirtyPartIds
                 )
             } else if (hasContent) {
                 binding.markdownContent.setMarkdown(message.content, true)
+            } else {
+                binding.markdownContent.clearMarkdown()
             }
 
+            bindErrorNotice(message, position)
             val showGeneratingStatus = !hasContent && !hasParts
             binding.textStatus.isVisible = showGeneratingStatus
             binding.typingIndicator.isVisible = true
             binding.typingIndicator.setAnimating(true)
+        }
+
+        fun resetBindingIdentity() {
+            boundMessageId = null
         }
 
         private fun currentPositionOrNull(): Int? {
@@ -474,6 +533,7 @@ class ChatMessageAdapter(
 
     override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
         if (holder is AssistantViewHolder) {
+            holder.resetBindingIdentity()
             // 只停止动画，不清除 MarkdownView 渲染结果；
             // 保留视图树让 ViewHolder 复用时可以走增量更新路径，避免从零重建
             holder.stopAnimations()
@@ -622,7 +682,7 @@ class ChatMessageAdapter(
 
             // 附件标签
             val attachmentSignature = message.attachments.joinToString(separator = "|") { attachment ->
-                "${attachment.type}:${attachment.id}"
+                "${conversationIdProvider()}:${attachment.type}:${attachment.id}:${attachment.base64Ref.orEmpty()}"
             }
             if (message.attachments.isNotEmpty()) {
                 binding.scrollAttachments.isVisible = true
@@ -666,7 +726,7 @@ class ChatMessageAdapter(
                     ChatAttachmentType.Image -> {
                         val itemBinding = ItemAttachmentImageBinding.inflate(inflater, container, false)
                         itemBinding.imageAttachmentRemove.isVisible = false
-                        AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt)
+                        AttachmentThumbnailLoader.load(itemBinding.imageAttachmentThumb, attachment, 96.dpInt, conversationIdProvider())
                         itemBinding.root
                     }
 
@@ -774,7 +834,6 @@ class ChatMessageAdapter(
         const val ViewTypeAssistant = 0
         const val ViewTypeUser = 1
         const val ViewTypeNotice = 2
-        const val STREAMING_PAYLOAD = "streaming"
         const val COLLAPSED_MAX_LINES = 10
 
         /** 无换行长文本的折叠阈值（字符数）。 */
